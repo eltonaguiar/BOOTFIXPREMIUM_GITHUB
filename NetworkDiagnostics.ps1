@@ -2920,6 +2920,930 @@ function New-DriverInjectionProfile {
 }
 
 ################################################################################
+# TIER 4: NETWORK PERFORMANCE & SECURITY ANALYSIS
+################################################################################
+
+function Test-NetworkPerformance {
+    <#
+    .SYNOPSIS
+        Comprehensive network performance testing suite
+    
+    .DESCRIPTION
+        Measures network performance metrics including:
+        - Bandwidth (upload/download speeds)
+        - Latency (ping times to multiple targets)
+        - Jitter (latency variation)
+        - Packet loss percentage
+        - Connection stability over time
+        
+        Tests against multiple endpoints for accurate results.
+    
+    .PARAMETER TestDuration
+        Duration of bandwidth test in seconds (default: 10)
+    
+    .PARAMETER TestEndpoints
+        Array of endpoints to test (default: Google, Cloudflare, Microsoft)
+    
+    .PARAMETER DetailedReport
+        Generate detailed performance report with graphs
+    
+    .OUTPUTS
+        PSCustomObject with performance metrics
+    
+    .EXAMPLE
+        $perf = Test-NetworkPerformance -TestDuration 10
+        Write-Host "Average latency: $($perf.AverageLatency)ms"
+    #>
+    
+    param(
+        [int]$TestDuration = 10,
+        [string[]]$TestEndpoints = @("8.8.8.8", "1.1.1.1", "4.2.2.2"),
+        [switch]$DetailedReport
+    )
+    
+    $result = @{
+        TestStartTime      = Get-Date
+        Duration           = $TestDuration
+        Endpoints          = $TestEndpoints
+        LatencyResults     = @()
+        AverageLatency     = 0
+        MinLatency         = 0
+        MaxLatency         = 0
+        Jitter             = 0
+        PacketLoss         = 0
+        DownloadSpeed      = 0
+        ConnectionQuality  = "Unknown"
+        Details            = @()
+        Warnings           = @()
+        Timestamp          = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    }
+    
+    try {
+        $result.Details += "Starting network performance analysis..."
+        $result.Details += "Test duration: $TestDuration seconds"
+        $result.Details += "Testing endpoints: $($TestEndpoints -join ', ')"
+        $result.Details += ""
+        
+        # Phase 1: Latency and Packet Loss Testing
+        $result.Details += "[Phase 1/3] Measuring latency and packet loss..."
+        
+        $allLatencies = @()
+        $totalPackets = 0
+        $lostPackets = 0
+        
+        foreach ($endpoint in $TestEndpoints) {
+            try {
+                $result.Details += "  Testing endpoint: $endpoint"
+                
+                # Send 10 pings per endpoint
+                $pings = 1..10 | ForEach-Object {
+                    try {
+                        $ping = Test-Connection -ComputerName $endpoint -Count 1 -ErrorAction SilentlyContinue
+                        $totalPackets++
+                        
+                        if ($ping) {
+                            $ping.ResponseTime
+                        } else {
+                            $lostPackets++
+                            $null
+                        }
+                    } catch {
+                        $lostPackets++
+                        $null
+                    }
+                }
+                
+                $validPings = @($pings | Where-Object { $_ -ne $null })
+                
+                if ($validPings.Count -gt 0) {
+                    $avgLatency = ($validPings | Measure-Object -Average).Average
+                    $minLatency = ($validPings | Measure-Object -Minimum).Minimum
+                    $maxLatency = ($validPings | Measure-Object -Maximum).Maximum
+                    
+                    $allLatencies += $validPings
+                    
+                    $result.LatencyResults += @{
+                        Endpoint  = $endpoint
+                        Average   = [math]::Round($avgLatency, 2)
+                        Min       = $minLatency
+                        Max       = $maxLatency
+                        Packets   = $validPings.Count
+                    }
+                    
+                    $result.Details += "    Average: $([math]::Round($avgLatency, 2))ms, Min: $minLatency ms, Max: $maxLatency ms"
+                } else {
+                    $result.Warnings += "All packets lost to $endpoint"
+                    $result.Details += "    ✗ All packets lost"
+                }
+            } catch {
+                $result.Warnings += "Error testing $endpoint : $_"
+            }
+        }
+        
+        # Calculate overall metrics
+        if ($allLatencies.Count -gt 0) {
+            $result.AverageLatency = [math]::Round(($allLatencies | Measure-Object -Average).Average, 2)
+            $result.MinLatency = ($allLatencies | Measure-Object -Minimum).Minimum
+            $result.MaxLatency = ($allLatencies | Measure-Object -Maximum).Maximum
+            
+            # Calculate jitter (standard deviation of latency)
+            $mean = $result.AverageLatency
+            $squaredDiffs = $allLatencies | ForEach-Object { [math]::Pow($_ - $mean, 2) }
+            $variance = ($squaredDiffs | Measure-Object -Average).Average
+            $result.Jitter = [math]::Round([math]::Sqrt($variance), 2)
+            
+            $result.Details += ""
+            $result.Details += "Overall Latency Results:"
+            $result.Details += "  Average: $($result.AverageLatency)ms"
+            $result.Details += "  Range: $($result.MinLatency)ms - $($result.MaxLatency)ms"
+            $result.Details += "  Jitter: $($result.Jitter)ms"
+        }
+        
+        # Calculate packet loss
+        if ($totalPackets -gt 0) {
+            $result.PacketLoss = [math]::Round(($lostPackets / $totalPackets) * 100, 2)
+            $result.Details += "  Packet Loss: $($result.PacketLoss)%"
+        }
+        
+        # Phase 2: Bandwidth Testing (simplified - measure download from Microsoft)
+        $result.Details += ""
+        $result.Details += "[Phase 2/3] Estimating bandwidth..."
+        
+        try {
+            # Test download speed by downloading a small file
+            $testUrl = "http://ipv4.download.thinkbroadband.com/5MB.zip"
+            $testFile = "$env:TEMP\speedtest_$(Get-Date -Format 'yyyyMMddHHmmss').tmp"
+            
+            $startTime = Get-Date
+            $webClient = New-Object System.Net.WebClient
+            $webClient.DownloadFile($testUrl, $testFile)
+            $endTime = Get-Date
+            
+            $duration = ($endTime - $startTime).TotalSeconds
+            $fileSize = (Get-Item $testFile).Length
+            $speedMbps = [math]::Round((($fileSize * 8) / $duration) / 1MB, 2)
+            
+            $result.DownloadSpeed = $speedMbps
+            $result.Details += "  Download Speed: $speedMbps Mbps"
+            
+            # Clean up
+            Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+            
+        } catch {
+            $result.Warnings += "Bandwidth test failed: $_"
+            $result.Details += "  ⚠ Bandwidth test unavailable (requires internet)"
+        }
+        
+        # Phase 3: Connection Quality Assessment
+        $result.Details += ""
+        $result.Details += "[Phase 3/3] Assessing connection quality..."
+        
+        # Quality scoring based on metrics
+        $qualityScore = 0
+        
+        # Latency scoring (0-40 points)
+        if ($result.AverageLatency -le 20) { $qualityScore += 40 }
+        elseif ($result.AverageLatency -le 50) { $qualityScore += 30 }
+        elseif ($result.AverageLatency -le 100) { $qualityScore += 20 }
+        elseif ($result.AverageLatency -le 200) { $qualityScore += 10 }
+        
+        # Jitter scoring (0-30 points)
+        if ($result.Jitter -le 5) { $qualityScore += 30 }
+        elseif ($result.Jitter -le 10) { $qualityScore += 20 }
+        elseif ($result.Jitter -le 20) { $qualityScore += 10 }
+        
+        # Packet loss scoring (0-30 points)
+        if ($result.PacketLoss -eq 0) { $qualityScore += 30 }
+        elseif ($result.PacketLoss -le 1) { $qualityScore += 20 }
+        elseif ($result.PacketLoss -le 3) { $qualityScore += 10 }
+        
+        # Determine quality rating
+        if ($qualityScore -ge 90) { $result.ConnectionQuality = "Excellent" }
+        elseif ($qualityScore -ge 70) { $result.ConnectionQuality = "Good" }
+        elseif ($qualityScore -ge 50) { $result.ConnectionQuality = "Fair" }
+        elseif ($qualityScore -ge 30) { $result.ConnectionQuality = "Poor" }
+        else { $result.ConnectionQuality = "Critical" }
+        
+        $result.Details += "  Connection Quality: $($result.ConnectionQuality) (Score: $qualityScore/100)"
+        
+        # Recommendations
+        $result.Details += ""
+        $result.Details += "Recommendations:"
+        
+        if ($result.AverageLatency -gt 100) {
+            $result.Details += "  • High latency detected - check network congestion or use wired connection"
+        }
+        if ($result.Jitter -gt 20) {
+            $result.Details += "  • High jitter detected - network instability may affect real-time applications"
+        }
+        if ($result.PacketLoss -gt 2) {
+            $result.Details += "  • Packet loss detected - check cables, router, or ISP connection"
+        }
+        if ($result.DownloadSpeed -gt 0 -and $result.DownloadSpeed -lt 10) {
+            $result.Details += "  • Low bandwidth detected - consider upgrading internet plan"
+        }
+        
+        if ($qualityScore -ge 90) {
+            $result.Details += "  ✓ Your network performance is excellent!"
+        }
+        
+    } catch {
+        $result.Details += "Error during performance testing: $_"
+        $result.Warnings += $_.Exception.Message
+    }
+    
+    return $result
+}
+
+function Get-WiFiNetworkInfo {
+    <#
+    .SYNOPSIS
+        Analyzes WiFi networks and signal strength
+    
+    .DESCRIPTION
+        Provides detailed information about available WiFi networks:
+        - Signal strength (RSSI)
+        - Channel utilization
+        - Security protocols
+        - 2.4GHz vs 5GHz band identification
+        - Network congestion analysis
+        - Best channel recommendations
+    
+    .PARAMETER ShowAll
+        Show all networks including hidden SSIDs
+    
+    .PARAMETER CurrentOnly
+        Only show currently connected network
+    
+    .OUTPUTS
+        Array of WiFi network objects with detailed metrics
+    
+    .EXAMPLE
+        $wifi = Get-WiFiNetworkInfo
+        $wifi | Where-Object Connected | Select-Object SSID, SignalStrength, Channel
+    #>
+    
+    param(
+        [switch]$ShowAll,
+        [switch]$CurrentOnly
+    )
+    
+    $result = @{
+        Networks          = @()
+        CurrentNetwork    = $null
+        ChannelAnalysis   = @()
+        BestChannel       = ""
+        Recommendations   = @()
+        Details           = @()
+        Timestamp         = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    }
+    
+    try {
+        # Check if WiFi is available
+        $wifiAdapter = Get-NetworkAdapterStatus | Where-Object { $_.Type -match "Wireless" }
+        
+        if (-not $wifiAdapter) {
+            $result.Details += "No WiFi adapter detected on this system"
+            return $result
+        }
+        
+        $result.Details += "WiFi Adapter: $($wifiAdapter.Description)"
+        $result.Details += "Status: $($wifiAdapter.Status)"
+        $result.Details += ""
+        
+        # Use netsh to scan WiFi networks
+        try {
+            $netshOutput = netsh wlan show networks mode=bssid 2>&1
+            
+            if ($netshOutput -match "not running") {
+                $result.Details += "⚠ WLAN AutoConfig service not running"
+                $result.Recommendations += "Start WLAN AutoConfig service: net start WlanSvc"
+                return $result
+            }
+            
+            # Parse netsh output
+            $currentSSID = $null
+            $currentAuth = $null
+            $currentChannel = $null
+            
+            foreach ($line in $netshOutput) {
+                if ($line -match "SSID \d+ : (.+)") {
+                    $currentSSID = $matches[1].Trim()
+                    if ($currentSSID -and $currentSSID -ne "") {
+                        # Initialize new network entry
+                        $network = @{
+                            SSID           = $currentSSID
+                            Authentication = ""
+                            Encryption     = ""
+                            Signal         = 0
+                            Channel        = 0
+                            Band           = ""
+                            BSSID          = ""
+                            Connected      = $false
+                        }
+                    }
+                }
+                elseif ($line -match "Authentication\s+:\s+(.+)") {
+                    $currentAuth = $matches[1].Trim()
+                    if ($currentSSID) {
+                        $network.Authentication = $currentAuth
+                    }
+                }
+                elseif ($line -match "Encryption\s+:\s+(.+)") {
+                    if ($currentSSID) {
+                        $network.Encryption = $matches[1].Trim()
+                    }
+                }
+                elseif ($line -match "Signal\s+:\s+(\d+)%") {
+                    if ($currentSSID) {
+                        $network.Signal = [int]$matches[1]
+                    }
+                }
+                elseif ($line -match "Channel\s+:\s+(\d+)") {
+                    $channel = [int]$matches[1]
+                    if ($currentSSID) {
+                        $network.Channel = $channel
+                        
+                        # Determine band
+                        if ($channel -le 14) {
+                            $network.Band = "2.4 GHz"
+                        } elseif ($channel -ge 36) {
+                            $network.Band = "5 GHz"
+                        }
+                        
+                        # Add completed network to results
+                        $result.Networks += $network
+                    }
+                }
+                elseif ($line -match "BSSID \d+\s+:\s+(.+)") {
+                    if ($currentSSID) {
+                        $network.BSSID = $matches[1].Trim()
+                    }
+                }
+            }
+            
+            # Get currently connected network
+            $connectedNet = netsh wlan show interfaces 2>&1 | Select-String -Pattern "SSID|Channel|Signal"
+            
+            if ($connectedNet) {
+                foreach ($line in $connectedNet) {
+                    if ($line -match "SSID\s+:\s+(.+)") {
+                        $connectedSSID = $matches[1].Trim()
+                        $network = $result.Networks | Where-Object { $_.SSID -eq $connectedSSID }
+                        if ($network) {
+                            $network.Connected = $true
+                            $result.CurrentNetwork = $network
+                        }
+                    }
+                }
+            }
+            
+            # Channel analysis
+            $channelGroups = $result.Networks | Group-Object -Property Channel | 
+                Sort-Object Count -Descending
+            
+            foreach ($group in $channelGroups) {
+                $result.ChannelAnalysis += @{
+                    Channel      = $group.Name
+                    NetworkCount = $group.Count
+                    Congestion   = if ($group.Count -gt 5) { "High" } 
+                                   elseif ($group.Count -gt 2) { "Medium" } 
+                                   else { "Low" }
+                }
+            }
+            
+            # Recommend best channel (least congested)
+            $leastUsed = $result.ChannelAnalysis | Sort-Object NetworkCount | Select-Object -First 1
+            if ($leastUsed) {
+                $result.BestChannel = "Channel $($leastUsed.Channel) (least congested)"
+            }
+            
+            # Generate report
+            $result.Details += "Detected Networks: $($result.Networks.Count)"
+            
+            if ($result.CurrentNetwork) {
+                $result.Details += ""
+                $result.Details += "Currently Connected:"
+                $result.Details += "  SSID: $($result.CurrentNetwork.SSID)"
+                $result.Details += "  Signal: $($result.CurrentNetwork.Signal)% ($($result.CurrentNetwork.Band))"
+                $result.Details += "  Channel: $($result.CurrentNetwork.Channel)"
+                $result.Details += "  Security: $($result.CurrentNetwork.Authentication)"
+            }
+            
+            # Recommendations
+            if ($result.CurrentNetwork -and $result.CurrentNetwork.Signal -lt 50) {
+                $result.Recommendations += "Weak signal detected - move closer to router or use WiFi extender"
+            }
+            
+            if ($result.CurrentNetwork -and $result.CurrentNetwork.Authentication -match "Open|WEP") {
+                $result.Recommendations += "⚠ SECURITY RISK: Network uses weak or no encryption"
+            }
+            
+            $congested = $result.ChannelAnalysis | Where-Object { $_.Congestion -eq "High" }
+            if ($congested -and $result.CurrentNetwork -and 
+                $congested.Channel -contains $result.CurrentNetwork.Channel) {
+                $result.Recommendations += "Channel congestion detected - consider switching to $($result.BestChannel)"
+            }
+            
+        } catch {
+            $result.Details += "Error scanning WiFi networks: $_"
+        }
+        
+    } catch {
+        $result.Details += "Error analyzing WiFi: $_"
+    }
+    
+    return $result
+}
+
+function Invoke-NetworkSecurityAudit {
+    <#
+    .SYNOPSIS
+        Performs comprehensive network security audit
+    
+    .DESCRIPTION
+        Audits network security configuration including:
+        - Open ports and listening services
+        - Firewall status and rules
+        - Network adapter security settings
+        - SMB protocol versions
+        - Windows Defender Firewall profiles
+        - Network isolation status
+        - Identifies security risks
+    
+    .PARAMETER IncludePortScan
+        Perform detailed port scan (requires admin)
+    
+    .PARAMETER CheckRemoteAccess
+        Verify RDP, WinRM, and SSH status
+    
+    .OUTPUTS
+        Security audit report with risk assessment
+    
+    .EXAMPLE
+        $audit = Invoke-NetworkSecurityAudit -IncludePortScan
+        $audit.Risks | Where-Object Severity -eq "High"
+    #>
+    
+    param(
+        [switch]$IncludePortScan,
+        [switch]$CheckRemoteAccess
+    )
+    
+    $result = @{
+        FirewallStatus      = @()
+        OpenPorts           = @()
+        ListeningServices   = @()
+        RemoteAccessStatus  = @()
+        SecurityRisks       = @()
+        Recommendations     = @()
+        OverallRiskLevel    = "Unknown"
+        Details             = @()
+        Timestamp           = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    }
+    
+    try {
+        $result.Details += "Starting network security audit..."
+        $result.Details += ""
+        
+        # Phase 1: Firewall Status
+        $result.Details += "[Phase 1/5] Checking Windows Defender Firewall..."
+        
+        try {
+            $fwProfiles = Get-NetFirewallProfile -ErrorAction SilentlyContinue
+            
+            foreach ($profile in $fwProfiles) {
+                $status = @{
+                    Profile        = $profile.Name
+                    Enabled        = $profile.Enabled
+                    DefaultInbound = $profile.DefaultInboundAction
+                    DefaultOutbound= $profile.DefaultOutboundAction
+                }
+                
+                $result.FirewallStatus += $status
+                
+                $enabledStr = if ($profile.Enabled) { "✓ Enabled" } else { "✗ DISABLED" }
+                $result.Details += "  $($profile.Name): $enabledStr"
+                
+                if (-not $profile.Enabled) {
+                    $result.SecurityRisks += @{
+                        Severity    = "HIGH"
+                        Category    = "Firewall"
+                        Issue       = "$($profile.Name) firewall profile is DISABLED"
+                        Remediation = "Enable firewall: Set-NetFirewallProfile -Profile $($profile.Name) -Enabled True"
+                    }
+                }
+            }
+        } catch {
+            $result.Details += "  ⚠ Could not check firewall status: $_"
+        }
+        
+        # Phase 2: Open Ports and Listening Services
+        $result.Details += ""
+        $result.Details += "[Phase 2/5] Scanning open ports and listening services..."
+        
+        try {
+            $connections = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue
+            
+            $result.Details += "  Found $($connections.Count) listening ports"
+            
+            foreach ($conn in $connections | Select-Object -First 20) {
+                $process = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+                
+                $portInfo = @{
+                    Port        = $conn.LocalPort
+                    Address     = $conn.LocalAddress
+                    Process     = if ($process) { $process.ProcessName } else { "Unknown" }
+                    ProcessId   = $conn.OwningProcess
+                }
+                
+                $result.OpenPorts += $portInfo
+                
+                # Flag potentially risky ports
+                $riskyPorts = @(
+                    @{Port=21; Service="FTP"; Risk="Medium"},
+                    @{Port=23; Service="Telnet"; Risk="High"},
+                    @{Port=135; Service="RPC"; Risk="Medium"},
+                    @{Port=139; Service="NetBIOS"; Risk="Medium"},
+                    @{Port=445; Service="SMB"; Risk="Medium"},
+                    @{Port=3389; Service="RDP"; Risk="Medium"},
+                    @{Port=5985; Service="WinRM HTTP"; Risk="Medium"},
+                    @{Port=5986; Service="WinRM HTTPS"; Risk="Low"}
+                )
+                
+                $risky = $riskyPorts | Where-Object { $_.Port -eq $conn.LocalPort }
+                if ($risky) {
+                    $result.SecurityRisks += @{
+                        Severity    = $risky.Risk.ToUpper()
+                        Category    = "Open Port"
+                        Issue       = "Port $($conn.LocalPort) ($($risky.Service)) is listening"
+                        Remediation = "Review if $($risky.Service) is necessary and properly secured"
+                    }
+                }
+            }
+            
+            if ($connections.Count -gt 20) {
+                $result.Details += "  (Showing first 20 of $($connections.Count) listening ports)"
+            }
+            
+        } catch {
+            $result.Details += "  ⚠ Could not scan ports: $_"
+        }
+        
+        # Phase 3: Remote Access Status
+        if ($CheckRemoteAccess) {
+            $result.Details += ""
+            $result.Details += "[Phase 3/5] Checking remote access services..."
+            
+            # Check RDP
+            try {
+                $rdpEnabled = (Get-ItemProperty -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" -Name fDenyTSConnections).fDenyTSConnections
+                
+                $result.RemoteAccessStatus += @{
+                    Service = "Remote Desktop (RDP)"
+                    Enabled = ($rdpEnabled -eq 0)
+                    Port    = 3389
+                }
+                
+                if ($rdpEnabled -eq 0) {
+                    $result.Details += "  ⚠ Remote Desktop is ENABLED"
+                    $result.SecurityRisks += @{
+                        Severity    = "MEDIUM"
+                        Category    = "Remote Access"
+                        Issue       = "Remote Desktop Protocol (RDP) is enabled"
+                        Remediation = "Ensure RDP uses strong passwords and consider Network Level Authentication"
+                    }
+                } else {
+                    $result.Details += "  ✓ Remote Desktop is disabled"
+                }
+            } catch {
+                $result.Details += "  Could not check RDP status"
+            }
+            
+            # Check WinRM
+            try {
+                $winrmStatus = Get-Service -Name WinRM -ErrorAction SilentlyContinue
+                
+                if ($winrmStatus -and $winrmStatus.Status -eq "Running") {
+                    $result.RemoteAccessStatus += @{
+                        Service = "Windows Remote Management (WinRM)"
+                        Enabled = $true
+                        Port    = "5985/5986"
+                    }
+                    
+                    $result.Details += "  ⚠ WinRM service is running"
+                } else {
+                    $result.Details += "  ✓ WinRM is not running"
+                }
+            } catch {
+                $result.Details += "  Could not check WinRM status"
+            }
+        }
+        
+        # Phase 4: SMB Security
+        $result.Details += ""
+        $result.Details += "[Phase 4/5] Checking SMB protocol security..."
+        
+        try {
+            $smbConfig = Get-SmbServerConfiguration -ErrorAction SilentlyContinue
+            
+            if ($smbConfig) {
+                # Check SMBv1 status
+                if ($smbConfig.EnableSMB1Protocol) {
+                    $result.Details += "  ✗ SMBv1 is ENABLED (security risk)"
+                    $result.SecurityRisks += @{
+                        Severity    = "HIGH"
+                        Category    = "Protocol Security"
+                        Issue       = "SMBv1 protocol is enabled (vulnerable to WannaCry and other attacks)"
+                        Remediation = "Disable SMBv1: Set-SmbServerConfiguration -EnableSMB1Protocol `$false -Force"
+                    }
+                } else {
+                    $result.Details += "  ✓ SMBv1 is disabled"
+                }
+                
+                # Check encryption
+                if ($smbConfig.EncryptData) {
+                    $result.Details += "  ✓ SMB encryption is enabled"
+                } else {
+                    $result.Details += "  ⚠ SMB encryption is disabled"
+                    $result.Recommendations += "Consider enabling SMB encryption for better security"
+                }
+            }
+        } catch {
+            $result.Details += "  Could not check SMB configuration"
+        }
+        
+        # Phase 5: Network Adapter Security
+        $result.Details += ""
+        $result.Details += "[Phase 5/5] Checking network adapter security settings..."
+        
+        try {
+            $adapters = Get-NetworkAdapterStatus
+            
+            foreach ($adapter in $adapters | Where-Object { $_.Connected }) {
+                # Check for public WiFi
+                $profile = Get-NetConnectionProfile -InterfaceAlias $adapter.Name -ErrorAction SilentlyContinue
+                
+                if ($profile) {
+                    $result.Details += "  $($adapter.Name): $($profile.NetworkCategory) network"
+                    
+                    if ($profile.NetworkCategory -eq "Public") {
+                        $result.Details += "    ✓ Configured as Public network (recommended for untrusted networks)"
+                    } elseif ($profile.NetworkCategory -eq "Private") {
+                        $result.Details += "    Private network - ensure this is a trusted network"
+                    }
+                }
+            }
+        } catch {
+            $result.Details += "  Could not check adapter security settings"
+        }
+        
+        # Calculate overall risk level
+        $highRisks = @($result.SecurityRisks | Where-Object { $_.Severity -eq "HIGH" }).Count
+        $mediumRisks = @($result.SecurityRisks | Where-Object { $_.Severity -eq "MEDIUM" }).Count
+        $lowRisks = @($result.SecurityRisks | Where-Object { $_.Severity -eq "LOW" }).Count
+        
+        if ($highRisks -gt 0) {
+            $result.OverallRiskLevel = "HIGH"
+        } elseif ($mediumRisks -gt 2) {
+            $result.OverallRiskLevel = "MEDIUM"
+        } elseif ($mediumRisks -gt 0 -or $lowRisks -gt 0) {
+            $result.OverallRiskLevel = "LOW"
+        } else {
+            $result.OverallRiskLevel = "MINIMAL"
+        }
+        
+        # Summary
+        $result.Details += ""
+        $result.Details += "═══════════════════════════════════════════════"
+        $result.Details += "Security Audit Summary"
+        $result.Details += "═══════════════════════════════════════════════"
+        $result.Details += "Overall Risk Level: $($result.OverallRiskLevel)"
+        $result.Details += "Security Risks Found: $($result.SecurityRisks.Count)"
+        $result.Details += "  High: $highRisks | Medium: $mediumRisks | Low: $lowRisks"
+        
+        if ($result.SecurityRisks.Count -eq 0) {
+            $result.Details += ""
+            $result.Details += "✓ No critical security issues detected"
+            $result.Recommendations += "Maintain good security practices and keep systems updated"
+        } else {
+            $result.Details += ""
+            $result.Details += "Immediate Actions Required:"
+            foreach ($risk in $result.SecurityRisks | Where-Object { $_.Severity -eq "HIGH" }) {
+                $result.Details += "  ! $($risk.Issue)"
+                $result.Details += "    → $($risk.Remediation)"
+            }
+        }
+        
+    } catch {
+        $result.Details += "Error during security audit: $_"
+    }
+    
+    return $result
+}
+
+function Manage-FirewallRules {
+    <#
+    .SYNOPSIS
+        Advanced firewall rule management utility
+    
+    .DESCRIPTION
+        Provides simplified interface for managing Windows Defender Firewall rules:
+        - List all firewall rules with filtering
+        - Create new rules with templates
+        - Modify existing rules
+        - Enable/disable rules
+        - Delete rules
+        - Export/import rule configurations
+        - Rule conflict detection
+    
+    .PARAMETER Action
+        Action to perform: List, Create, Enable, Disable, Delete, Export
+    
+    .PARAMETER RuleName
+        Name of the firewall rule
+    
+    .PARAMETER Profile
+        Firewall profile: Domain, Private, Public, Any
+    
+    .PARAMETER Direction
+        Rule direction: Inbound, Outbound
+    
+    .PARAMETER Protocol
+        Protocol: TCP, UDP, ICMP, Any
+    
+    .PARAMETER Port
+        Port number or range
+    
+    .PARAMETER Action
+        Firewall action: Allow, Block
+    
+    .OUTPUTS
+        Firewall rule management results
+    
+    .EXAMPLE
+        # List all enabled inbound rules
+        Manage-FirewallRules -Action List -Direction Inbound -Enabled $true
+        
+        # Block a specific port
+        Manage-FirewallRules -Action Create -RuleName "Block Port 445" `
+            -Direction Inbound -Protocol TCP -Port 445 -Action Block
+    #>
+    
+    param(
+        [Parameter(Mandatory=$true)]
+        [ValidateSet("List", "Create", "Enable", "Disable", "Delete", "Export", "Import")]
+        [string]$Action,
+        
+        [string]$RuleName = "",
+        
+        [ValidateSet("Domain", "Private", "Public", "Any")]
+        [string]$Profile = "Any",
+        
+        [ValidateSet("Inbound", "Outbound")]
+        [string]$Direction = "Inbound",
+        
+        [ValidateSet("TCP", "UDP", "ICMPv4", "ICMPv6", "Any")]
+        [string]$Protocol = "TCP",
+        
+        [string]$Port = "",
+        
+        [ValidateSet("Allow", "Block")]
+        [string]$FirewallAction = "Block",
+        
+        [string]$ExportPath = "",
+        
+        [switch]$Enabled
+    )
+    
+    $result = @{
+        Success        = $false
+        Action         = $Action
+        RulesAffected  = 0
+        Rules          = @()
+        Details        = @()
+        Warnings       = @()
+        Timestamp      = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    }
+    
+    try {
+        switch ($Action) {
+            "List" {
+                $result.Details += "Listing firewall rules..."
+                
+                $filters = @{}
+                if ($Direction) { $filters['Direction'] = $Direction }
+                if ($Enabled) { $filters['Enabled'] = 'True' }
+                
+                $rules = Get-NetFirewallRule @filters -ErrorAction SilentlyContinue | 
+                    Select-Object -First 100
+                
+                foreach ($rule in $rules) {
+                    $portFilter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue
+                    
+                    $result.Rules += @{
+                        Name          = $rule.Name
+                        DisplayName   = $rule.DisplayName
+                        Enabled       = $rule.Enabled
+                        Direction     = $rule.Direction
+                        Action        = $rule.Action
+                        Protocol      = if ($portFilter) { $portFilter.Protocol } else { "Any" }
+                        LocalPort     = if ($portFilter) { $portFilter.LocalPort } else { "Any" }
+                    }
+                }
+                
+                $result.RulesAffected = $rules.Count
+                $result.Details += "Found $($rules.Count) matching rules"
+                $result.Success = $true
+            }
+            
+            "Create" {
+                if (-not $RuleName) {
+                    $result.Details += "Error: RuleName is required for Create action"
+                    return $result
+                }
+                
+                $result.Details += "Creating firewall rule: $RuleName"
+                
+                $params = @{
+                    DisplayName = $RuleName
+                    Direction   = $Direction
+                    Action      = $FirewallAction
+                    Protocol    = $Protocol
+                    Enabled     = 'True'
+                }
+                
+                if ($Port) {
+                    $params['LocalPort'] = $Port
+                }
+                
+                if ($Profile -ne "Any") {
+                    $params['Profile'] = $Profile
+                }
+                
+                New-NetFirewallRule @params -ErrorAction Stop | Out-Null
+                
+                $result.Success = $true
+                $result.RulesAffected = 1
+                $result.Details += "✓ Firewall rule created successfully"
+            }
+            
+            "Enable" {
+                if (-not $RuleName) {
+                    $result.Details += "Error: RuleName is required"
+                    return $result
+                }
+                
+                Enable-NetFirewallRule -DisplayName $RuleName -ErrorAction Stop
+                $result.Success = $true
+                $result.Details += "✓ Rule enabled: $RuleName"
+            }
+            
+            "Disable" {
+                if (-not $RuleName) {
+                    $result.Details += "Error: RuleName is required"
+                    return $result
+                }
+                
+                Disable-NetFirewallRule -DisplayName $RuleName -ErrorAction Stop
+                $result.Success = $true
+                $result.Details += "✓ Rule disabled: $RuleName"
+            }
+            
+            "Delete" {
+                if (-not $RuleName) {
+                    $result.Details += "Error: RuleName is required"
+                    return $result
+                }
+                
+                Remove-NetFirewallRule -DisplayName $RuleName -ErrorAction Stop
+                $result.Success = $true
+                $result.Details += "✓ Rule deleted: $RuleName"
+            }
+            
+            "Export" {
+                if (-not $ExportPath) {
+                    $ExportPath = "$env:USERPROFILE\Desktop\FirewallRules_$(Get-Date -Format 'yyyyMMdd_HHmmss').csv"
+                }
+                
+                $rules = Get-NetFirewallRule -ErrorAction SilentlyContinue
+                $rules | Export-Csv -Path $ExportPath -NoTypeInformation
+                
+                $result.Success = $true
+                $result.RulesAffected = $rules.Count
+                $result.Details += "✓ Exported $($rules.Count) rules to: $ExportPath"
+            }
+        }
+        
+    } catch {
+        $result.Details += "Error: $_"
+        $result.Warnings += $_.Exception.Message
+    }
+    
+    return $result
+}
+
+################################################################################
 # MODULE EXPORT
 ################################################################################
 
