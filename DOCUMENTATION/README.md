@@ -1,6 +1,28 @@
 # 🛠️ MiracleBoot v7.2.0 - Windows Recovery & Boot Repair Toolkit
 
+**Version:** 7.2.0 (STABLE)  
+**Last Updated:** January 7, 2026  
+**Status:** ✅ Production Ready - All Critical Fixes Applied
+
 **MiracleBoot** is a comprehensive Windows system recovery and boot repair solution designed for **IT professionals**, **system administrators**, and **advanced users**. It works in multiple environments—from emergency recovery consoles to fully booted Windows systems—providing powerful diagnostic, repair, and backup tools when you need them most.
+
+---
+
+## 📋 Recent Updates (January 7, 2026)
+
+### ✅ Critical GUI Fixes
+- **Resolved:** "You cannot call a method on a null-valued expression" error that prevented GUI launch on Windows 11
+- **Solution:** Fixed function structure, added defensive null checks for all event handlers
+- **Result:** GUI now launches without errors and is fully functional
+
+### 🎨 UI Enhancements
+- Updated window title: **"Miracle Boot v7.2.0 - Advanced Recovery - Visual Studio (GitHub Copilot)"**
+
+### 📦 Version Control System
+- Implemented `LAST_KNOWN_WORKING_<timestamp>` backup system
+- Automatically maintains up to 5 confirmed working versions
+- Enables quick rollback if future changes introduce issues
+- **See:** [BACKUP_SYSTEM.md](BACKUP_SYSTEM.md) for details
 
 ---
 

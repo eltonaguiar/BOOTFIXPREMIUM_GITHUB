@@ -1,11 +1,32 @@
-Add-Type -AssemblyName PresentationFramework
+﻿Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 
+# ============================================================================
+# MIRACLEBOOT GUI - WinRepairGUI.ps1
+# Version: 7.2.0
+# Last Updated: January 7, 2026
+# ============================================================================
+#
+# CRITICAL FIX (January 7, 2026):
+# Fixed "You cannot call a method on a null-valued expression" error
+# that prevented GUI from launching on Windows 11.
+#
+# Issues Resolved:
+# 1. Function closure: Start-GUI function was missing proper closing brace,
+#    causing code to execute during script sourcing instead of at call time
+# 2. Null checks: Wrapped all event handler registration in null-check guards
+# 3. XAML errors: Added detailed error reporting for XAML parsing failures
+# 4. Duplicate calls: Removed erroneous $W.ShowDialog() in wizard handler
+#
+# ============================================================================
+
 function Start-GUI {
+Write-Host "GUI: Starting initialization..." -ForegroundColor Cyan
+
 $XAML = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
- Title="Miracle Boot v7.2.0 - Advanced Recovery"
+ Title="Miracle Boot v7.2.0 - Advanced Recovery - Visual Studio (GitHub Copilot)"
  Width="1200" Height="850" WindowStartupLocation="CenterScreen" Background="#F0F0F0">
 <Grid>
     <Grid.RowDefinitions>
@@ -824,12 +845,54 @@ $XAML = @"
 </Window>
 "@
 
-$W=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$XAML)))
+try {
+    Write-Host "Parsing XAML ($(($XAML -split '`n').Count) lines)..." -ForegroundColor Gray
+    [xml]$xmlDoc = $XAML
+    Write-Host "Creating XmlNodeReader..." -ForegroundColor Gray
+    $xmlReader = New-Object System.Xml.XmlNodeReader $xmlDoc
+    Write-Host "Loading with XamlReader..." -ForegroundColor Gray
+    $W = [Windows.Markup.XamlReader]::Load($xmlReader)
+    
+    if ($null -eq $W) {
+        throw "XamlReader.Load returned null"
+    }
+} catch {
+    $errMsg = $_
+    $posMsg = $_.InvocationInfo.PositionMessage
+    Write-Host "ERROR: Failed to load XAML" -ForegroundColor Red
+    Write-Host "Message: $errMsg" -ForegroundColor Red
+    Write-Host "Position: $posMsg" -ForegroundColor Red
+    if ($_.Exception.InnerException) {
+        Write-Host "Inner: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+    }
+    throw "Failed to parse XAML: $errMsg"
+}
 
-# Detect environment
+# ============================================================================
+# ENVIRONMENT DETECTION & VALIDATION
+# ============================================================================
+# Detect current Windows environment (FullOS, WinRE, or WinPE)
+# This determines feature availability and operating constraints
+
 $envType = "FullOS"
 if (Test-Path 'HKLM:\System\CurrentControlSet\Control\MiniNT') { $envType = "WinRE" }
 if ($env:SystemDrive -eq 'X:') { $envType = "WinRE" }
+
+if ($null -eq $W) {
+    throw "Window object is null - cannot continue"
+}
+
+# ============================================================================
+# EVENT HANDLER REGISTRATION - PROTECTED BY NULL CHECKS
+# ============================================================================
+# ALL event handler registration is wrapped in a null-check guard.
+# This prevents "null-valued expression" errors that occurred when the
+# function structure was incomplete. The guard ensures $W is valid before
+# attempting to call .FindName() on any UI element.
+#
+# IMPORTANT: Do not call $W.FindName() outside this guard block!
+if ($null -ne $W) {
+
 $W.FindName("EnvStatus").Text = "Environment: $envType"
 
 # Utility buttons
@@ -3079,9 +3142,6 @@ Need help? Check the other tabs for tool links and instructions!
     $wizardWindow.ShowDialog() | Out-Null
 })
 
-$W.ShowDialog() | Out-Null
-}
-
 # ============================================================================
 # REPAIR-INSTALL READINESS CHECK HANDLERS
 # ============================================================================
@@ -3176,5 +3236,12 @@ END OF REPORT
     }
 })
 
+} # End of null check if statement - all event handlers registered
+
+if ($null -eq $W) {
+    throw "Cannot show GUI: Window object is null"
+}
+
 $W.ShowDialog() | Out-Null
 
+} # End of Start-GUI function

@@ -1,9 +1,35 @@
 # MiracleBoot v7.2.0 - Repair-Install Readiness Implementation
 ## Change Log & Files Overview
 
+**Last Update:** January 7, 2026 - GUI Critical Fixes & Branding  
+**Current Version:** v7.2.0 (STABLE)  
 **Completion Date:** January 7, 2026  
 **Implementation Status:** ✅ COMPLETE  
 **Phase:** Foundation → Enhancement (v7.2-v8.0 Roadmap)
+
+---
+
+## Latest Changes (January 7, 2026)
+
+### 🐛 Critical Bug Fixes
+- **Fixed:** "You cannot call a method on a null-valued expression" error in WinRepairGUI.ps1
+- **Issue:** GUI function was missing proper closing brace, causing event handlers to execute during script sourcing
+- **Solution:** 
+  - Properly closed `Start-GUI` function structure
+  - Wrapped all event handler registration in null-check guards (`if ($null -ne $W) {...}`)
+  - Added defensive XAML error reporting
+  - Removed duplicate `$W.ShowDialog()` call
+- **Impact:** GUI now launches successfully on Windows 11 without null reference errors
+
+### 🎨 UI Enhancements
+- Updated window title to: **"Miracle Boot v7.2.0 - Advanced Recovery - Visual Studio (GitHub Copilot)"**
+- Provides clear identification of the application and development environment
+
+### 📦 Version Control System
+- Implemented `LAST_KNOWN_WORKING_<datetime>` backup system
+- Automatically maintains up to 5 previous working versions
+- Enables quick rollback if future changes introduce issues
+- Created `Backup-WorkingVersion.ps1` automation script
 
 ---
 

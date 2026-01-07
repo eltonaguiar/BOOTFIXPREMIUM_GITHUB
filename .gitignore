@@ -1,0 +1,27 @@
+# Backup folders - Local development only
+LAST_KNOWN_WORKING*/
+LAST_KNOWN_WORKING/
+
+# Test logs and temporary files
+TEST_LOGS/
+test_run.txt
+*.log
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+
+# IDE and editor files
+.vscode/
+.idea/
+*.code-workspace
+
+# System files
+Thumbs.db
+.DS_Store
+
+# Archive files (if any)
+*.zip
+*.tar.gz
+*.rar
