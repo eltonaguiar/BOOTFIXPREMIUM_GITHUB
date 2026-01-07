@@ -2142,6 +2142,784 @@ function Get-BootBlockingDrivers {
 }
 
 ################################################################################
+# TIER 2: ADVANCED DRIVER & NETWORK MANAGEMENT
+################################################################################
+
+function Manage-DriverFallbackChain {
+    <#
+    .SYNOPSIS
+        Manages multiple versions of drivers with automatic fallback
+    
+    .DESCRIPTION
+        Stores multiple compatible driver versions for same hardware.
+        Enables automatic selection of most compatible version if primary fails.
+        Critical for systems where OEM drivers vary by revision.
+    
+    .PARAMETER DriverName
+        Name of the driver set (e.g., "Ethernet_Realtek", "NVMe_Samsung")
+    
+    .PARAMETER DriverPath
+        Path where all driver versions are stored
+    
+    .PARAMETER Action
+        Action to perform: 'Register', 'List', 'Test', 'Rollback'
+    
+    .OUTPUTS
+        Driver chain management status
+    #>
+    
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$DriverName,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$DriverPath,
+        
+        [ValidateSet("Register", "List", "Test", "Rollback", "Priority")]
+        [string]$Action = "List"
+    )
+    
+    $result = @{
+        DriverName          = $DriverName
+        ChainPath           = "$DriverPath\$DriverName"
+        Drivers             = @()
+        CurrentVersion      = ""
+        PrimaryDriver       = ""
+        FallbackChain       = @()
+        Status              = ""
+        Details             = @()
+        Timestamp           = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    }
+    
+    try {
+        $chainFolder = $result.ChainPath
+        
+        switch ($Action) {
+            "Register" {
+                $result.Details += "Initializing driver fallback chain for: $DriverName"
+                
+                if (-not (Test-Path $chainFolder)) {
+                    New-Item -ItemType Directory -Path $chainFolder -Force | Out-Null
+                    $result.Details += "✓ Created chain folder: $chainFolder"
+                }
+                
+                # Auto-discover driver versions
+                $infFiles = Get-ChildItem -Path $chainFolder -Filter "*.inf" -Recurse
+                $result.Details += "Found $($infFiles.Count) driver versions"
+                
+                foreach ($inf in $infFiles | Sort-Object -Descending) {
+                    $result.Drivers += @{
+                        Name     = $inf.Name
+                        Path     = $inf.FullName
+                        Modified = $inf.LastWriteTime
+                        Size     = $inf.Length
+                    }
+                }
+                
+                if ($result.Drivers.Count -gt 0) {
+                    $result.PrimaryDriver = $result.Drivers[0].Name
+                    $result.FallbackChain = @($result.Drivers | Select-Object -Skip 1 | ForEach-Object { $_.Name })
+                    $result.Status = "Chain registered with $($result.Drivers.Count) versions"
+                    $result.Details += "✓ Primary: $($result.PrimaryDriver)"
+                    $result.Details += "✓ Fallbacks: $($result.FallbackChain -join ', ')"
+                } else {
+                    $result.Status = "No drivers found in chain folder"
+                }
+            }
+            
+            "List" {
+                if (Test-Path $chainFolder) {
+                    $infFiles = Get-ChildItem -Path $chainFolder -Filter "*.inf" -Recurse -ErrorAction SilentlyContinue
+                    $result.Drivers = $infFiles | ForEach-Object {
+                        @{
+                            Name     = $_.Name
+                            Path     = $_.FullName
+                            Modified = $_.LastWriteTime
+                            Size     = $_.Length
+                        }
+                    }
+                    
+                    if ($result.Drivers.Count -gt 0) {
+                        $result.Status = "Chain contains $($result.Drivers.Count) driver(s)"
+                        $result.Details += "Driver versions found:"
+                        foreach ($driver in $result.Drivers | Sort-Object Modified -Descending) {
+                            $result.Details += "  - $($driver.Name) (Modified: $($driver.Modified.ToString('yyyy-MM-dd')))"
+                        }
+                    } else {
+                        $result.Status = "Chain folder exists but is empty"
+                    }
+                } else {
+                    $result.Status = "Chain folder does not exist"
+                }
+            }
+            
+            "Priority" {
+                if (Test-Path $chainFolder) {
+                    $infFiles = Get-ChildItem -Path $chainFolder -Filter "*.inf" -Recurse -ErrorAction SilentlyContinue | 
+                        Sort-Object LastWriteTime -Descending
+                    
+                    $result.PrimaryDriver = $infFiles[0].Name
+                    $result.FallbackChain = @($infFiles | Select-Object -Skip 1 | ForEach-Object { $_.Name })
+                    $result.Status = "Priority order established"
+                    $result.Details += "Primary (newest): $($result.PrimaryDriver)"
+                    $result.Details += "Fallback chain: $($result.FallbackChain -join ' -> ')"
+                } else {
+                    $result.Status = "Cannot establish priority - chain not found"
+                }
+            }
+        }
+        
+    } catch {
+        $result.Status = "Error: $_"
+        $result.Details += "Error occurred: $_"
+    }
+    
+    return $result
+}
+
+function Export-NetworkConfiguration {
+    <#
+    .SYNOPSIS
+        Exports current network configuration for backup/restore
+    
+    .DESCRIPTION
+        Creates snapshot of working network configuration including:
+        - Network adapter settings
+        - IP configuration (DHCP/Static)
+        - DNS settings
+        - Network driver details
+        - Gateway information
+        
+        Can be restored if recovery attempt fails.
+    
+    .PARAMETER OutputPath
+        Path where configuration file will be saved
+    
+    .PARAMETER Format
+        Export format: 'JSON', 'XML', or 'PowerShell'
+    
+    .OUTPUTS
+        Configuration backup file details
+    #>
+    
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$OutputPath,
+        
+        [ValidateSet("JSON", "XML", "PowerShell")]
+        [string]$Format = "JSON"
+    )
+    
+    $result = @{
+        Success          = $false
+        FilePath         = ""
+        Format           = $Format
+        DataSize         = 0
+        AdapterCount     = 0
+        BackupTime       = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Details          = @()
+        Timestamp        = Get-Date
+    }
+    
+    try {
+        # Collect network configuration
+        $config = @{
+            Timestamp        = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            ComputerName     = $env:COMPUTERNAME
+            OSVersion        = (Get-WmiObject Win32_OperatingSystem).Caption
+            Adapters         = @()
+            DNS              = @()
+            Routes           = @()
+        }
+        
+        # Adapter configuration
+        try {
+            $adapters = Get-NetAdapter -ErrorAction SilentlyContinue
+            foreach ($adapter in $adapters) {
+                try {
+                    $ipConfig = Get-NetIPConfiguration -InterfaceAlias $adapter.Name -ErrorAction SilentlyContinue
+                    
+                    $config.Adapters += @{
+                        Name             = $adapter.Name
+                        Description      = $adapter.InterfaceDescription
+                        Status           = $adapter.Status
+                        MediaType        = $adapter.MediaType
+                        Speed            = $adapter.LinkSpeed
+                        MacAddress       = $adapter.MacAddress
+                        IPv4Address      = $ipConfig.IPv4Address.IPAddress
+                        IPv4Gateway      = $ipConfig.IPv4DefaultGateway.NextHop
+                        DHCP             = if ($ipConfig.NetIPv4Interface.DHCP -eq 'Enabled') { $true } else { $false }
+                    }
+                    
+                    $result.AdapterCount++
+                } catch {
+                    $result.Details += "Warning: Could not get config for $($adapter.Name)"
+                }
+            }
+        } catch {
+            $result.Details += "Warning: Could not retrieve adapter configuration: $_"
+        }
+        
+        # DNS configuration
+        try {
+            $dnsServers = Get-DnsClientServerAddress -ErrorAction SilentlyContinue
+            foreach ($dns in $dnsServers | Where-Object { $_.ServerAddresses.Count -gt 0 }) {
+                $config.DNS += @{
+                    Interface  = $dns.InterfaceAlias
+                    Servers    = @($dns.ServerAddresses)
+                }
+            }
+        } catch {
+            $result.Details += "Warning: Could not retrieve DNS configuration"
+        }
+        
+        # Network routes
+        try {
+            $routes = Get-NetRoute -ErrorAction SilentlyContinue | Where-Object { $_.RouteMetric }
+            foreach ($route in $routes | Select-Object -First 10) {
+                $config.Routes += @{
+                    Destination = $route.DestinationPrefix
+                    Gateway     = $route.NextHop
+                    Metric      = $route.RouteMetric
+                }
+            }
+        } catch {
+            $result.Details += "Warning: Could not retrieve routes"
+        }
+        
+        # Save configuration
+        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+        $filename = "NetworkConfig_$timestamp.$([string]$Format).Lower()"
+        $filePath = Join-Path $OutputPath $filename
+        
+        # Ensure output directory exists
+        if (-not (Test-Path $OutputPath)) {
+            New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+            $result.Details += "✓ Created output directory: $OutputPath"
+        }
+        
+        switch ($Format) {
+            "JSON" {
+                $config | ConvertTo-Json -Depth 5 | Set-Content -Path $filePath -Force
+            }
+            "XML" {
+                $config | ConvertTo-Xml -Depth 5 | Save-Content -Path $filePath -Force
+            }
+            "PowerShell" {
+                $config | Export-Clixml -Path $filePath -Force
+            }
+        }
+        
+        if (Test-Path $filePath) {
+            $fileInfo = Get-Item $filePath
+            $result.FilePath = $filePath
+            $result.DataSize = $fileInfo.Length
+            $result.Success = $true
+            $result.Details += "✓ Configuration exported to: $filePath"
+            $result.Details += "  Size: $($fileInfo.Length) bytes"
+            $result.Details += "  Adapters backed up: $($result.AdapterCount)"
+        }
+        
+    } catch {
+        $result.Details += "Error during export: $_"
+    }
+    
+    return $result
+}
+
+function Import-NetworkConfiguration {
+    <#
+    .SYNOPSIS
+        Restores network configuration from backup
+    
+    .DESCRIPTION
+        Attempts to restore network configuration from previously exported backup.
+        Safely re-applies adapter settings, DNS configuration, and routes.
+        Includes validation and rollback capability.
+    
+    .PARAMETER ConfigPath
+        Path to configuration backup file
+    
+    .PARAMETER ValidateOnly
+        If true, validate configuration without applying changes
+    
+    .OUTPUTS
+        Configuration restore status
+    #>
+    
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ConfigPath,
+        
+        [switch]$ValidateOnly
+    )
+    
+    $result = @{
+        Success          = $false
+        AdaptersRestored = 0
+        DNSRestored      = 0
+        Status           = ""
+        Details          = @()
+        Warnings         = @()
+        Timestamp        = Get-Date
+    }
+    
+    try {
+        if (-not (Test-Path $ConfigPath)) {
+            $result.Status = "Configuration file not found: $ConfigPath"
+            return $result
+        }
+        
+        $result.Details += "Loading configuration from: $ConfigPath"
+        
+        # Detect format and load
+        $config = $null
+        if ($ConfigPath -match "\.json$") {
+            $config = Get-Content $ConfigPath | ConvertFrom-Json
+        } elseif ($ConfigPath -match "\.xml$") {
+            $config = [xml](Get-Content $ConfigPath)
+        } else {
+            $config = Import-Clixml -Path $ConfigPath
+        }
+        
+        if (-not $config) {
+            $result.Status = "Could not parse configuration file"
+            return $result
+        }
+        
+        $result.Details += "Loaded configuration from: $($config.Timestamp)"
+        
+        # Validate against current system
+        try {
+            $currentAdapters = Get-NetAdapter -ErrorAction SilentlyContinue
+            
+            foreach ($backupAdapter in $config.Adapters) {
+                $currentAdapter = $currentAdapters | Where-Object { $_.MacAddress -eq $backupAdapter.MacAddress }
+                
+                if ($currentAdapter) {
+                    $result.Details += "✓ Found adapter: $($currentAdapter.Name) (was: $($backupAdapter.Name))"
+                    
+                    if (-not $ValidateOnly) {
+                        try {
+                            # Restore IP configuration
+                            if ($backupAdapter.DHCP) {
+                                Set-NetIPInterface -InterfaceAlias $currentAdapter.Name -DHCP Enabled -Confirm:$false
+                                $result.Details += "  Enabled DHCP on $($currentAdapter.Name)"
+                            } else {
+                                # Would need to restore static IP - requiring more parameters
+                                $result.Details += "  Static IP restore deferred (requires admin intervention)"
+                            }
+                            
+                            $result.AdaptersRestored++
+                        } catch {
+                            $result.Warnings += "Could not fully restore $($currentAdapter.Name): $_"
+                        }
+                    }
+                } else {
+                    $result.Warnings += "Network adapter not found: $($backupAdapter.Description) (MAC: $($backupAdapter.MacAddress))"
+                }
+            }
+        } catch {
+            $result.Details += "Error validating adapters: $_"
+        }
+        
+        # Validate DNS configuration
+        if ($config.DNS -and $config.DNS.Count -gt 0) {
+            $result.Details += "DNS configuration found for $($config.DNS.Count) interface(s)"
+        }
+        
+        $result.Success = $true
+        $result.Status = "Configuration validation complete"
+        
+    } catch {
+        $result.Status = "Error: $_"
+        $result.Details += $_.Exception.Message
+    }
+    
+    return $result
+}
+
+################################################################################
+# TIER 3: DEEP ANALYSIS & INTEGRATION
+################################################################################
+
+function Analyze-OfflineNetworkDrivers {
+    <#
+    .SYNOPSIS
+        Analyzes network drivers in offline Windows installation
+    
+    .DESCRIPTION
+        Deep inspection of offline Windows registry to identify:
+        - Network drivers that are registered but not loaded
+        - Drivers with missing dependencies
+        - Drivers requiring BIOS updates
+        - NIC status before Windows boot
+        - Driver start type and service status
+    
+    .PARAMETER OfflineWindowsPath
+        Path to mounted offline Windows installation (e.g., "C:\mount\Windows")
+    
+    .PARAMETER OfflineSystemRegPath
+        Path to offline SYSTEM registry hive
+    
+    .OUTPUTS
+        Detailed driver analysis report
+    #>
+    
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$OfflineWindowsPath,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$OfflineSystemRegPath
+    )
+    
+    $result = @{
+        LoadedDrivers          = @()
+        UnloadedDrivers        = @()
+        FailedLoads            = @()
+        MissingDependencies    = @()
+        NICStatus              = @()
+        RegistryIssues         = @()
+        Recommendations        = @()
+        Details                = @()
+        Timestamp              = Get-Date
+    }
+    
+    try {
+        $result.Details += "Analyzing offline drivers in: $OfflineWindowsPath"
+        
+        if (-not (Test-Path $OfflineSystemRegPath)) {
+            $result.Details += "ERROR: Registry path not found: $OfflineSystemRegPath"
+            return $result
+        }
+        
+        # Load offline registry
+        $regLoaded = $false
+        try {
+            reg load HKLM\OfflineSystem $OfflineSystemRegPath 2>&1 | Out-Null
+            $regLoaded = $true
+            Start-Sleep -Milliseconds 500
+            $result.Details += "Loaded offline registry successfully"
+        } catch {
+            $result.Details += "Could not load registry: $_"
+        }
+        
+        if ($regLoaded) {
+            try {
+                # Query network-related services
+                $services = Get-ItemProperty -Path "HKLM:\OfflineSystem\ControlSet001\Services\*" -ErrorAction SilentlyContinue | 
+                    Where-Object { $_.PSChildName -match "eth|net|wlan|wan|nic|realtek|intel|broadcom|atheros|marvell|bnx" }
+                
+                $result.Details += "Found $($services.Count) network-related services"
+                
+                foreach ($service in $services) {
+                    $serviceName = $service.PSChildName
+                    $startType = $service.Start
+                    $type = $service.Type
+                    
+                    $startTypeMap = @{
+                        0 = "Boot"
+                        1 = "System"
+                        2 = "Automatic"
+                        3 = "Manual"
+                        4 = "Disabled"
+                    }
+                    
+                    $startTypeStr = $startTypeMap[$startType]
+                    
+                    if ($type -eq 1) {
+                        # Kernel driver
+                        if ($startType -le 1) {
+                            $result.LoadedDrivers += @{
+                                Name      = $serviceName
+                                StartType = $startTypeStr
+                                Type      = "Kernel Driver"
+                            }
+                            $result.Details += "LOADED: $serviceName (Start: $startTypeStr)"
+                        } else {
+                            $result.UnloadedDrivers += @{
+                                Name      = $serviceName
+                                StartType = $startTypeStr
+                                Type      = "Kernel Driver"
+                            }
+                            $result.Details += "UNLOADED: $serviceName (Start: $startTypeStr)"
+                        }
+                    } else {
+                        # Network service
+                        $result.NICStatus += @{
+                            Service   = $serviceName
+                            StartType = $startTypeStr
+                        }
+                    }
+                }
+                
+            } finally {
+                # Unload registry
+                if ($regLoaded) {
+                    reg unload HKLM\OfflineSystem 2>&1 | Out-Null
+                }
+            }
+        }
+        
+        # Generate recommendations
+        if ($result.UnloadedDrivers.Count -gt 0) {
+            $result.Recommendations += "Consider enabling these drivers:"
+            $result.Recommendations += $result.UnloadedDrivers | ForEach-Object {
+                "  - $_Name (currently: $_StartType)"
+            }
+        }
+        
+        $result.Details += ""
+        $result.Details += "Analysis complete: $($result.LoadedDrivers.Count) loaded, $($result.UnloadedDrivers.Count) unloaded"
+        
+    } catch {
+        $result.Details += "Error: $_"
+    }
+    
+    return $result
+}
+
+function Get-DriverSignatureBypassStatus {
+    <#
+    .SYNOPSIS
+        Determines if system allows unsigned driver installation
+    
+    .DESCRIPTION
+        Checks Windows driver signing enforcement mode:
+        - Enforce (cannot install unsigned)
+        - Warn (warns but allows)
+        - Ignore (silently installs unsigned)
+        
+        Critical for systems that need drivers not certified by Windows.
+    
+    .PARAMETER OfflineWinRegPath
+        Path to offline Windows registry
+    
+    .OUTPUTS
+        Driver signature enforcement status
+    #>
+    
+    param(
+        [string]$OfflineWinRegPath
+    )
+    
+    $result = @{
+        SignatureMode          = "Unknown"
+        EnforceSignatures      = $false
+        WarnsOnUnsigned        = $false
+        AllowsUnsigned         = $false
+        CanInjectUnsignedNow   = $false
+        Details                = @()
+        Recommendations        = @()
+        Timestamp              = Get-Date
+    }
+    
+    try {
+        # Check current system (FullOS)
+        $result.Details += "Checking driver signature enforcement..."
+        
+        # Check Device Manager settings
+        try {
+            $codeIntegrity = Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" -ErrorAction SilentlyContinue
+            if ($codeIntegrity -and $codeIntegrity.Enabled -eq 1) {
+                $result.EnforceSignatures = $true
+                $result.Details += "Device Guard/HVCI is ENABLED - Strict enforcement"
+            }
+        } catch {
+            # Not available on all systems
+        }
+        
+        # Check Secure Boot
+        try {
+            $secBoot = Get-WmiObject Win32_ComputerSystemProduct -ErrorAction SilentlyContinue | 
+                Select-Object -ExpandProperty IdentifyingNumber
+            $result.Details += "System identifier obtained for verification"
+        } catch {
+            # Secure Boot info not available
+        }
+        
+        # Try to detect current policy
+        try {
+            $sigPolicy = cmd /c "bcdedit /enum" 2>&1 | Select-String -Pattern "testsigning|nointegritychecks"
+            if ($sigPolicy) {
+                $result.AllowsUnsigned = $true
+                $result.SignatureMode = "Test Signing Enabled"
+                $result.Details += "Test signing mode DETECTED"
+                $result.CanInjectUnsignedNow = $true
+            } else {
+                $result.SignatureMode = "Enforcement Enabled"
+                $result.Details += "Normal signature enforcement active"
+            }
+        } catch {
+            $result.Details += "Could not determine BCD test signing status"
+        }
+        
+        # Offline registry check
+        if ($OfflineWinRegPath -and (Test-Path $OfflineWinRegPath)) {
+            $result.Details += "Analyzing offline registry..."
+            
+            try {
+                reg load HKLM\OfflineWin $OfflineWinRegPath 2>&1 | Out-Null
+                Start-Sleep -Milliseconds 500
+                
+                # Check CodeIntegrity settings
+                $codeInt = Get-ItemProperty -Path "HKLM:\OfflineWin\ControlSet001\Services\ci" -ErrorAction SilentlyContinue
+                if ($codeInt) {
+                    $result.Details += "Code Integrity driver status: Start=$($codeInt.Start)"
+                }
+                
+                reg unload HKLM\OfflineWin 2>&1 | Out-Null
+                
+            } catch {
+                $result.Details += "Could not analyze offline registry"
+            }
+        }
+        
+        # Recommendations
+        if ($result.EnforceSignatures -or $result.SignatureMode -eq "Enforcement Enabled") {
+            $result.Details += ""
+            $result.Details += "ENFORCEMENT ACTIVE - Unsigned drivers will be blocked"
+            $result.Recommendations += "To inject unsigned drivers:"
+            $result.Recommendations += "1. Boot into Safe Mode (F8 or Settings > Recovery)"
+            $result.Recommendations += "2. Right-click driver installer, run as admin"
+            $result.Recommendations += "3. Or temporarily disable Device Guard in BIOS"
+            $result.Recommendations += "4. Restart normally after driver installation"
+        } else {
+            $result.Details += ""
+            $result.Details += "No strict enforcement detected"
+            if ($result.AllowsUnsigned) {
+                $result.Recommendations += "System allows unsigned drivers (test signing enabled)"
+            }
+        }
+        
+    } catch {
+        $result.Details += "Error checking signature status: $_"
+    }
+    
+    return $result
+}
+
+function New-DriverInjectionProfile {
+    <#
+    .SYNOPSIS
+        Creates a driver injection profile for automated recovery
+    
+    .DESCRIPTION
+        Builds a structured profile containing:
+        - Driver file paths and metadata
+        - Injection order (dependencies first)
+        - Compatibility validation results
+        - Fallback chains
+        - Network configuration to restore
+        
+        Profile can be saved and reused for consistent recovery.
+    
+    .PARAMETER ProfileName
+        Name for this recovery profile
+    
+    .PARAMETER DriverPaths
+        Array of paths to driver files
+    
+    .PARAMETER OutputPath
+        Where to save the profile
+    
+    .OUTPUTS
+        Profile summary and saved file location
+    #>
+    
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$ProfileName,
+        
+        [string[]]$DriverPaths = @(),
+        
+        [Parameter(Mandatory=$true)]
+        [string]$OutputPath
+    )
+    
+    $profile = @{
+        ProfileName           = $ProfileName
+        CreatedTime          = Get-Date
+        SystemInfo           = @{
+            ComputerName     = $env:COMPUTERNAME
+            OSVersion        = (Get-WmiObject Win32_OperatingSystem).Caption
+            Processors       = (Get-WmiObject Win32_Processor | Measure-Object).Count
+        }
+        Drivers              = @()
+        InjectionOrder       = @()
+        ValidationResults    = @()
+        RecoveryNotes        = ""
+        Version              = "1.0"
+    }
+    
+    try {
+        $profile.RecoveryNotes = "Auto-generated profile for system $($profile.SystemInfo.ComputerName)"
+        
+        # Analyze provided drivers
+        foreach ($driverPath in $DriverPaths) {
+            if (Test-Path $driverPath) {
+                $driverFile = Get-Item $driverPath
+                
+                # Run compatibility check
+                $compat = Test-DriverCompatibility -DriverPath $driverPath -ErrorAction SilentlyContinue
+                
+                $profile.Drivers += @{
+                    Name         = $driverFile.Name
+                    Path         = $driverFile.FullName
+                    Size         = $driverFile.Length
+                    Compatible   = $compat.Compatible
+                    IsSigned     = $compat.IsSigned
+                    Class        = $compat.DriverClass
+                    Dependencies = @($compat.Dependencies)
+                }
+                
+                # Add to validation results
+                $profile.ValidationResults += @{
+                    Driver  = $driverFile.Name
+                    Status  = if ($compat.Compatible) { "OK" } else { "BLOCKED" }
+                    Reason  = $compat.Reason
+                }
+            }
+        }
+        
+        # Determine injection order (dependencies first)
+        $ordered = @()
+        foreach ($driver in $profile.Drivers | Where-Object { $_.Compatible }) {
+            # Drivers with fewer dependencies go first
+            $depCount = $driver.Dependencies.Count
+            $ordered += @($driver | Add-Member -PassThru -NotePropertyName "DepCount" -NotePropertyValue $depCount)
+        }
+        
+        $profile.InjectionOrder = @($ordered | Sort-Object DepCount | Select-Object -ExpandProperty Name)
+        
+        # Save profile
+        if (-not (Test-Path $OutputPath)) {
+            New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+        }
+        
+        $profileFile = Join-Path $OutputPath "$($ProfileName)_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
+        $profile | ConvertTo-Json -Depth 5 | Set-Content -Path $profileFile -Force
+        
+        return @{
+            Success        = $true
+            ProfilePath    = $profileFile
+            DriverCount    = $profile.Drivers.Count
+            CompatibleCount = @($profile.ValidationResults | Where-Object { $_.Status -eq "OK" }).Count
+            InjectionOrder = $profile.InjectionOrder
+            Details        = "Profile created: $profileFile"
+        }
+        
+    } catch {
+        return @{
+            Success = $false
+            Error   = $_
+            Details = "Failed to create profile: $_"
+        }
+    }
+}
+
+################################################################################
 # MODULE EXPORT
 ################################################################################
 

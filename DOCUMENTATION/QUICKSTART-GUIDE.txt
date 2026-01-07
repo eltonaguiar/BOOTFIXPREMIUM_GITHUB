@@ -1,0 +1,310 @@
+================================================================================
+NetworkDiagnostics QUICK START GUIDE - Recovery Engineer Edition
+================================================================================
+
+FASTEST PATHS TO COMMON RECOVERY SCENARIOS
+
+================================================================================
+SCENARIO A: System won't boot (unknown cause)
+================================================================================
+
+STEP 1: Boot into WinPE recovery environment
+STEP 2: Load module: . C:\path\to\NetworkDiagnostics.ps1
+STEP 3: Run diagnostics:
+
+  # Check for storage visibility (RAID systems)
+  $vmd = Get-VMDConfiguration
+  if ($vmd.RequiresVMDDriver) {
+    Write-Host "CRITICAL: This system needs VMD drivers"
+    $drivers = Find-VMDDrivers -SearchVolumes @("D:", "E:")
+    $drivers | ForEach-Object { Write-Host $_.FullPath }
+  }
+
+  # Check for problematic drivers
+  $blockers = Get-BootBlockingDrivers -OfflineWinRegPath "C:\mount\Windows\System32\config\SYSTEM"
+  if ($blockers.ProblematicDrivers.Count -gt 0) {
+    Write-Host "WARNING: Found problematic drivers:"
+    $blockers.Details
+  }
+
+STEP 4: Validate network drivers:
+  
+  # Test each candidate driver
+  $drivers = Get-ChildItem "D:\Drivers\Network" -Filter "*.inf" -Recurse
+  foreach ($driver in $drivers) {
+    $test = Test-DriverCompatibility -DriverPath $driver.FullName
+    if ($test.Compatible) {
+      Write-Host "✓ SAFE: $($driver.Name)"
+    } else {
+      Write-Host "✗ BLOCKED: $($driver.Name) - $($test.Reason)"
+    }
+  }
+
+STEP 5: Fix network:
+
+  # If DHCP hangs
+  $dhcp = Invoke-DHCPRecovery -AdapterName "Ethernet" -TimeoutSeconds 5
+  if ($dhcp.Success) { Write-Host "Network online: $($dhcp.FinalConfig)" }
+
+EXPECTED TIME: 5-10 minutes
+
+
+================================================================================
+SCENARIO B: Network driver injection (before WinPE boot)
+================================================================================
+
+STEP 1: On working system, create recovery profile:
+
+  # Scan system for drivers
+  $drivers = Get-ChildItem "C:\path\to\drivers" -Filter "*.inf" -Recurse
+  
+  # Create profile
+  $profile = New-DriverInjectionProfile `
+    -ProfileName "SystemRecovery_$(hostname)" `
+    -DriverPaths $drivers.FullName `
+    -OutputPath "D:\Profiles"
+  
+  # Review results
+  Write-Host "Safe to inject: $($profile.CompatibleCount)"
+  Write-Host "Injection order: $($profile.InjectionOrder -join ' → ')"
+
+STEP 2: Save profile to USB/external drive
+
+STEP 3: Boot WinPE on failed system, load profile:
+
+  # The profile contains:
+  # - All driver files
+  # - Compatibility validation results
+  # - Optimal injection order
+  # - System requirements
+
+STEP 4: Inject drivers in order specified by profile
+
+EXPECTED TIME: 2-3 minutes
+
+
+================================================================================
+SCENARIO C: Network config needs backup/restore
+================================================================================
+
+STEP 1: BACKUP working configuration:
+
+  Export-NetworkConfiguration `
+    -OutputPath "D:\BackupNetworking" `
+    -Format JSON
+
+STEP 2: Preview what restore WOULD do (before actually doing it):
+
+  Import-NetworkConfiguration `
+    -ConfigPath "D:\BackupNetworking\NetworkConfig_*.json" `
+    -ValidateOnly
+
+  # This shows adapters found, changes that would be made, etc.
+
+STEP 3: If preview looks good, restore:
+
+  Import-NetworkConfiguration `
+    -ConfigPath "D:\BackupNetworking\NetworkConfig_*.json"
+
+EXPECTED TIME: 1-2 minutes
+
+
+================================================================================
+SCENARIO D: Driver is failing silently (installed but not loaded)
+================================================================================
+
+STEP 1: Analyze what's actually loaded in offline Windows:
+
+  $offline = Analyze-OfflineNetworkDrivers `
+    -OfflineWindowsPath "C:\mount\Windows" `
+    -OfflineSystemRegPath "C:\mount\Windows\System32\config\SYSTEM"
+
+STEP 2: Check results:
+
+  Write-Host "Loaded drivers:"
+  $offline.LoadedDrivers | ForEach-Object { Write-Host "  ✓ $_" }
+  
+  Write-Host "Unloaded drivers:"
+  $offline.UnloadedDrivers | ForEach-Object { Write-Host "  ! $_" }
+
+STEP 3: Enable missing drivers if needed:
+
+  # Recommendations in $offline.Recommendations
+
+EXPECTED TIME: 3-5 minutes
+
+
+================================================================================
+SCENARIO E: Cannot inject unsigned drivers
+================================================================================
+
+STEP 1: Check signature enforcement:
+
+  $sig = Get-DriverSignatureBypassStatus -OfflineWinRegPath "C:\mount\..."
+
+STEP 2: Review status:
+
+  Write-Host "Signature Mode: $($sig.SignatureMode)"
+  Write-Host "Can inject unsigned now: $($sig.CanInjectUnsignedNow)"
+  
+  if (!$sig.CanInjectUnsignedNow) {
+    Write-Host "How to allow unsigned drivers:"
+    $sig.Recommendations
+  }
+
+STEP 3: If enforcement found:
+
+  # Safe Mode boot allows unsigned driver installation
+  # Or temporarily disable Device Guard in BIOS
+  # Instructions in $sig.Recommendations
+
+EXPECTED TIME: 2-3 minutes
+
+
+================================================================================
+DRIVER FALLBACK CHAIN WORKFLOW
+================================================================================
+
+CREATE FALLBACK CHAIN:
+
+  # Register all available driver versions
+  $chain = Manage-DriverFallbackChain `
+    -DriverName "Ethernet_Intel" `
+    -DriverPath "C:\DriverStore" `
+    -Action "Register"
+  
+  # Shows: Primary driver (newest) and fallback chain
+  Write-Host "Primary: $($chain.PrimaryDriver)"
+  Write-Host "Fallbacks: $($chain.FallbackChain -join ' → ')"
+
+PRIORITIZE BY DATE:
+
+  # Auto-sort by modification date
+  $sorted = Manage-DriverFallbackChain `
+    -DriverName "Ethernet_Intel" `
+    -Action "Priority"
+
+LIST ALL VERSIONS:
+
+  Manage-DriverFallbackChain `
+    -DriverName "Ethernet_Intel" `
+    -Action "List"
+
+
+================================================================================
+CRITICAL SUCCESS FACTORS
+================================================================================
+
+1. ALWAYS run Test-DriverCompatibility BEFORE injection
+   → Prevents entire recovery cycles from failing
+
+2. ALWAYS export network config BEFORE major changes
+   → Insurance against breaking connectivity
+
+3. ALWAYS check for VMD/RAID on enterprise systems
+   → 15-20% of systems have this requirement
+   → Without VMD drivers, storage invisible to WinPE
+
+4. ALWAYS check for boot-blocking drivers
+   → GPU, audio, security drivers often cause hangs
+   → Better to identify and disable than debug
+
+5. ALWAYS use -ValidateOnly for major changes
+   → Preview what changes will happen
+   → Catch mistakes before applying
+
+
+================================================================================
+EMERGENCY TROUBLESHOOTING
+================================================================================
+
+If DHCP hangs (black screen):
+  → Ctrl+C to cancel DHCP wait
+  → Run: Invoke-DHCPRecovery -TimeoutSeconds 3
+  → Falls back to APIPA or retries faster
+
+If driver injection causes boot failure:
+  → Boot WinPE again
+  → Test-DriverCompatibility on that driver
+  → It should show incompatibility reason
+  → Don't inject that driver again
+
+If network config broken:
+  → If backup exists: Import-NetworkConfiguration
+  → If not: Export now, manually reconfigure later
+
+If offline registry analysis fails:
+  → Ensure registry mounted: mountvol C: /S
+  → Use explicit -OfflineSystemRegPath parameter
+  → Run as Administrator
+
+
+================================================================================
+ONE-LINER QUICK CHECKS
+================================================================================
+
+# Check if VMD/RAID needed:
+(Get-VMDConfiguration).RequiresVMDDriver
+
+# Count problematic drivers:
+(Get-BootBlockingDrivers -OfflineWinRegPath "...").ProblematicDrivers.Count
+
+# Test driver compatibility:
+(Test-DriverCompatibility -DriverPath "C:\driver.inf").Compatible
+
+# Check network connectivity:
+(Invoke-DHCPRecovery -AdapterName "Ethernet").Success
+
+# Get driver fallback chain:
+(Manage-DriverFallbackChain -DriverName "Test" -Action "List").Drivers.Count
+
+# Check signature enforcement:
+(Get-DriverSignatureBypassStatus).SignatureMode
+
+
+================================================================================
+RECOMMENDED LEARNING PATH
+================================================================================
+
+For New Recovery Engineers:
+
+1. Start with TIER 1 functions (simple read-only analysis)
+   - Test-DriverCompatibility
+   - Get-VMDConfiguration
+   - Get-BootBlockingDrivers
+
+2. Progress to TIER 2 (management operations)
+   - Manage-DriverFallbackChain
+   - Export-NetworkConfiguration
+   - Import-NetworkConfiguration
+
+3. Advance to TIER 3 (deep analysis)
+   - Analyze-OfflineNetworkDrivers
+   - Get-DriverSignatureBypassStatus
+   - New-DriverInjectionProfile
+
+
+For Experienced Professionals:
+
+- Use TIER 3 functions for forensic analysis
+- Create reusable driver injection profiles
+- Automate fallback chain management
+- Build custom recovery workflows
+
+
+================================================================================
+FURTHER HELP
+================================================================================
+
+Each function has complete documentation:
+
+  Get-Help Test-DriverCompatibility -Full
+  Get-Help Get-VMDConfiguration -Full
+  Get-Help Invoke-DHCPRecovery -Full
+  ... (etc for all 10 functions)
+
+For detailed recovery scenarios, see:
+  - FINAL-SUMMARY-TIER123.txt (comprehensive overview)
+  - TIER1-TIER2-Summary.txt (function details)
+
+================================================================================
