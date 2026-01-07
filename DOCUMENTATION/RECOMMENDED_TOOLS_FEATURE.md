@@ -24,6 +24,14 @@ A new "Recommended Tools" tab has been added to the graphical interface with thr
   - Medical-grade recovery environment description
   - Usage recommendations
 
+- **Snappy Driver Installer** ⭐ NEW
+  - Free, portable driver detection and updater
+  - Scans system for missing drivers
+  - Downloads drivers automatically
+  - Perfect for offline driver package creation
+  - Integrates with MiracleBoot DISM injection workflow
+  - Direct link to website: https://www.snappy-driver-installer.org/
+
 - **Additional Tools**
   - SystemRescue (Linux-based)
   - AOMEI PE Builder

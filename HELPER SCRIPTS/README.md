@@ -26,7 +26,8 @@ This folder contains 20+ PowerShell scripts that provide the core functionality 
 |--------|---------|-------------|
 | **MiracleBoot-BootRecovery.ps1** | Boot configuration and BCD editing | GUI + TUI |
 | **MiracleBoot-Diagnostics.ps1** | System diagnostics and log analysis | GUI + TUI |
-| **MiracleBoot-DriverInjection.ps1** | Offline driver injection for WinPE | GUI + TUI |
+| **MiracleBoot-DriverInjection.ps1** | Driver detection and risk assessment | GUI + TUI |
+| **MiracleBoot-DriverInjectionDISM.ps1** | **NEW** DISM-based driver injection to OS/WIM | Recovery |
 | **MiracleBoot-NetworkRepair.ps1** | Network connectivity fixes | GUI + TUI |
 | **MiracleBoot-Automation.ps1** | Automated repair workflows | GUI + TUI |
 
@@ -131,9 +132,33 @@ Get-BootConfiguration
 Set-BootConfiguration -EntryName "Windows 10" -IsDefault $true
 ```
 
-**Inject Drivers:**
+**Inject Drivers (Detection & Risk Assessment):**
 ```powershell
-Invoke-DriverInjection -OfflineWindowsPath "X:\Windows" -DriverPath "E:\Drivers"
+Get-NetworkDriverInfo
+Get-StorageDriverInfo
+Get-DriverComprehensiveReport
+```
+
+**Inject Drivers (DISM - OS & WIM):**
+```powershell
+# Inject to offline Windows (C:\)
+Invoke-DISMOfflineOSDriverInjection -DriverPath "E:\Drivers" -Recursive
+
+# Inject to WIM boot image
+Invoke-DISMWIMDriverInjection -WIMPath "E:\boot.wim" -ImageIndex 1 -DriverPath "E:\Drivers"
+
+# Batch injection to multiple targets
+$targets = @(
+    @{ Type = 'OS'; Path = 'C:\' },
+    @{ Type = 'WIM'; Path = 'E:\boot.wim'; Index = 1 }
+)
+Invoke-BatchDriverInjection -DriverPath "E:\Drivers" -Targets $targets
+
+# Launch Snappy Driver Installer for offline package creation
+Invoke-SnappyDriverInstaller -Mode Download
+
+# Validate driver compatibility before injection
+Test-DriverCompatibility -DriverPath "E:\Drivers"
 ```
 
 **Network Diagnostics:**

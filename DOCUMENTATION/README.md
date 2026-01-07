@@ -183,7 +183,11 @@ MiracleBoot adapts to your environment with **two interfaces**:
 - **Hardware ID Forensics** - Match missing drivers to INF files (Intel VMD, NVMe, RAID)
 - **Driver Export** - Export in-use drivers to file for offline installation
 - **Driver Extraction** - Extract actual driver files from DriverStore
-- **Offline Driver Injection** - Inject drivers into offline Windows using DISM
+- **DISM Offline OS Injection** - Inject drivers to offline Windows (C:\) using DISM
+- **DISM WIM Injection** - Inject drivers to boot.wim and install.wim recovery images
+- **Batch Driver Injection** - Multi-target injection with progress tracking and rollback
+- **Snappy Driver Installer Integration** - Auto-detect and download missing drivers
+- **Driver Compatibility Validation** - Pre-injection verification and checkpoints
 - **Live Driver Loading** - Load harvested drivers in WinPE/WinRE
 
 **Supported Driver Types:**
@@ -192,6 +196,19 @@ MiracleBoot adapts to your environment with **two interfaces**:
 - NVMe storage controllers
 - AMD RAID
 - USB 3.x controllers
+- Network adapters (NIC)
+- Chipset drivers
+
+**Driver Injection Environments:**
+- ✅ Offline Windows OS (from WinPE/WinRE)
+- ✅ WIM boot images (boot.wim for PE, install.wim for setup)
+- ✅ Recovery environments (WinRE)
+- ✅ Windows installation media
+
+**Critical Fixes:**
+- INACCESSIBLE_BOOT_DEVICE (storage driver missing)
+- No network in recovery (NIC drivers)
+- NVMe drive not detected (requires chipset driver pre-injection)
 
 ---
 
