@@ -1,0 +1,17 @@
+# BOOTFIX PREMIUM Requirements
+# Python 3.6+
+
+# No external dependencies required for core functionality
+# The tool uses only Python standard library modules:
+# - os
+# - sys
+# - platform
+# - subprocess
+# - argparse
+# - json
+# - datetime
+# - pathlib
+
+# Optional dependencies for enhanced features (future):
+# psutil>=5.8.0  # For advanced disk information
+# colorama>=0.4.4  # For colored terminal output
