@@ -15,6 +15,12 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+# Windows-specific imports
+try:
+    import ctypes
+except ImportError:
+    ctypes = None
+
 
 class BootFixPremium:
     """Main class for boot repair operations"""
@@ -34,8 +40,9 @@ class BootFixPremium:
     def check_privileges(self):
         """Check if running with admin/root privileges"""
         if self.os_type == "Windows":
+            if ctypes is None:
+                return False
             try:
-                import ctypes
                 return ctypes.windll.shell32.IsUserAnAdmin() != 0
             except:
                 return False

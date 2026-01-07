@@ -73,8 +73,6 @@ sudo python3 bootfix.py --backup
 ## 🔧 Advanced Options
 
 - `--target-disk` - Specify target disk (e.g., /dev/sda, C:)
-- `--boot-mode` - Force UEFI or Legacy mode
-- `--skip-backup` - Skip backup creation (not recommended)
 - `--verbose` - Enable detailed logging
 - `--dry-run` - Show what would be done without making changes
 
@@ -118,12 +116,12 @@ sudo python3 bootfix.py --repair-grub --target-disk /dev/sda
 
 ### "Missing Operating System"
 ```bash
-sudo python3 bootfix.py --repair-mbr --verify
+sudo python3 bootfix.py --repair-mbr
 ```
 
 ### Windows Won't Boot
 ```bash
-python bootfix.py --repair-windows-boot --fix-bcd
+python bootfix.py --repair-windows-boot
 ```
 
 ## 🔐 Security Notice
