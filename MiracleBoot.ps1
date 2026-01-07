@@ -1,7 +1,29 @@
-# Set execution policy for this session (needed in WinRE/WinPE)
+﻿# Set execution policy for this session (needed in WinRE/WinPE)
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
 
 $ErrorActionPreference = 'Stop'
+
+# Check for administrator privileges - many boot repair operations require elevation
+$currentUser = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+$isAdmin = $currentUser.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+    Write-Host ""
+    Write-Host "═════════════════════════════════════════════════════════════" -ForegroundColor Red
+    Write-Host "ERROR: Administrator Privileges Required" -ForegroundColor Red
+    Write-Host "═════════════════════════════════════════════════════════════" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "This script requires Administrator privileges to access boot configuration data." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Please:"
+    Write-Host "  1. Close this window"
+    Write-Host "  2. Right-click on this script"
+    Write-Host "  3. Select 'Run with PowerShell as Administrator'"
+    Write-Host ""
+    Write-Host "═════════════════════════════════════════════════════════════" -ForegroundColor Red
+    Write-Host ""
+    exit 1
+}
 
 function Get-EnvironmentType {
     <#

@@ -1,3 +1,15 @@
+﻿function Test-AdminPrivileges {
+    <#
+    .SYNOPSIS
+    Tests if the current PowerShell session is running with administrator privileges.
+    
+    .OUTPUTS
+    Boolean - $true if running as administrator, $false otherwise
+    #>
+    $currentUser = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+    return $currentUser.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 function Get-WindowsVolumes {
     Get-Volume | Where-Object FileSystem |
         Sort-Object DriveLetter |
@@ -11,12 +23,30 @@ function Get-BCDEntries {
 
 function Get-BCDEntriesParsed {
     # Production-grade BCD parser - captures ALL properties
-    $raw = bcdedit /enum /v
+    # Check elevation first - bcdedit requires admin
+    if (-not (Test-AdminPrivileges)) {
+        throw "Administrator privileges required to access BCD. Please run as Administrator."
+    }
+    
+    try {
+        $raw = bcdedit /enum /v 2>&1
+        
+        # Check for access denied error
+        if ($raw -match "Access is denied|could not be opened") {
+            throw "The boot configuration data store could not be opened. Access is denied. Administrator privileges are required."
+        }
+    } catch {
+        throw "Failed to enumerate BCD entries: $_"
+    }
+    
     $entries = @()
     $currentEntry = $null
     $entryType = $null
     
-    foreach ($line in $raw) {
+    # Split output into lines properly
+    $lines = @($raw -split "`n")
+    
+    foreach ($line in $lines) {
         $line = $line.Trim()
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         
@@ -2255,6 +2285,321 @@ function Get-OSInfo {
     }
     
     return $osInfo
+}
+
+function Get-WindowsHealthSummary {
+    <#
+    .SYNOPSIS
+    Generates a comprehensive Windows health summary including BCD validity, EFI partition status,
+    boot stack order analysis, and eligibility for Windows Update in-place repair upgrade.
+    
+    .PARAMETER TargetDrive
+    The drive letter to analyze (defaults to C:)
+    
+    .OUTPUTS
+    PSCustomObject with comprehensive health status
+    #>
+    param($TargetDrive = "C")
+    
+    # Normalize drive letter
+    if ($TargetDrive -match '^([A-Z]):?$') {
+        $TargetDrive = $matches[1]
+    }
+    
+    # Initialize summary object
+    $summary = [PSCustomObject]@{
+        Timestamp = Get-Date
+        TargetDrive = "$TargetDrive`:"
+        IsCurrentOS = ($env:SystemDrive.TrimEnd(':') -eq $TargetDrive)
+        Status = "Analyzing..."
+        OverallHealth = "Unknown"
+        Components = @{}
+        Warnings = @()
+        Errors = @()
+        Recommendations = @()
+        BootStackOrder = @()
+        UpdateEligibility = @{
+            Eligible = $false
+            Reason = ""
+            Details = @()
+        }
+    }
+    
+    # ========== 1. BCD VALIDITY CHECK ==========
+    $bcdHealth = @{
+        Status = "Unknown"
+        IsValid = $false
+        EntryCount = 0
+        DefaultEntry = ""
+        Issues = @()
+        Details = ""
+    }
+    
+    try {
+        $bcdEntries = Get-BCDEntriesParsed -ErrorAction SilentlyContinue
+        if ($bcdEntries -and $bcdEntries.Count -gt 0) {
+            $bcdHealth.IsValid = $true
+            $bcdHealth.Status = "Healthy"
+            $bcdHealth.EntryCount = $bcdEntries.Count
+            $bcdHealth.Details = "BCD store contains $($bcdEntries.Count) valid boot entries"
+            
+            # Find default entry
+            $defaultId = Get-BCDDefaultEntryId
+            if ($defaultId) {
+                $defaultEntry = $bcdEntries | Where-Object { $_.Id -eq $defaultId }
+                if ($defaultEntry) {
+                    $bcdHealth.DefaultEntry = $defaultEntry.Description
+                }
+            }
+        } else {
+            $bcdHealth.Issues += "No BCD entries found"
+            $bcdHealth.Details = "BCD store appears empty or corrupted"
+        }
+    } catch {
+        $bcdHealth.Status = "Error"
+        $bcdHealth.Issues += $_
+        $bcdHealth.Details = "Failed to enumerate BCD: $_"
+    }
+    
+    # ========== 2. EFI PARTITION CHECK ==========
+    $efiHealth = @{
+        Status = "Unknown"
+        Present = $false
+        Location = ""
+        Size = ""
+        Issues = @()
+        Details = ""
+    }
+    
+    try {
+        $partition = Get-Partition -DriveLetter $TargetDrive -ErrorAction SilentlyContinue
+        if ($partition) {
+            $disk = Get-Disk -Number $partition.DiskNumber
+            $efiParts = Get-Partition -DiskNumber $disk.Number | Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' }
+            
+            if ($efiParts) {
+                $efiHealth.Present = $true
+                $efiHealth.Status = "Healthy"
+                $efiParts | ForEach-Object {
+                    $efiHealth.Location = "Disk $($disk.Number), Partition $($_.PartitionNumber)"
+                    $efiHealth.Size = "$([math]::Round($_.Size/1MB, 2)) MB"
+                    $efiHealth.Details = "EFI System Partition found: $($efiHealth.Location) ($($efiHealth.Size))"
+                }
+            } else {
+                $efiHealth.Status = "Critical"
+                $efiHealth.Issues += "No EFI System Partition detected on Disk $($disk.Number)"
+                $efiHealth.Details = "UEFI boot requires EFI partition. System may not boot on UEFI."
+            }
+        } else {
+            $efiHealth.Status = "Warning"
+            $efiHealth.Issues += "Could not locate partition for drive $TargetDrive`:"
+        }
+    } catch {
+        $efiHealth.Status = "Error"
+        $efiHealth.Issues += $_
+        $efiHealth.Details = "Failed to check EFI partition: $_"
+    }
+    
+    # ========== 3. BOOT STACK ORDER ANALYSIS ==========
+    $bootStackOrder = @()
+    try {
+        # Analyze which components are in the boot chain
+        $osPath = "$TargetDrive`:\Windows\System32\ntoskrnl.exe"
+        if (Test-Path $osPath) {
+            $bootStackOrder += @{
+                Order = 1
+                Component = "Windows Kernel (ntoskrnl.exe)"
+                Status = "Found"
+                Path = $osPath
+            }
+        } else {
+            $bootStackOrder += @{
+                Order = 1
+                Component = "Windows Kernel (ntoskrnl.exe)"
+                Status = "Missing - CRITICAL"
+                Path = $osPath
+            }
+        }
+        
+        $bootLoaderPath = "$TargetDrive`:\Windows\System32\winload.efi"
+        if (-not (Test-Path $bootLoaderPath)) {
+            $bootLoaderPath = "$TargetDrive`:\Windows\System32\winload.exe"
+        }
+        
+        if (Test-Path $bootLoaderPath) {
+            $bootStackOrder += @{
+                Order = 2
+                Component = "Boot Loader (winload.*)"
+                Status = "Found"
+                Path = $bootLoaderPath
+            }
+        } else {
+            $bootStackOrder += @{
+                Order = 2
+                Component = "Boot Loader (winload.*)"
+                Status = "Missing - CRITICAL"
+                Path = "Not found"
+            }
+        }
+        
+        # Check for critical drivers in System32\drivers
+        $driverPath = "$TargetDrive`:\Windows\System32\drivers"
+        $criticalDrivers = @("classpnp.sys", "partmgr.sys", "disk.sys", "storport.sys")
+        foreach ($driver in $criticalDrivers) {
+            if (Test-Path "$driverPath\$driver") {
+                $bootStackOrder += @{
+                    Order = 3
+                    Component = "Critical Driver ($driver)"
+                    Status = "Found"
+                    Path = "$driverPath\$driver"
+                }
+            } else {
+                $bootStackOrder += @{
+                    Order = 3
+                    Component = "Critical Driver ($driver)"
+                    Status = "Missing - May prevent boot"
+                    Path = "$driverPath\$driver"
+                }
+            }
+        }
+    } catch {
+        $bootStackOrder += @{
+            Order = 0
+            Component = "Boot Stack Analysis"
+            Status = "Error analyzing: $_"
+            Path = ""
+        }
+    }
+    
+    # ========== 4. LOG FILE ANALYSIS ==========
+    $logIssues = @()
+    try {
+        $bootLogPath = "$TargetDrive`:\Windows\ntbtlog.txt"
+        if (Test-Path $bootLogPath) {
+            $bootLog = Get-Content $bootLogPath -Raw
+            
+            # Check for common error patterns
+            if ($bootLog -match "Failed to load") {
+                $logIssues += "Boot log contains 'Failed to load' errors - possible driver corruption"
+            }
+            if ($bootLog -match "Error loading") {
+                $logIssues += "Boot log contains 'Error loading' messages - check driver files"
+            }
+            if ($bootLog -match "System volume") {
+                $logIssues += "Boot log indicates system volume issues - disk may be corrupted"
+            }
+        }
+    } catch {
+        $logIssues += "Could not analyze boot log: $_"
+    }
+    
+    # ========== 5. WINDOWS UPDATE ELIGIBILITY ==========
+    $updateEligibility = @{
+        Eligible = $true
+        Reason = "Analyzing eligibility..."
+        Issues = @()
+        Requirements = @{
+            DiskSpace = @{ Required = "20 GB"; Status = "Unknown" }
+            Administrator = @{ Required = "Yes"; Status = "Unknown" }
+            InternetConnection = @{ Required = "Yes"; Status = "Unknown" }
+            BitLocker = @{ Required = "Suspended/Disabled"; Status = "Unknown" }
+            TPM = @{ Required = "Optional"; Status = "Unknown" }
+            Drives = @{ Required = "NTFS"; Status = "Unknown" }
+        }
+    }
+    
+    # Check admin
+    if (Test-AdminPrivileges) {
+        $updateEligibility.Requirements.Administrator.Status = "OK"
+    } else {
+        $updateEligibility.Requirements.Administrator.Status = "FAIL - Not running as admin"
+        $updateEligibility.Issues += "Not running with administrator privileges"
+        $updateEligibility.Eligible = $false
+    }
+    
+    # Check disk space
+    try {
+        $volume = Get-Volume -DriveLetter $TargetDrive -ErrorAction SilentlyContinue
+        if ($volume) {
+            $freeSpaceGB = [math]::Round($volume.SizeRemaining / 1GB, 2)
+            if ($freeSpaceGB -ge 20) {
+                $updateEligibility.Requirements.DiskSpace.Status = "OK ($freeSpaceGB GB free)"
+            } else {
+                $updateEligibility.Requirements.DiskSpace.Status = "FAIL ($freeSpaceGB GB - need 20 GB)"
+                $updateEligibility.Issues += "Insufficient disk space"
+                $updateEligibility.Eligible = $false
+            }
+        }
+    } catch {
+        $updateEligibility.Requirements.DiskSpace.Status = "Unknown"
+    }
+    
+    # Check BitLocker
+    try {
+        $blStatus = (manage-bde -status 2>&1 | Select-String "Protection Status" | Out-String).Trim()
+        if ($blStatus -match "Protection Off|Suspended") {
+            $updateEligibility.Requirements.BitLocker.Status = "OK - Disabled/Suspended"
+        } elseif ($blStatus -match "Protection On") {
+            $updateEligibility.Requirements.BitLocker.Status = "WARN - Enabled"
+            $updateEligibility.Issues += "BitLocker is enabled - suspend before upgrade"
+        } else {
+            $updateEligibility.Requirements.BitLocker.Status = "OK - Not found"
+        }
+    } catch {
+        $updateEligibility.Requirements.BitLocker.Status = "Unknown"
+    }
+    
+    # Update eligibility flag
+    if ($updateEligibility.Issues.Count -gt 0) {
+        $updateEligibility.Eligible = $false
+        $updateEligibility.Reason = "Not eligible: $($updateEligibility.Issues -join '; ')"
+    } else {
+        $updateEligibility.Eligible = $true
+        $updateEligibility.Reason = "Eligible for Windows Update in-place repair upgrade"
+    }
+    
+    # ========== COMPILE RESULTS ==========
+    $summary.Components.BCD = $bcdHealth
+    $summary.Components.EFI = $efiHealth
+    $summary.Components.Logs = @{ Issues = $logIssues; Count = $logIssues.Count }
+    $summary.BootStackOrder = $bootStackOrder
+    $summary.UpdateEligibility = $updateEligibility
+    
+    # Determine overall health
+    $criticalIssues = 0
+    if (-not $bcdHealth.IsValid) { $criticalIssues++ }
+    if (-not $efiHealth.Present) { $criticalIssues++ }
+    if ($bootStackOrder | Where-Object { $_.Status -match "Missing - CRITICAL" }) { $criticalIssues++ }
+    
+    if ($criticalIssues -ge 2) {
+        $summary.OverallHealth = "Critical"
+        $summary.Status = "System has critical issues that may prevent boot"
+    } elseif ($criticalIssues -eq 1) {
+        $summary.OverallHealth = "Warning"
+        $summary.Status = "System has issues that could affect boot"
+    } elseif ($logIssues.Count -gt 0) {
+        $summary.OverallHealth = "Caution"
+        $summary.Status = "System appears functional but has logged issues"
+    } else {
+        $summary.OverallHealth = "Healthy"
+        $summary.Status = "System appears to be in good condition"
+    }
+    
+    # Add recommendations
+    if (-not $bcdHealth.IsValid) {
+        $summary.Recommendations += "Repair BCD using bootrec /rebuildbcd or bcdboot"
+    }
+    if (-not $efiHealth.Present) {
+        $summary.Recommendations += "Create EFI System Partition or verify UEFI firmware settings"
+    }
+    if ($logIssues.Count -gt 0) {
+        $summary.Recommendations += "Review boot logs for specific errors: $($logIssues -join '; ')"
+    }
+    if (-not $updateEligibility.Eligible) {
+        $summary.Recommendations += "Resolve issues before attempting Windows Update in-place repair: $($updateEligibility.Reason)"
+    }
+    
+    return $summary
 }
 
 function Get-UnofficialRepairTips {

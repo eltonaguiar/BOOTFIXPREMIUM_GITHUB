@@ -1,4 +1,4 @@
-#!/usr/bin/env powershell
+﻿#!/usr/bin/env powershell
 # ============================================================================
 # TEST SUITE: MiracleBoot-NetworkDiagnostics.ps1
 # Version 1.0

@@ -15,8 +15,18 @@
 - **Solution:** Fixed function structure, added defensive null checks for all event handlers
 - **Result:** GUI now launches without errors and is fully functional
 
-### 🎨 UI Enhancements
-- Updated window title: **"Miracle Boot v7.2.0 - Advanced Recovery - Visual Studio (GitHub Copilot)"**
+### 🎨 Project Structure Reorganization
+- Moved helper scripts to dedicated `HELPER SCRIPTS/` folder
+- Moved validation scripts to dedicated `VALIDATION/` folder
+- Moved test logs to `TEST_LOGS/` and test modules to `TEST/`
+- Kept only 2 main launchers in root: `MiracleBoot.ps1` & `RunMiracleBoot.cmd`
+- **See:** [INDEX.md](../INDEX.md) for new structure details
+
+### 📊 Research-Based Enhancement Roadmap
+- Comprehensive industry analysis (WinRE, WinPE, Microsoft DaRT, commercial tools)
+- Identified capability gaps and improvement opportunities
+- Created phased implementation plan (v7.3-7.6 over 2026)
+- **See:** [FUTURE_ENHANCEMENTS.md](FUTURE_ENHANCEMENTS.md) for details
 
 ### 📦 Version Control System
 - Implemented `LAST_KNOWN_WORKING_<timestamp>` backup system

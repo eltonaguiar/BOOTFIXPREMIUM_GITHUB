@@ -1,4 +1,4 @@
-# Quick fix script for WinRepairCore.ps1
+﻿# Quick fix script for WinRepairCore.ps1
 $targetFile = "C:\Users\zerou\Downloads\MiracleBoot_v7_1\WinRepairCore.ps1"
 
 if (Test-Path $targetFile) {

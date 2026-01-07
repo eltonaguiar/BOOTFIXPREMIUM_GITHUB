@@ -1,4 +1,4 @@
-function Start-TUI {
+﻿function Start-TUI {
     # Detect environment for display (matching main script logic)
     $envDisplay = "FullOS"
     

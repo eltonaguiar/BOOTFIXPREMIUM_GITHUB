@@ -1,4 +1,4 @@
-#!/usr/bin/env powershell
+﻿#!/usr/bin/env powershell
 # MIRACLEBOOT ADVANCED DIAGNOSTICS - AUTOMATED TEST SUITE
 # Purpose: Test MiracleBoot-Diagnostics.ps1 with autonomous validation
 

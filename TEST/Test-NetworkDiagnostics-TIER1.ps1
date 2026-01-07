@@ -1,4 +1,4 @@
-################################################################################
+﻿################################################################################
 #
 # Test-NetworkDiagnostics-TIER1.ps1
 # Comprehensive test suite for NetworkDiagnostics TIER 1 features

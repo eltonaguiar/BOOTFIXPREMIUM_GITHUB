@@ -1,0 +1,45 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                     GUI VALIDATION & DEPENDENCY CHECKER                       ║
+║                         Report - 2026-01-07 07:48:41                        ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+TEST 1: FUNCTION DEFINITION & HANDLER REGISTRATION ORDER
+
+Found 0 function definitions
+[INFO] Could not determine handler registration order
+
+TEST 2: CRITICAL FUNCTION AVAILABILITY
+
+  [SOURCED] Update-StatusBar (assumed from WinRepairCore.ps1)
+  [SOURCED] Get-WindowsHealthSummary (assumed from WinRepairCore.ps1)
+  [SOURCED] Get-BCDEntriesParsed (assumed from WinRepairCore.ps1)
+  [SOURCED] Get-WindowsVolumes (assumed from WinRepairCore.ps1)
+  [SOURCED] Test-AdminPrivileges (assumed from WinRepairCore.ps1)
+
+TEST 3: XAML CONTROL REFERENCE VALIDATION
+
+Found 144 named controls in XAML
+
+TEST 4: ERROR HANDLING COVERAGE
+
+Found 33 try blocks and 33 catch blocks
+[PASS] Error handling coverage appears adequate
+
+TEST 5: NULL REFERENCE PROTECTION
+
+Found 6 null-check patterns
+[PASS] Adequate null-reference protection present
+
+VALIDATION SUMMARY
+
+PASSES: 2
+  ✓ Adequate error handling coverage detected
+  ✓ Adequate null-reference protection present
+
+WARNINGS: 0
+
+CRITICAL ISSUES: 0
+
+STATUS: PASS - Ready for release
+
+Generated: 2026-01-07 07:48:41

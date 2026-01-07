@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 MiracleBoot Driver Harvesting Module
 Extracts, organizes, and packages drivers for offline injection into broken systems.

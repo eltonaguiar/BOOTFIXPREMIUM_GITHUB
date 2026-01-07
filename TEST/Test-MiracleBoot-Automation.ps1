@@ -1,4 +1,4 @@
-#!/usr/bin/env powershell
+﻿#!/usr/bin/env powershell
 # MIRACLEBOOT AUTOMATION CLI - AUTOMATED TEST SUITE
 
 param()

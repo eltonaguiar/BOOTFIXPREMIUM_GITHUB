@@ -1,4 +1,4 @@
-################################################################################
+﻿################################################################################
 # Test-MiracleBoot-NoInput.ps1
 # Automated test suite for MiracleBoot v7.2.0
 # Does NOT require any user input - fully autonomous

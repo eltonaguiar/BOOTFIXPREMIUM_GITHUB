@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Ensures Windows is eligible for in-place upgrade repair (repair-install mode).
 

@@ -1,4 +1,4 @@
-#!/usr/bin/env powershell
+﻿#!/usr/bin/env powershell
 # MIRACLEBOOT BACKUP MODULE - AUTOMATED TEST SUITE
 # Purpose: Test MiracleBoot-Backup.ps1 with autonomous validation
 # No user input required - all testing automated

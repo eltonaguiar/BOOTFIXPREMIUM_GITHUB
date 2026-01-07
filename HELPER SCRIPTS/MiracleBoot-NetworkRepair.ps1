@@ -1,4 +1,4 @@
-#!/usr/bin/env powershell
+﻿#!/usr/bin/env powershell
 # ============================================================================
 # MIRACLEBOOT NETWORK TROUBLESHOOTING MODULE
 # Version 2.1 - Low Hanging Fruit Feature

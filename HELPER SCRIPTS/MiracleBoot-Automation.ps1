@@ -1,4 +1,4 @@
-#!/usr/bin/env powershell
+﻿#!/usr/bin/env powershell
 # ============================================================================
 # MIRACLEBOOT AUTOMATION CLI FRAMEWORK
 # Version 2.0 - Phase 2 Premium Feature

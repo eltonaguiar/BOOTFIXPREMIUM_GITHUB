@@ -1,4 +1,4 @@
-################################################################################
+﻿################################################################################
 # KeyboardSymbols.ps1
 # 
 # Purpose: Comprehensive keyboard symbol management module for MiracleBoot

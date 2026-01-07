@@ -7,7 +7,7 @@ Add-Type -AssemblyName System.Windows.Forms
 # Last Updated: January 7, 2026
 # ============================================================================
 #
-# CRITICAL FIX (January 7, 2026):
+# CRITICAL FIX (January 7, 2026 - Updated):
 # Fixed "You cannot call a method on a null-valued expression" error
 # that prevented GUI from launching on Windows 11.
 #
@@ -20,7 +20,33 @@ Add-Type -AssemblyName System.Windows.Forms
 #
 # ============================================================================
 
+# Defensive source: Ensure WinRepairCore is loaded if not already
+if (-not (Get-Command Get-WindowsHealthSummary -ErrorAction SilentlyContinue)) {
+    try {
+        $coreScriptPath = Join-Path (Split-Path $MyInvocation.MyCommand.Path) "WinRepairCore.ps1"
+        if (Test-Path $coreScriptPath) {
+            . $coreScriptPath
+        }
+    } catch {
+        Write-Warning "Could not source WinRepairCore.ps1: $_"
+    }
+}
+
 function Start-GUI {
+    # Check for administrator privileges - many operations require elevation
+    $currentUser = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+    $isAdmin = $currentUser.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    
+    if (-not $isAdmin) {
+        [System.Windows.MessageBox]::Show(
+            "This application requires Administrator privileges to access boot configuration data.`n`nPlease run this script as Administrator.",
+            "Administrator Privileges Required",
+            "OK",
+            "Warning"
+        ) | Out-Null
+        return
+    }
+
 Write-Host "GUI: Starting initialization..." -ForegroundColor Cyan
 
 $XAML = @"
@@ -47,6 +73,199 @@ $XAML = @"
 </StackPanel>
     
     <TabControl Grid.Row="1" Margin="10">
+        <TabItem Header="Summary">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                
+                <StackPanel Grid.Row="0" Margin="0,0,0,15">
+                    <TextBlock Text="Windows Health Summary" FontWeight="Bold" FontSize="16" Margin="0,0,0,5" Foreground="#0078D7"/>
+                    <TextBlock Text="Comprehensive system health status including BCD validity, EFI partition, boot stack order, and Windows Update eligibility" 
+                               Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                    <Button Content="Refresh Summary" Name="BtnRefreshSummary" Height="35" Width="150" Background="#28a745" Foreground="White" FontWeight="Bold"/>
+                </StackPanel>
+                
+                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10,0,10,10">
+                        <!-- Overall Health Status -->
+                        <GroupBox Header="Overall Status" Margin="0,0,0,15" Background="#f8f9fa">
+                            <StackPanel Margin="10">
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Overall Health:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryHealthStatus" Grid.Column="1" Text="Analyzing..." Foreground="#0078D7" FontWeight="Bold"/>
+                                </Grid>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Status Message:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryStatusMessage" Grid.Column="1" Text="Analyzing..." TextWrapping="Wrap" Foreground="Gray"/>
+                                </Grid>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Last Updated:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryLastUpdated" Grid.Column="1" Text="-" Foreground="Gray"/>
+                                </Grid>
+                            </StackPanel>
+                        </GroupBox>
+                        
+                        <!-- BCD Health -->
+                        <GroupBox Header="Boot Configuration Data (BCD)" Margin="0,0,0,15">
+                            <StackPanel Margin="10">
+                                <Grid Margin="0,0,0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Status:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryBCDStatus" Grid.Column="1" Text="Unknown" Foreground="#0078D7"/>
+                                </Grid>
+                                <Grid Margin="0,0,0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Boot Entries:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryBCDEntries" Grid.Column="1" Text="0" Foreground="Gray"/>
+                                </Grid>
+                                <Grid Margin="0,0,0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Default Entry:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryBCDDefault" Grid.Column="1" Text="-" TextWrapping="Wrap" Foreground="Gray"/>
+                                </Grid>
+                                <TextBlock Name="SummaryBCDDetails" Text="" TextWrapping="Wrap" Foreground="Gray" Margin="0,10,0,0"/>
+                            </StackPanel>
+                        </GroupBox>
+                        
+                        <!-- EFI Partition Status -->
+                        <GroupBox Header="EFI System Partition" Margin="0,0,0,15">
+                            <StackPanel Margin="10">
+                                <Grid Margin="0,0,0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Status:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryEFIStatus" Grid.Column="1" Text="Unknown" Foreground="#0078D7"/>
+                                </Grid>
+                                <Grid Margin="0,0,0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Location:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryEFILocation" Grid.Column="1" Text="-" Foreground="Gray"/>
+                                </Grid>
+                                <Grid Margin="0,0,0,5">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Size:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryEFISize" Grid.Column="1" Text="-" Foreground="Gray"/>
+                                </Grid>
+                                <TextBlock Name="SummaryEFIDetails" Text="" TextWrapping="Wrap" Foreground="Gray" Margin="0,10,0,0"/>
+                            </StackPanel>
+                        </GroupBox>
+                        
+                        <!-- Boot Stack Order -->
+                        <GroupBox Header="Boot Stack Order (Critical Components)" Margin="0,0,0,15">
+                            <StackPanel Margin="10">
+                                <TextBlock Text="Components required for successful boot:" FontSize="11" Foreground="Gray" Margin="0,0,0,10"/>
+                                <ListBox Name="SummaryBootStackList" Height="200">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="5">
+                                                <TextBlock Text="{Binding Component}" FontWeight="Bold"/>
+                                                <TextBlock Text="{Binding Status}" Foreground="Gray" Margin="20,2,0,0" FontSize="10"/>
+                                                <TextBlock Text="{Binding Path}" Foreground="#666" Margin="20,2,0,5" FontSize="9" FontFamily="Consolas"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
+                        </GroupBox>
+                        
+                        <!-- Windows Update Eligibility -->
+                        <GroupBox Header="Windows Update In-Place Repair Eligibility" Margin="0,0,0,15" BorderBrush="#28a745" BorderThickness="2">
+                            <StackPanel Margin="10">
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="200"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="Eligible:" FontWeight="Bold"/>
+                                    <TextBlock Name="SummaryUpdateEligible" Grid.Column="1" Text="Checking..." Foreground="#0078D7" FontWeight="Bold" FontSize="12"/>
+                                </Grid>
+                                <Separator Margin="0,5,0,10"/>
+                                <TextBlock Text="Requirements:" FontWeight="Bold" Margin="0,0,0,10"/>
+                                <ListBox Name="SummaryUpdateRequirementsList" Height="150">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="5">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="200"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Name}" FontWeight="Bold"/>
+                                                <TextBlock Grid.Column="1" Text="{Binding Status}" Foreground="Gray"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <TextBlock Name="SummaryUpdateReason" Text="" TextWrapping="Wrap" Foreground="Gray" Margin="0,10,0,0" FontSize="11"/>
+                            </StackPanel>
+                        </GroupBox>
+                        
+                        <!-- Log Issues -->
+                        <GroupBox Header="Detected Log Issues" Margin="0,0,0,15">
+                            <StackPanel Margin="10">
+                                <TextBlock Name="SummaryLogStatus" Text="No issues detected" Foreground="#28a745" Margin="0,0,0,10"/>
+                                <ListBox Name="SummaryLogIssuesList" Height="100" Visibility="Collapsed">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="#dc3545"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </StackPanel>
+                        </GroupBox>
+                        
+                        <!-- Recommendations -->
+                        <GroupBox Header="Recommendations" Margin="0,0,0,10" Background="#fff3cd" BorderBrush="#ffc107" BorderThickness="1">
+                            <StackPanel Margin="10">
+                                <ListBox Name="SummaryRecommendationsList" Height="Auto" MaxHeight="200">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}" TextWrapping="Wrap" Foreground="#856404" Margin="5"/>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <TextBlock Name="SummaryNoRecommendations" Text="No immediate action needed" Foreground="#28a745" FontSize="11" Margin="0,10,0,0" FontStyle="Italic"/>
+                            </StackPanel>
+                        </GroupBox>
+                    </StackPanel>
+                </ScrollViewer>
+                
+                <TextBlock Grid.Row="2" Text="Summary automatically updates when you refresh. Check each section for details on specific areas." 
+                           Foreground="Gray" FontSize="10" TextWrapping="Wrap" Margin="0,10,0,0"/>
+            </Grid>
+        </TabItem>
+
         <TabItem Header="Volumes &amp; Health">
             <DockPanel Margin="10">
                 <Button DockPanel.Dock="Top" Content="Refresh Volume List" Height="35" Name="BtnVol" Background="#0078D7" Foreground="White" FontWeight="Bold"/>
@@ -972,6 +1191,12 @@ foreach ($vol in $volumes) {
 }
 $W.FindName("DiagDriveCombo").SelectedIndex = 0
 
+# Helper function to test administrator privileges
+function Test-AdminPrivileges {
+    $currentUser = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+    return $currentUser.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
 # Update current OS label
 function Update-CurrentOSLabel {
     $selected = $W.FindName("DiagDriveCombo").SelectedItem
@@ -989,12 +1214,6 @@ function Update-CurrentOSLabel {
 }
 Update-CurrentOSLabel
 $W.FindName("DiagDriveCombo").Add_SelectionChanged({ Update-CurrentOSLabel })
-
-# Logic for Volumes
-$W.FindName("BtnVol").Add_Click({
-    $vols = Get-WindowsVolumes
-    $W.FindName("VolList").ItemsSource = $vols
-})
 
 # Store BCD entries globally for real-time updates
 $script:BCDEntriesCache = $null
@@ -1037,9 +1256,145 @@ function Get-BCDDefaultEntryId {
     }
 }
 
-# Logic for BCD - Enhanced parser with duplicate detection
+# Logic for Summary Tab - Refresh button
+$W.FindName("BtnRefreshSummary").Add_Click({
+    try {
+        Update-StatusBar -Message "Generating Windows health summary..." -ShowProgress
+        $W.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
+        
+        # Get health summary
+        $summary = Get-WindowsHealthSummary
+        
+        # Populate Overall Status
+        $statusColor = switch ($summary.OverallHealth) {
+            "Healthy" { "#28a745" }
+            "Caution" { "#ff9800" }
+            "Warning" { "#dc7700" }
+            "Critical" { "#dc3545" }
+            default { "#0078D7" }
+        }
+        
+        $healthBlock = $W.FindName("SummaryHealthStatus")
+        $healthBlock.Text = $summary.OverallHealth.ToUpper()
+        $healthBlock.Foreground = $statusColor
+        
+        $W.FindName("SummaryStatusMessage").Text = $summary.Status
+        $W.FindName("SummaryLastUpdated").Text = $summary.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")
+        
+        # Populate BCD Health
+        $bcdHealth = $summary.Components.BCD
+        $W.FindName("SummaryBCDStatus").Text = $bcdHealth.Status
+        $W.FindName("SummaryBCDStatus").Foreground = if ($bcdHealth.IsValid) { "#28a745" } else { "#dc3545" }
+        $W.FindName("SummaryBCDEntries").Text = "$($bcdHealth.EntryCount) entries"
+        $W.FindName("SummaryBCDDefault").Text = if ($bcdHealth.DefaultEntry) { $bcdHealth.DefaultEntry } else { "Not set" }
+        $W.FindName("SummaryBCDDetails").Text = $bcdHealth.Details
+        
+        # Populate EFI Health
+        $efiHealth = $summary.Components.EFI
+        $W.FindName("SummaryEFIStatus").Text = $efiHealth.Status
+        $W.FindName("SummaryEFIStatus").Foreground = switch ($efiHealth.Status) {
+            "Healthy" { "#28a745" }
+            "Critical" { "#dc3545" }
+            "Warning" { "#ff9800" }
+            default { "#0078D7" }
+        }
+        $W.FindName("SummaryEFILocation").Text = if ($efiHealth.Location) { $efiHealth.Location } else { "Not detected" }
+        $W.FindName("SummaryEFISize").Text = if ($efiHealth.Size) { $efiHealth.Size } else { "-" }
+        $W.FindName("SummaryEFIDetails").Text = $efiHealth.Details
+        
+        # Populate Boot Stack Order
+        $bootStackItems = @()
+        foreach ($item in $summary.BootStackOrder) {
+            $bootStackItems += [PSCustomObject]@{
+                Order = $item.Order
+                Component = "$($item.Order). $($item.Component)"
+                Status = $item.Status
+                Path = $item.Path
+            }
+        }
+        $W.FindName("SummaryBootStackList").ItemsSource = $bootStackItems
+        
+        # Populate Update Eligibility
+        $updateElig = $summary.UpdateEligibility
+        $eligBlock = $W.FindName("SummaryUpdateEligible")
+        if ($updateElig.Eligible) {
+            $eligBlock.Text = "✓ YES - Eligible"
+            $eligBlock.Foreground = "#28a745"
+        } else {
+            $eligBlock.Text = "✗ NO - Not Eligible"
+            $eligBlock.Foreground = "#dc3545"
+        }
+        
+        # Populate requirements
+        $requirements = @()
+        foreach ($req in $updateElig.Requirements.GetEnumerator()) {
+            $requirements += [PSCustomObject]@{
+                Name = $req.Key -replace '([A-Z])', ' $1'
+                Status = $req.Value.Status
+            }
+        }
+        $W.FindName("SummaryUpdateRequirementsList").ItemsSource = $requirements
+        $W.FindName("SummaryUpdateReason").Text = $updateElig.Reason
+        
+        # Populate Log Issues
+        $logIssues = $summary.Components.Logs.Issues
+        if ($logIssues.Count -gt 0) {
+            $W.FindName("SummaryLogStatus").Text = "Found $($logIssues.Count) issue(s) in logs"
+            $W.FindName("SummaryLogStatus").Foreground = "#dc7700"
+            $W.FindName("SummaryLogIssuesList").ItemsSource = $logIssues
+            $W.FindName("SummaryLogIssuesList").Visibility = "Visible"
+        } else {
+            $W.FindName("SummaryLogStatus").Text = "✓ No issues detected in logs"
+            $W.FindName("SummaryLogStatus").Foreground = "#28a745"
+            $W.FindName("SummaryLogIssuesList").Visibility = "Collapsed"
+        }
+        
+        # Populate Recommendations
+        if ($summary.Recommendations.Count -gt 0) {
+            $W.FindName("SummaryRecommendationsList").ItemsSource = $summary.Recommendations
+            $W.FindName("SummaryNoRecommendations").Visibility = "Collapsed"
+        } else {
+            $W.FindName("SummaryRecommendationsList").ItemsSource = @()
+            $W.FindName("SummaryNoRecommendations").Visibility = "Visible"
+        }
+        
+        Update-StatusBar -Message "Windows health summary updated successfully" -HideProgress
+    } catch {
+        Update-StatusBar -Message "Error generating summary: $_" -HideProgress
+        [System.Windows.MessageBox]::Show("Error generating Windows health summary: $_", "Error", "OK", "Error") | Out-Null
+    }
+})
+
+# Automatically refresh summary on tab load (with error handling)
+if ($null -ne $W.FindName("BtnRefreshSummary")) {
+    $W.FindName("BtnRefreshSummary").RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+}
+
+# Logic for Volumes list refresh
+if ($null -ne $W.FindName("BtnVol")) {
+    $W.FindName("BtnVol").Add_Click({
+        try {
+            $vols = Get-WindowsVolumes
+            $W.FindName("VolList").ItemsSource = $vols
+        } catch {
+            [System.Windows.MessageBox]::Show("Error refreshing volumes: $_", "Error", "OK", "Error") | Out-Null
+        }
+    })
+}
+
 $W.FindName("BtnBCD").Add_Click({
     try {
+        # Check admin privileges
+        if (-not (Test-AdminPrivileges)) {
+            [System.Windows.MessageBox]::Show(
+                "Administrator privileges are required to access BCD entries.`n`nPlease run this script as Administrator.",
+                "Elevation Required",
+                "OK",
+                "Warning"
+            ) | Out-Null
+            return
+        }
+        
         # Show initial loading message
         Update-StatusBar -Message "Loading BCD Entries..." -ShowProgress
         
@@ -1047,7 +1402,12 @@ $W.FindName("BtnBCD").Add_Click({
         $W.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
         [System.Windows.Forms.Application]::DoEvents()
         
-        $rawBcd = bcdedit /enum
+        $rawBcd = bcdedit /enum 2>&1
+        
+        # Check for access denied errors
+        if ($rawBcd -match "Access is denied|could not be opened") {
+            throw "The boot configuration data store could not be opened. Access is denied. This operation requires Administrator privileges."
+        }
         $W.FindName("BCDBox").Text = $rawBcd
         
         Update-StatusBar -Message "Parsing BCD entries..." -ShowProgress
@@ -1135,8 +1495,20 @@ $W.FindName("BtnBCD").Add_Click({
             [System.Windows.MessageBox]::Show("Loaded $($bcdItems.Count) BCD entries." + $(if ($defaultCount -gt 0) { "`n`nDefault boot entry is marked with [DEFAULT]." } else { "" }), "Success", "OK", "Information")
         }
     } catch {
-        Update-StatusBar -Message "Error loading BCD: $_" -HideProgress
-        [System.Windows.MessageBox]::Show("Error loading BCD: $_", "Error", "OK", "Error")
+        $errorMsg = $_
+        Update-StatusBar -Message "Error loading BCD: $errorMsg" -HideProgress
+        
+        # Provide specific help based on error type
+        if ($errorMsg -match "Access is denied|Administrator") {
+            [System.Windows.MessageBox]::Show(
+                "Administrator privileges required.`n`n$errorMsg`n`nPlease close this window, right-click this script, select 'Run as administrator', and try again.",
+                "Administrator Privileges Required",
+                "OK",
+                "Error"
+            ) | Out-Null
+        } else {
+            [System.Windows.MessageBox]::Show("Error loading BCD: $errorMsg", "Error", "OK", "Error") | Out-Null
+        }
     }
 })
 

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 MiracleBoot Boot Recovery FAQ Generator
 Creates a comprehensive SAVE_ME.txt guide with troubleshooting commands.

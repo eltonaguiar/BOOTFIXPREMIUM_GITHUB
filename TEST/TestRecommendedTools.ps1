@@ -1,4 +1,4 @@
-# Quick test script to verify Recommended Tools tab was added correctly
+﻿# Quick test script to verify Recommended Tools tab was added correctly
 
 Write-Host "Testing MiracleBoot v7.2.0 - Recommended Tools Feature" -ForegroundColor Cyan
 Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan

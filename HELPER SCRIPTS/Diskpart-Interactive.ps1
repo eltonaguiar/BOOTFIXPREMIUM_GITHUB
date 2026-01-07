@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
 MiracleBoot Diskpart Interactive Wrapper
 Provides user-friendly diskpart commands with safety confirmations and education.
