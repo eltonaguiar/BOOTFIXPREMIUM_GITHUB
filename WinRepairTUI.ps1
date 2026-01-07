@@ -32,9 +32,10 @@ function Start-TUI {
         Write-Host "3) Inject Drivers Offline (DISM)" -ForegroundColor White
         Write-Host "4) Quick View BCD" -ForegroundColor White
         Write-Host "5) Edit BCD Entry" -ForegroundColor White
-        Write-Host "6) Recommended Recovery Tools" -ForegroundColor Green
-        Write-Host "7) Utilities & Tools" -ForegroundColor Magenta
-        Write-Host "8) Network & Internet Help" -ForegroundColor Cyan
+        Write-Host "6) Repair-Install Readiness Check" -ForegroundColor Yellow
+        Write-Host "7) Recommended Recovery Tools" -ForegroundColor Green
+        Write-Host "8) Utilities & Tools" -ForegroundColor Magenta
+        Write-Host "9) Network & Internet Help" -ForegroundColor Cyan
         Write-Host "Q) Quit" -ForegroundColor Yellow
         Write-Host ""
 
@@ -94,6 +95,69 @@ function Start-TUI {
                 }
             }
             "6" {
+                Clear-Host
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Yellow
+                Write-Host "  REPAIR-INSTALL READINESS CHECK" -ForegroundColor Yellow
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Yellow
+                Write-Host ""
+                Write-Host "This checks if Windows is eligible for setup.exe repair-install" -ForegroundColor White
+                Write-Host "mode, which preserves apps and files." -ForegroundColor White
+                Write-Host ""
+                
+                $readinessChoice = Read-Host "Select option: (1) Check Only, (2) Check + Auto-Repair, (Q) Return to Menu"
+                switch ($readinessChoice.ToUpper()) {
+                    "1" {
+                        Write-Host "`nRunning repair-install readiness check..." -ForegroundColor Cyan
+                        Write-Host "─────────────────────────────────────────────────────────────" -ForegroundColor Gray
+                        
+                        try {
+                            if (Get-Command Invoke-RepairInstallReadinessCheck -ErrorAction SilentlyContinue) {
+                                $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair $false
+                                
+                                Write-Host "`n" -ForegroundColor Gray
+                                Write-Host "FINAL RECOMMENDATION: $($result.FinalRecommendation)" -ForegroundColor Cyan
+                                Write-Host ""
+                            } else {
+                                Write-Host "ERROR: EnsureRepairInstallReady module not available" -ForegroundColor Red
+                            }
+                        } catch {
+                            Write-Host "ERROR: $_" -ForegroundColor Red
+                        }
+                        
+                        Write-Host "`nPress any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "2" {
+                        Write-Host "`nRunning repair-install readiness check with auto-repair..." -ForegroundColor Cyan
+                        Write-Host "─────────────────────────────────────────────────────────────" -ForegroundColor Gray
+                        Write-Host "⚠ This will attempt to normalize Windows state for setup.exe" -ForegroundColor Yellow
+                        Write-Host ""
+                        
+                        $confirm = Read-Host "Proceed? (Y/N)"
+                        if ($confirm -eq 'Y' -or $confirm -eq 'y') {
+                            try {
+                                if (Get-Command Invoke-RepairInstallReadinessCheck -ErrorAction SilentlyContinue) {
+                                    $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair $true
+                                    
+                                    Write-Host "`n" -ForegroundColor Gray
+                                    Write-Host "FINAL RECOMMENDATION: $($result.FinalRecommendation)" -ForegroundColor Cyan
+                                    Write-Host ""
+                                } else {
+                                    Write-Host "ERROR: EnsureRepairInstallReady module not available" -ForegroundColor Red
+                                }
+                            } catch {
+                                Write-Host "ERROR: $_" -ForegroundColor Red
+                            }
+                            
+                            Write-Host "`nPress any key to continue..." -ForegroundColor Gray
+                            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                        } else {
+                            Write-Host "Operation cancelled." -ForegroundColor Yellow
+                        }
+                    }
+                }
+            }
+            "8" {
                 Clear-Host
                 Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
                 Write-Host "  RECOMMENDED RECOVERY & BACKUP TOOLS" -ForegroundColor Cyan
@@ -487,7 +551,7 @@ function Start-TUI {
                     }
                 }
             }
-            "8" {
+            "9" {
                 Clear-Host
                 Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
                 Write-Host "  NETWORK & INTERNET HELP" -ForegroundColor Cyan

@@ -336,6 +336,68 @@ $XAML = @"
             </Grid>
         </TabItem>
 
+        <TabItem Header="Repair-Install Readiness">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                
+                <StackPanel Grid.Row="0" Margin="0,0,0,15">
+                    <TextBlock Text="Repair-Install Readiness Check" FontWeight="Bold" FontSize="14" Margin="0,0,0,5"/>
+                    <TextBlock Text="Verify Windows is eligible for setup.exe repair-install mode (keeps apps &amp; files)" 
+                               Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                </StackPanel>
+                
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
+                    <Button Content="Run Readiness Check" Name="BtnRepairReadiness" Background="#0078D7" Foreground="White" Height="35" Width="180" Margin="0,0,10,0" FontWeight="Bold"/>
+                    <Button Content="Run Check + Auto-Repair" Name="BtnRepairReadinessAuto" Background="#28a745" Foreground="White" Height="35" Width="180" FontWeight="Bold" Margin="0,0,10,0"/>
+                    <Button Content="Export Report" Name="BtnExportReadinessReport" Background="#6c757d" Foreground="White" Height="35" Width="150" Margin="0,0,10,0"/>
+                    <CheckBox Name="ChkVerboseReadiness" Content="Verbose Output" VerticalAlignment="Center" Margin="20,0,0,0"/>
+                </StackPanel>
+                
+                <GroupBox Grid.Row="2" Header="Readiness Check Results" Margin="0,0,0,10">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="300"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        
+                        <StackPanel Grid.Column="0" Margin="10">
+                            <TextBlock Text="Check Status" FontWeight="Bold" Margin="0,0,0,10"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,5">
+                                <Rectangle Name="StatusEligibility" Width="20" Height="20" Fill="Gray" Margin="0,0,10,0"/>
+                                <TextBlock Text="Setup Eligibility" VerticalAlignment="Center" Width="200"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,5">
+                                <Rectangle Name="StatusCBS" Width="20" Height="20" Fill="Gray" Margin="0,0,10,0"/>
+                                <TextBlock Text="CBS State" VerticalAlignment="Center" Width="200"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,5">
+                                <Rectangle Name="StatusWinRE" Width="20" Height="20" Fill="Gray" Margin="0,0,10,0"/>
+                                <TextBlock Text="WinRE Metadata" VerticalAlignment="Center" Width="200"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,5">
+                                <Rectangle Name="StatusSetupValidation" Width="20" Height="20" Fill="Gray" Margin="0,0,10,0"/>
+                                <TextBlock Text="Setup.exe Validation" VerticalAlignment="Center" Width="200"/>
+                            </StackPanel>
+                            <Separator Margin="0,10"/>
+                            <TextBlock Name="FinalRecommendation" Text="Not yet run" FontWeight="Bold" TextWrapping="Wrap" Margin="0,5" Foreground="#d78700"/>
+                        </StackPanel>
+                        
+                        <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                            <TextBox Name="ReadinessCheckOutput" AcceptsReturn="True" FontFamily="Consolas" Background="#222" Foreground="#00FF00" IsReadOnly="True" TextWrapping="Wrap" Padding="10" Margin="10"/>
+                        </ScrollViewer>
+                    </Grid>
+                </GroupBox>
+                
+                <TextBlock Grid.Row="3" Text="⚠ This check analyzes CBS state, validates registry keys, and pre-validates setup.exe eligibility without making changes. Run 'Run Check + Auto-Repair' to attempt fixes." 
+                           Foreground="#ff6b6b" TextWrapping="Wrap" Margin="0,10,0,0" FontStyle="Italic"/>
+            </Grid>
+        </TabItem>
+
         <TabItem Header="Recommended Tools">
             <Grid Margin="10">
                 <Grid.RowDefinitions>
@@ -3020,4 +3082,99 @@ Need help? Check the other tabs for tool links and instructions!
 $W.ShowDialog() | Out-Null
 }
 
+# ============================================================================
+# REPAIR-INSTALL READINESS CHECK HANDLERS
+# ============================================================================
+
+$W.FindName("BtnRepairReadiness").Add_Click({
+    $outputBox = $W.FindName("ReadinessCheckOutput")
+    $outputBox.Text = "Starting repair-install readiness check...`n"
+    
+    try {
+        # Call the module function
+        if (Get-Command Invoke-RepairInstallReadinessCheck -ErrorAction SilentlyContinue) {
+            $verbose = if ($W.FindName("ChkVerboseReadiness").IsChecked) { $true } else { $false }
+            $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair $false
+            
+            # Update status indicators
+            $eligibility = $result.Steps | Where-Object { $_.Step -eq "Setup Eligibility Check" } | Select-Object -ExpandProperty Result
+            if ($eligibility -and $eligibility.IsEligible) {
+                $W.FindName("StatusEligibility").Fill = [System.Windows.Media.Brush]::Parse("#28a745")
+            } else {
+                $W.FindName("StatusEligibility").Fill = [System.Windows.Media.Brush]::Parse("#dc3545")
+            }
+            
+            # Update recommendation text
+            $W.FindName("FinalRecommendation").Text = "Status: $($result.FinalRecommendation)`nCheck completed at $(Get-Date -Format 'HH:mm:ss')"
+            
+            # Append output
+            $outputBox.Text += "`nReadiness check completed!`n"
+        } else {
+            $outputBox.Text = "ERROR: EnsureRepairInstallReady module not loaded`nCheck console for loading errors."
+        }
+    } catch {
+        $outputBox.Text = "ERROR: $_"
+    }
+})
+
+$W.FindName("BtnRepairReadinessAuto").Add_Click({
+    $outputBox = $W.FindName("ReadinessCheckOutput")
+    $outputBox.Text = "Starting repair-install readiness check with auto-repair...`n"
+    
+    try {
+        if (Get-Command Invoke-RepairInstallReadinessCheck -ErrorAction SilentlyContinue) {
+            $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair $true
+            
+            # Update all status indicators
+            $W.FindName("StatusEligibility").Fill = [System.Windows.Media.Brush]::Parse("#28a745")
+            $W.FindName("StatusCBS").Fill = [System.Windows.Media.Brush]::Parse("#28a745")
+            $W.FindName("StatusWinRE").Fill = [System.Windows.Media.Brush]::Parse("#28a745")
+            $W.FindName("StatusSetupValidation").Fill = [System.Windows.Media.Brush]::Parse("#28a745")
+            
+            # Update recommendation
+            $W.FindName("FinalRecommendation").Text = "Status: $($result.FinalRecommendation)`nAuto-repair completed at $(Get-Date -Format 'HH:mm:ss')"
+            
+            $outputBox.Text += "`nAuto-repair completed!`n"
+        } else {
+            $outputBox.Text = "ERROR: EnsureRepairInstallReady module not loaded"
+        }
+    } catch {
+        $outputBox.Text = "ERROR: $_"
+    }
+})
+
+$W.FindName("BtnExportReadinessReport").Add_Click({
+    try {
+        $reportPath = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::Desktop) + "\RepairReadinessReport_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+        $outputBox = $W.FindName("ReadinessCheckOutput")
+        
+        $reportContent = @"
+═══════════════════════════════════════════════════════════════
+REPAIR-INSTALL READINESS REPORT
+Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+═══════════════════════════════════════════════════════════════
+
+SYSTEM INFORMATION:
+  Computer: $env:COMPUTERNAME
+  OS: $(Get-WmiObject Win32_OperatingSystem | Select-Object -ExpandProperty Caption)
+  Architecture: $(Get-WmiObject Win32_Processor | Select-Object -ExpandProperty Architecture)
+
+READINESS CHECK OUTPUT:
+─────────────────────────────────────────────────────────────
+
+$($outputBox.Text)
+
+═══════════════════════════════════════════════════════════════
+END OF REPORT
+═══════════════════════════════════════════════════════════════
+"@
+        
+        Set-Content -Path $reportPath -Value $reportContent -Force
+        [System.Windows.MessageBox]::Show("Report exported to:`n$reportPath", "Export Successful", "OK", "Information")
+    } catch {
+        [System.Windows.MessageBox]::Show("Error exporting report: $_", "Export Failed", "OK", "Error")
+    }
+})
+
+$W.ShowDialog() | Out-Null
 
