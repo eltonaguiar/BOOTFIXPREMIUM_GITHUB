@@ -491,6 +491,385 @@ function Get-OfflineEventLogs {
     return $results
 }
 
+function Get-InPlaceUpgradeReadiness {
+    param($TargetDrive = "C")
+    
+    # Normalize drive letter
+    if ($TargetDrive -match '^([A-Z]):?$') {
+        $TargetDrive = $matches[1]
+    }
+    
+    $currentOS = ($env:SystemDrive.TrimEnd(':') -eq $TargetDrive)
+    $osContext = if ($currentOS) { "CURRENT OPERATING SYSTEM" } else { "OFFLINE WINDOWS INSTALLATION" }
+    
+    $report = @{
+        Ready = $true
+        Blockers = @()
+        Warnings = @()
+        Info = @()
+        Summary = ""
+        TargetDrive = "$TargetDrive`:"
+        IsCurrentOS = $currentOS
+        Checks = @()
+    }
+    
+    $report.Summary = "═══════════════════════════════════════════════════════════════════════════`n"
+    $report.Summary += "  IN-PLACE UPGRADE READINESS CHECK - $osContext`n"
+    $report.Summary += "═══════════════════════════════════════════════════════════════════════════`n"
+    $report.Summary += "Target: $TargetDrive`:\Windows`n"
+    $report.Summary += "Scan Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
+    $report.Summary += "═══════════════════════════════════════════════════════════════════════════`n`n"
+    
+    # 1. Check for Windows Update temporary directories
+    $report.Summary += "[1] CHECKING WINDOWS UPDATE/SETUP DIRECTORIES...`n"
+    $report.Summary += "─────────────────────────────────────────────────────────────────────────`n"
+    
+    $windowsBT = "$TargetDrive`:\`$WINDOWS.~BT"
+    $windowsWS = "$TargetDrive`:\`$Windows.~WS"
+    $windowsOld = "$TargetDrive`:\Windows.old"
+    
+    if (Test-Path $windowsBT) {
+        try {
+            $btSize = (Get-ChildItem $windowsBT -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1GB
+            $btSizeStr = "{0:N2} GB" -f $btSize
+            $report.Summary += "  [!] Found: `$WINDOWS.~BT (Size: $btSizeStr)`n"
+            $report.Warnings += "Previous Windows Update temporary files exist at `$WINDOWS.~BT"
+            $report.Summary += "      This directory contains files from a previous upgrade/update attempt.`n"
+            $report.Summary += "      RECOMMENDATION: Delete this folder before attempting an in-place upgrade.`n"
+            $report.Summary += "      Command: Remove-Item '$windowsBT' -Recurse -Force`n"
+        } catch {
+            $report.Summary += "  [!] Found: `$WINDOWS.~BT (unable to calculate size)`n"
+            $report.Warnings += "`$WINDOWS.~BT exists but cannot be fully analyzed"
+        }
+    } else {
+        $report.Summary += "  [✓] `$WINDOWS.~BT: Not found (GOOD)`n"
+    }
+    
+    if (Test-Path $windowsWS) {
+        try {
+            $wsSize = (Get-ChildItem $windowsWS -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1GB
+            $wsSizeStr = "{0:N2} GB" -f $wsSize
+            $report.Summary += "  [!] Found: `$Windows.~WS (Size: $wsSizeStr)`n"
+            $report.Warnings += "Previous Windows Setup working directory exists at `$Windows.~WS"
+            $report.Summary += "      This directory contains files from a previous setup attempt.`n"
+            $report.Summary += "      RECOMMENDATION: Delete this folder before attempting an in-place upgrade.`n"
+            $report.Summary += "      Command: Remove-Item '$windowsWS' -Recurse -Force`n"
+        } catch {
+            $report.Summary += "  [!] Found: `$Windows.~WS (unable to calculate size)`n"
+            $report.Warnings += "`$Windows.~WS exists but cannot be fully analyzed"
+        }
+    } else {
+        $report.Summary += "  [✓] `$Windows.~WS: Not found (GOOD)`n"
+    }
+    
+    if (Test-Path $windowsOld) {
+        try {
+            $oldSize = (Get-ChildItem $windowsOld -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum / 1GB
+            $oldSizeStr = "{0:N2} GB" -f $oldSize
+            $report.Summary += "  [!] Found: Windows.old (Size: $oldSizeStr)`n"
+            $report.Info += "Windows.old directory exists (from previous Windows installation)"
+            $report.Summary += "      This is a backup of a previous Windows installation.`n"
+            $report.Summary += "      INFO: This won't block an upgrade, but consider deleting for space.`n"
+            $report.Summary += "      Command: Disk Cleanup > Previous Windows Installation(s)`n"
+        } catch {
+            $report.Summary += "  [!] Found: Windows.old (unable to calculate size)`n"
+        }
+    } else {
+        $report.Summary += "  [✓] Windows.old: Not found`n"
+    }
+    
+    $report.Summary += "`n"
+    
+    # 2. Check CBS (Component-Based Servicing) logs
+    $report.Summary += "[2] CHECKING CBS (COMPONENT-BASED SERVICING) LOGS...`n"
+    $report.Summary += "─────────────────────────────────────────────────────────────────────────`n"
+    
+    $cbsLogPath = "$TargetDrive`:\Windows\Logs\CBS\CBS.log"
+    if (Test-Path $cbsLogPath) {
+        try {
+            $cbsContent = Get-Content $cbsLogPath -Tail 500 -ErrorAction SilentlyContinue
+            $cbsErrors = $cbsContent | Where-Object { $_ -match 'Error|Failed|corrupt' }
+            $cbsPendingOperations = $cbsContent | Where-Object { $_ -match 'pending|reboot required' }
+            
+            if ($cbsErrors.Count -gt 0) {
+                $report.Summary += "  [X] CRITICAL: CBS log shows $($cbsErrors.Count) error(s) in recent entries`n"
+                $report.Blockers += "CBS (Component Store) has errors - servicing operations may be failing"
+                $report.Ready = $false
+                $report.Summary += "      Recent errors detected in Component-Based Servicing.`n"
+                $report.Summary += "      This indicates Windows Update or component installation issues.`n"
+                $report.Summary += "      RECOMMENDATION: Run 'DISM /Online /Cleanup-Image /RestoreHealth' first.`n"
+                
+                # Show first few errors
+                $report.Summary += "`n      Sample errors:`n"
+                foreach ($err in ($cbsErrors | Select-Object -First 3)) {
+                    $report.Summary += "      - $($err.Trim())`n"
+                }
+            } else {
+                $report.Summary += "  [✓] CBS log: No recent errors detected (GOOD)`n"
+            }
+            
+            if ($cbsPendingOperations.Count -gt 0) {
+                $report.Summary += "  [!] WARNING: CBS log indicates pending operations`n"
+                $report.Warnings += "CBS has pending operations - a reboot may be required"
+                $report.Summary += "      RECOMMENDATION: Reboot the system before attempting upgrade.`n"
+            }
+        } catch {
+            $report.Summary += "  [!] CBS.log exists but could not be analyzed: $_`n"
+            $report.Warnings += "CBS.log could not be analyzed"
+        }
+    } else {
+        $report.Summary += "  [?] CBS.log not found - unable to verify servicing stack health`n"
+        $report.Warnings += "CBS log not found - cannot verify component servicing health"
+    }
+    
+    $report.Summary += "`n"
+    
+    # 3. Check boot log (ntbtlog.txt)
+    $report.Summary += "[3] CHECKING BOOT LOG (ntbtlog.txt)...`n"
+    $report.Summary += "─────────────────────────────────────────────────────────────────────────`n"
+    
+    $bootLogPath = "$TargetDrive`:\Windows\ntbtlog.txt"
+    if (Test-Path $bootLogPath) {
+        try {
+            $bootLogContent = Get-Content $bootLogPath -ErrorAction SilentlyContinue
+            $failedDrivers = $bootLogContent | Where-Object { $_ -match "Did not load driver" }
+            $criticalDrivers = @("disk", "volmgr", "partmgr", "ntfs", "mountmgr")
+            $criticalFailures = @()
+            
+            foreach ($line in $failedDrivers) {
+                foreach ($critical in $criticalDrivers) {
+                    if ($line -match $critical) {
+                        $criticalFailures += $line
+                        break
+                    }
+                }
+            }
+            
+            if ($criticalFailures.Count -gt 0) {
+                $report.Summary += "  [X] CRITICAL: Boot log shows $($criticalFailures.Count) critical driver failure(s)`n"
+                $report.Blockers += "Critical boot drivers failed to load"
+                $report.Ready = $false
+                $report.Summary += "      Critical drivers required for boot are failing to load.`n"
+                $report.Summary += "      This will likely cause the upgrade to fail or result in unbootable system.`n"
+                $report.Summary += "      RECOMMENDATION: Fix driver issues before attempting upgrade.`n"
+            } elseif ($failedDrivers.Count -gt 10) {
+                $report.Summary += "  [!] WARNING: $($failedDrivers.Count) drivers failed to load (non-critical)`n"
+                $report.Warnings += "Multiple non-critical drivers failed to load"
+                $report.Summary += "      RECOMMENDATION: Investigate driver issues for best upgrade experience.`n"
+            } else {
+                $report.Summary += "  [✓] Boot log: No critical driver failures detected (GOOD)`n"
+            }
+        } catch {
+            $report.Summary += "  [!] ntbtlog.txt exists but could not be analyzed: $_`n"
+        }
+    } else {
+        $report.Summary += "  [i] Boot log not found - enable boot logging to check driver health`n"
+        $report.Summary += "      Run: bcdedit /set {current} bootlog yes`n"
+        $report.Info += "Boot log not available - unable to verify driver health"
+    }
+    
+    $report.Summary += "`n"
+    
+    # 4. Check Windows Update logs
+    $report.Summary += "[4] CHECKING WINDOWS UPDATE LOGS...`n"
+    $report.Summary += "─────────────────────────────────────────────────────────────────────────`n"
+    
+    $windowsUpdateLog = "$TargetDrive`:\Windows\Logs\WindowsUpdate"
+    if (Test-Path $windowsUpdateLog) {
+        try {
+            $recentLogs = Get-ChildItem $windowsUpdateLog -Filter "*.etl" -ErrorAction SilentlyContinue | 
+                          Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            
+            if ($recentLogs) {
+                $lastUpdate = $recentLogs.LastWriteTime
+                $daysSinceUpdate = (New-TimeSpan -Start $lastUpdate -End (Get-Date)).Days
+                
+                if ($daysSinceUpdate -gt 30) {
+                    $report.Summary += "  [!] WARNING: Last Windows Update activity was $daysSinceUpdate days ago`n"
+                    $report.Warnings += "Windows Update hasn't run recently ($daysSinceUpdate days)"
+                    $report.Summary += "      RECOMMENDATION: Run Windows Update and install all updates before upgrade.`n"
+                } else {
+                    $report.Summary += "  [✓] Windows Update logs: Recent activity detected ($daysSinceUpdate days ago)`n"
+                }
+            }
+        } catch {
+            $report.Summary += "  [!] Windows Update logs could not be analyzed: $_`n"
+        }
+    } else {
+        $report.Summary += "  [?] Windows Update log directory not found`n"
+    }
+    
+    $report.Summary += "`n"
+    
+    # 5. Check Setup logs for previous failures
+    $report.Summary += "[5] CHECKING SETUP LOGS (Previous Upgrade Attempts)...`n"
+    $report.Summary += "─────────────────────────────────────────────────────────────────────────`n"
+    
+    $setupLogPaths = @(
+        "$TargetDrive`:\Windows\Panther\setuperr.log",
+        "$TargetDrive`:\Windows\Panther\setupact.log",
+        "$TargetDrive`:\`$Windows.~BT\Sources\Panther\setuperr.log"
+    )
+    
+    $setupErrors = @()
+    foreach ($logPath in $setupLogPaths) {
+        if (Test-Path $logPath) {
+            try {
+                $content = Get-Content $logPath -Tail 100 -ErrorAction SilentlyContinue
+                $errors = $content | Where-Object { $_ -match 'Error|Failed|0x[0-9A-F]{8}' } | Select-Object -First 5
+                if ($errors) {
+                    $setupErrors += [PSCustomObject]@{
+                        File = Split-Path $logPath -Leaf
+                        Errors = $errors
+                    }
+                }
+            } catch { }
+        }
+    }
+    
+    if ($setupErrors.Count -gt 0) {
+        $report.Summary += "  [!] WARNING: Previous setup/upgrade failures detected`n"
+        $report.Warnings += "Previous Windows Setup attempts have failed"
+        $report.Summary += "      Found error logs from previous upgrade attempts.`n"
+        $report.Summary += "      Review these logs to understand what went wrong:`n"
+        foreach ($logErr in $setupErrors) {
+            $report.Summary += "`n      File: $($logErr.File)`n"
+            foreach ($err in $logErr.Errors) {
+                $report.Summary += "        - $($err.Trim())`n"
+            }
+        }
+        $report.Summary += "`n      RECOMMENDATION: Address previous failure causes before retrying.`n"
+    } else {
+        $report.Summary += "  [✓] No previous setup failure logs found (GOOD)`n"
+    }
+    
+    $report.Summary += "`n"
+    
+    # 6. Check disk space
+    $report.Summary += "[6] CHECKING DISK SPACE...`n"
+    $report.Summary += "─────────────────────────────────────────────────────────────────────────`n"
+    
+    try {
+        $drive = Get-PSDrive $TargetDrive -ErrorAction SilentlyContinue
+        if ($drive) {
+            $freeSpaceGB = [math]::Round($drive.Free / 1GB, 2)
+            $totalSpaceGB = [math]::Round(($drive.Used + $drive.Free) / 1GB, 2)
+            $usedSpaceGB = [math]::Round($drive.Used / 1GB, 2)
+            
+            $report.Summary += "  Total: $totalSpaceGB GB | Used: $usedSpaceGB GB | Free: $freeSpaceGB GB`n`n"
+            
+            if ($freeSpaceGB -lt 20) {
+                $report.Summary += "  [X] CRITICAL: Insufficient disk space ($freeSpaceGB GB free)`n"
+                $report.Blockers += "Insufficient disk space for in-place upgrade (need 20+ GB)"
+                $report.Ready = $false
+                $report.Summary += "      In-place upgrade requires at least 20 GB of free space.`n"
+                $report.Summary += "      RECOMMENDATION: Free up disk space before attempting upgrade.`n"
+            } elseif ($freeSpaceGB -lt 40) {
+                $report.Summary += "  [!] WARNING: Low disk space ($freeSpaceGB GB free)`n"
+                $report.Warnings += "Disk space is low - upgrade may be risky"
+                $report.Summary += "      Recommended minimum is 40 GB for smooth upgrade process.`n"
+            } else {
+                $report.Summary += "  [✓] Disk space: Sufficient ($freeSpaceGB GB free)`n"
+            }
+        }
+    } catch {
+        $report.Summary += "  [!] Could not check disk space: $_`n"
+    }
+    
+    $report.Summary += "`n"
+    
+    # 7. Check pending reboot status
+    $report.Summary += "[7] CHECKING SYSTEM REBOOT STATUS...`n"
+    $report.Summary += "─────────────────────────────────────────────────────────────────────────`n"
+    
+    if ($currentOS) {
+        $rebootRequired = $false
+        $rebootReasons = @()
+        
+        # Check Windows Update reboot flag
+        if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired") {
+            $rebootRequired = $true
+            $rebootReasons += "Windows Update pending reboot"
+        }
+        
+        # Check Component-Based Servicing reboot flag
+        if (Test-Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending") {
+            $rebootRequired = $true
+            $rebootReasons += "Component-Based Servicing pending reboot"
+        }
+        
+        # Check pending file rename operations
+        if (Test-Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager") {
+            $pendingFileRenameOps = (Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" -Name PendingFileRenameOperations -ErrorAction SilentlyContinue).PendingFileRenameOperations
+            if ($pendingFileRenameOps) {
+                $rebootRequired = $true
+                $rebootReasons += "Pending file rename operations"
+            }
+        }
+        
+        if ($rebootRequired) {
+            $report.Summary += "  [!] WARNING: System reboot is pending`n"
+            $report.Warnings += "System has pending reboot"
+            $report.Summary += "      Reasons:`n"
+            foreach ($reason in $rebootReasons) {
+                $report.Summary += "        - $reason`n"
+            }
+            $report.Summary += "      RECOMMENDATION: Reboot the system before attempting upgrade.`n"
+        } else {
+            $report.Summary += "  [✓] No pending reboot detected (GOOD)`n"
+        }
+    } else {
+        $report.Summary += "  [i] Reboot status check only available for current OS`n"
+    }
+    
+    $report.Summary += "`n"
+    
+    # 8. Final Summary
+    $report.Summary += "═══════════════════════════════════════════════════════════════════════════`n"
+    $report.Summary += "  FINAL ASSESSMENT`n"
+    $report.Summary += "═══════════════════════════════════════════════════════════════════════════`n"
+    
+    if ($report.Ready) {
+        $report.Summary += "STATUS: ✓ READY FOR IN-PLACE UPGRADE`n`n"
+        if ($report.Warnings.Count -gt 0) {
+            $report.Summary += "WARNINGS ($($report.Warnings.Count)):`n"
+            foreach ($warning in $report.Warnings) {
+                $report.Summary += "  • $warning`n"
+            }
+            $report.Summary += "`nThese warnings should be addressed for best results, but won't block upgrade.`n"
+        } else {
+            $report.Summary += "No blockers or warnings detected. System appears healthy for upgrade.`n"
+        }
+    } else {
+        $report.Summary += "STATUS: ✗ NOT READY FOR IN-PLACE UPGRADE`n`n"
+        $report.Summary += "BLOCKERS ($($report.Blockers.Count)):`n"
+        foreach ($blocker in $report.Blockers) {
+            $report.Summary += "  • $blocker`n"
+        }
+        $report.Summary += "`nThese issues MUST be resolved before attempting an in-place upgrade.`n"
+        
+        if ($report.Warnings.Count -gt 0) {
+            $report.Summary += "`nADDITIONAL WARNINGS ($($report.Warnings.Count)):`n"
+            foreach ($warning in $report.Warnings) {
+                $report.Summary += "  • $warning`n"
+            }
+        }
+    }
+    
+    if ($report.Info.Count -gt 0) {
+        $report.Summary += "`nADDITIONAL INFO:`n"
+        foreach ($info in $report.Info) {
+            $report.Summary += "  • $info`n"
+        }
+    }
+    
+    $report.Summary += "`n═══════════════════════════════════════════════════════════════════════════`n"
+    $report.Summary += "Scan completed at $(Get-Date -Format 'HH:mm:ss')`n"
+    $report.Summary += "═══════════════════════════════════════════════════════════════════════════`n"
+    
+    return $report
+}
+
 function Get-BSODExplanation {
     param($StopCode)
     $explanations = @{

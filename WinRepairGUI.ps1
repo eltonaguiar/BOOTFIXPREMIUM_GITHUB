@@ -257,6 +257,7 @@ $XAML = @"
                         <Button Content="Analyze Boot Log" Height="35" Name="BtnAnalyzeBootLog" Background="#dc3545" Foreground="White" Width="150" Margin="0,0,10,0"/>
                         <Button Content="Analyze Event Logs" Height="35" Name="BtnAnalyzeEventLogs" Background="#17a2b8" Foreground="White" Width="150" Margin="0,0,10,0"/>
                     <Button Content="Full Boot Diagnosis" Height="35" Name="BtnFullBootDiagnosis" Background="#28a745" Foreground="White" Width="150" Margin="0,0,10,0"/>
+                    <Button Content="In-Place Upgrade Check" Height="35" Name="BtnUpgradeReadiness" Background="#ff6b35" Foreground="White" Width="180" Margin="0,0,10,0"/>
                     <Button Content="Hardware Support" Height="35" Name="BtnHardwareSupport" Background="#6f42c1" Foreground="White" Width="150" Margin="0,0,10,0"/>
                     <Button Content="Unofficial Repair Tips" Height="35" Name="BtnRepairTips" Background="#ffc107" Foreground="Black" Width="180" Margin="0,0,10,0"/>
                     <Button Content="Generate Registry Override Script" Height="35" Name="BtnGenRegScript" Background="#dc3545" Foreground="White" Width="220" Margin="0,0,10,0"/>
@@ -268,7 +269,7 @@ $XAML = @"
                     </StackPanel>
                 </StackPanel>
                 
-                <TextBlock Grid.Row="1" Text="Offline log analysis from target Windows drive. Driver Forensics identifies missing storage drivers and required INF files. Hardware Support shows manufacturer links and driver update alerts." 
+                <TextBlock Grid.Row="1" Text="Offline log analysis from target Windows drive. Driver Forensics identifies missing storage drivers and required INF files. Hardware Support shows manufacturer links and driver update alerts. In-Place Upgrade Check verifies system readiness by checking CBS logs, boot status, setup logs, and upgrade blockers." 
                            FontStyle="Italic" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"/>
                 
                 <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
@@ -332,6 +333,405 @@ $XAML = @"
                 
                 <TextBlock Grid.Row="3" Text="Note: This will launch Windows Setup and restart your system. Ensure you have backups and BitLocker recovery key if applicable." 
                            Foreground="#d78700" FontStyle="Italic" TextWrapping="Wrap" Margin="5,10,5,0"/>
+            </Grid>
+        </TabItem>
+
+        <TabItem Header="Recommended Tools">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                
+                <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                    <TextBlock Text="Recovery &amp; Backup Tools" FontWeight="Bold" FontSize="16" Margin="0,0,0,5"/>
+                    <TextBlock Name="ToolsEnvInfo" Text="Current Environment: Detecting..." Foreground="Gray" Margin="0,0,0,5"/>
+                    <TextBlock Text="Tools are categorized based on your current environment and needs." TextWrapping="Wrap" Foreground="Gray" Margin="0,0,0,10"/>
+                </StackPanel>
+                
+                <TabControl Grid.Row="1">
+                    <TabItem Header="Recovery Tools (FREE)">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="10">
+                                <!-- Ventoy USB Section -->
+                                <GroupBox Header="Step 1: Create Bootable USB with Ventoy (Recommended)" Margin="0,0,0,15" Background="#f8f9fa">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="Ventoy - Multi-Boot USB Solution" FontWeight="Bold" FontSize="14" Foreground="#0078D7" Margin="0,0,0,5"/>
+                                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,5">
+                                            <Run Text="Ventoy allows you to copy multiple ISO files to a USB drive and boot from them without reformatting. Perfect for recovery environments!"/>
+                                        </TextBlock>
+                                        <TextBlock Text="Requirements:" FontWeight="Bold" Margin="0,5,0,3"/>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#333" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="USB drive (8GB+ recommended, 16GB+ ideal)" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#333" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="USB will be formatted - BACKUP ANY DATA FIRST!" Foreground="#dc3545" FontWeight="Bold" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <StackPanel Orientation="Horizontal" Margin="0,10,0,5">
+                                            <Button Content="Open Ventoy Website" Name="BtnVentoyWeb" Background="#28a745" Foreground="White" Width="180" Height="30" Margin="0,0,10,0"/>
+                                            <TextBlock Text="https://www.ventoy.net" VerticalAlignment="Center" Foreground="Gray"/>
+                                        </StackPanel>
+                                        
+                                        <TextBlock Text="Instructions:" FontWeight="Bold" Margin="0,10,0,3"/>
+                                        <TextBlock Text="1. Download Ventoy from the website above" Margin="20,2"/>
+                                        <TextBlock Text="2. Extract and run Ventoy2Disk.exe" Margin="20,2"/>
+                                        <TextBlock Text="3. Select your USB drive and click Install" Margin="20,2"/>
+                                        <TextBlock Text="4. Copy ISO files directly to the USB drive (no extraction needed!)" Margin="20,2"/>
+                                        
+                                        <Border Background="#fff3cd" BorderBrush="#ffc107" BorderThickness="1" Margin="0,10,0,0" Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Text="⚠️ For WIM files (Windows Imaging Format):" FontWeight="Bold" Foreground="#856404"/>
+                                                <TextBlock TextWrapping="Wrap" Foreground="#856404" Margin="0,5,0,0">
+                                                    <Run Text="WIM files require the WimBoot plugin. Visit: "/>
+                                                    <Hyperlink Name="LinkVentoyWimBoot" NavigateUri="https://www.ventoy.net/en/plugin_wimboot.html">https://www.ventoy.net/en/plugin_wimboot.html</Hyperlink>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Border>
+                                    </StackPanel>
+                                </GroupBox>
+                                
+                                <!-- Hiren's BootCD PE -->
+                                <GroupBox Header="Hiren's BootCD PE - Complete Toolkit" Margin="0,0,0,15">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="Hiren's BootCD PE" FontWeight="Bold" FontSize="14" Foreground="#0078D7" Margin="0,0,0,5"/>
+                                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,5">
+                                            <Run Text="A comprehensive bootable rescue environment based on Windows 10/11 PE. Includes hundreds of tools for repair, recovery, diagnostics, and data recovery."/>
+                                        </TextBlock>
+                                        <TextBlock Text="Best For:" FontWeight="Bold" Margin="0,5,0,3"/>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Complete system rescue and repair" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Password reset and data recovery" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Hardware diagnostics and testing" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                            <Button Content="Open Hiren's Website" Name="BtnHirensWeb" Background="#0078D7" Foreground="White" Width="180" Height="30" Margin="0,0,10,0"/>
+                                            <TextBlock Text="https://www.hirensbootcd.org" VerticalAlignment="Center" Foreground="Gray"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </GroupBox>
+                                
+                                <!-- Medicat USB -->
+                                <GroupBox Header="Medicat USB - Medical-Grade Recovery" Margin="0,0,0,15">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="Medicat USB" FontWeight="Bold" FontSize="14" Foreground="#0078D7" Margin="0,0,0,5"/>
+                                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,5">
+                                            <Run Text="A comprehensive recovery environment built on Ventoy with curated tools, optimized for Windows recovery and repair scenarios."/>
+                                        </TextBlock>
+                                        <TextBlock Text="Best For:" FontWeight="Bold" Margin="0,5,0,3"/>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Pre-configured recovery environment" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Windows installation and repair" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <TextBlock Text="⚠️ Note: Search for Medicat USB on GitHub or recovery forums" Foreground="#856404" FontStyle="Italic" Margin="0,10,0,0"/>
+                                    </StackPanel>
+                                </GroupBox>
+                                
+                                <!-- Other Recovery Environments -->
+                                <GroupBox Header="Other Recovery Environments" Margin="0,0,0,10">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="Additional WinPE-Based Tools:" FontWeight="Bold" Margin="0,0,0,10"/>
+                                        
+                                        <StackPanel Margin="0,0,0,10">
+                                            <TextBlock Text="• SystemRescue (Linux-based)" FontWeight="Bold"/>
+                                            <TextBlock Text="  Cross-platform recovery with Linux tools" Foreground="Gray" Margin="20,2,0,0"/>
+                                            <TextBlock Text="  Website: https://www.system-rescue.org" Foreground="#0078D7" Margin="20,2,0,5"/>
+                                        </StackPanel>
+                                        
+                                        <StackPanel Margin="0,0,0,10">
+                                            <TextBlock Text="• AOMEI PE Builder (Windows-based)" FontWeight="Bold"/>
+                                            <TextBlock Text="  Create custom WinPE with AOMEI tools" Foreground="Gray" Margin="20,2,0,0"/>
+                                            <TextBlock Text="  Website: https://www.aomeitech.com" Foreground="#0078D7" Margin="20,2,0,5"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </GroupBox>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+                    
+                    <TabItem Header="Recovery Tools (PAID)">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="10">
+                                <!-- Acronis -->
+                                <GroupBox Header="Acronis Cyber Protect Home Office" Margin="0,0,0,15">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="Acronis Cyber Protect (formerly True Image)" FontWeight="Bold" FontSize="14" Foreground="#dc7700" Margin="0,0,0,5"/>
+                                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,10">
+                                            <Run Text="Professional-grade backup and recovery with cloud integration. Includes bootable recovery media creation."/>
+                                        </TextBlock>
+                                        
+                                        <TextBlock Text="Pros:" FontWeight="Bold" Foreground="#28a745" Margin="0,5,0,3"/>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Provides time estimates for backup/restore operations" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Cloud backup integration" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Anti-malware and cybersecurity features" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <TextBlock Text="Cons:" FontWeight="Bold" Foreground="#dc3545" Margin="0,10,0,3"/>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#dc3545" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Cloud recovery can be slow" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#dc3545" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="More expensive than alternatives" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                            <Button Content="Open Acronis Website" Name="BtnAcronisWeb" Background="#dc7700" Foreground="White" Width="180" Height="30" Margin="0,0,10,0"/>
+                                            <TextBlock Text="https://www.acronis.com" VerticalAlignment="Center" Foreground="Gray"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </GroupBox>
+                                
+                                <!-- Macrium Reflect -->
+                                <GroupBox Header="Macrium Reflect - BEST CHOICE ⭐" Margin="0,0,0,15" BorderBrush="#28a745" BorderThickness="2">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="Macrium Reflect (Recommended)" FontWeight="Bold" FontSize="14" Foreground="#28a745" Margin="0,0,0,5"/>
+                                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,10">
+                                            <Run Text="Professional disk imaging and cloning software. Creates bootable rescue media (WinPE-based) for bare-metal recovery."/>
+                                        </TextBlock>
+                                        
+                                        <TextBlock Text="Why Macrium is the Best:" FontWeight="Bold" Foreground="#28a745" Margin="0,5,0,3"/>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Fast and reliable imaging/restore operations" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Excellent WinPE bootable media creator" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Intuitive interface and reliable recovery" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Free Home Edition available with core features" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,2">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Local backups (faster than cloud-based solutions)" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <Border Background="#d4edda" BorderBrush="#28a745" BorderThickness="1" Margin="0,10,0,0" Padding="10">
+                                            <TextBlock TextWrapping="Wrap" Foreground="#155724">
+                                                <Run Text="💡 Editor's Choice: Based on extensive experience, Macrium Reflect offers the best balance of speed, reliability, and ease of use for system imaging and recovery."/>
+                                            </TextBlock>
+                                        </Border>
+                                        
+                                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                            <Button Content="Open Macrium Website" Name="BtnMacriumWeb" Background="#28a745" Foreground="White" Width="180" Height="30" Margin="0,0,10,0"/>
+                                            <TextBlock Text="https://www.macrium.com" VerticalAlignment="Center" Foreground="Gray"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </GroupBox>
+                                
+                                <!-- Paragon -->
+                                <GroupBox Header="Paragon Backup &amp; Recovery" Margin="0,0,0,10">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="Paragon Hard Disk Manager" FontWeight="Bold" FontSize="14" Foreground="#0078D7" Margin="0,0,0,5"/>
+                                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,5">
+                                            <Run Text="Comprehensive disk management with backup, partitioning, and recovery tools."/>
+                                        </TextBlock>
+                                        
+                                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                            <Button Content="Open Paragon Website" Name="BtnParagonWeb" Background="#0078D7" Foreground="White" Width="180" Height="30" Margin="0,0,10,0"/>
+                                            <TextBlock Text="https://www.paragon-software.com" VerticalAlignment="Center" Foreground="Gray"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </GroupBox>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+                    
+                    <TabItem Header="Backup Strategy">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel Margin="10">
+                                <!-- Strategy Overview -->
+                                <GroupBox Header="Ideal Backup Methodology" Margin="0,0,0,15" Background="#f8f9fa">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="The 3-2-1 Backup Rule" FontWeight="Bold" FontSize="16" Foreground="#0078D7" Margin="0,0,0,10"/>
+                                        
+                                        <BulletDecorator Margin="0,5">
+                                            <BulletDecorator.Bullet>
+                                                <TextBlock Text="3" FontWeight="Bold" FontSize="18" Foreground="#28a745" Width="30"/>
+                                            </BulletDecorator.Bullet>
+                                            <TextBlock Text="Keep at least 3 copies of your data (original + 2 backups)" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <BulletDecorator Margin="0,5">
+                                            <BulletDecorator.Bullet>
+                                                <TextBlock Text="2" FontWeight="Bold" FontSize="18" Foreground="#0078D7" Width="30"/>
+                                            </BulletDecorator.Bullet>
+                                            <TextBlock Text="Store backups on 2 different types of media (e.g., internal + external drive)" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <BulletDecorator Margin="0,5">
+                                            <BulletDecorator.Bullet>
+                                                <TextBlock Text="1" FontWeight="Bold" FontSize="18" Foreground="#dc7700" Width="30"/>
+                                            </BulletDecorator.Bullet>
+                                            <TextBlock Text="Keep 1 copy offsite or in cloud storage (protection against fire, theft, etc.)" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <Separator Margin="0,15"/>
+                                        
+                                        <TextBlock Text="Recommended Backup Schedule:" FontWeight="Bold" Margin="0,10,0,5"/>
+                                        <BulletDecorator Margin="20,3">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#0078D7" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="System Image: Weekly (or before major changes)" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,3">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#0078D7" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Important Files: Daily (automated)" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,3">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#0078D7" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Critical Documents: Real-time sync (OneDrive/cloud)" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                    </StackPanel>
+                                </GroupBox>
+                                
+                                <!-- Hardware Recommendations -->
+                                <GroupBox Header="Hardware Recommendations for Fast Backups" Margin="0,0,0,15">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="Storage Media Performance Hierarchy" FontWeight="Bold" FontSize="14" Margin="0,0,0,10"/>
+                                        
+                                        <StackPanel Margin="0,0,0,10">
+                                            <TextBlock Text="🏆 Best: NVMe SSD (PCIe 4.0/5.0)" FontWeight="Bold" Foreground="#28a745"/>
+                                            <TextBlock Text="  • Speed: Up to 7,000 MB/s (PCIe 4.0), 14,000 MB/s (PCIe 5.0)" Foreground="Gray" Margin="20,2"/>
+                                            <TextBlock Text="  • Use Case: Primary backup drive for desktop PCs" Foreground="Gray" Margin="20,2"/>
+                                            <TextBlock Text="  • Requires: M.2 slot on motherboard" Foreground="#dc7700" Margin="20,2"/>
+                                        </StackPanel>
+                                        
+                                        <StackPanel Margin="0,0,0,10">
+                                            <TextBlock Text="⭐ Great: SATA SSD" FontWeight="Bold" Foreground="#0078D7"/>
+                                            <TextBlock Text="  • Speed: Up to 550 MB/s" Foreground="Gray" Margin="20,2"/>
+                                            <TextBlock Text="  • Use Case: Budget-friendly internal backups" Foreground="Gray" Margin="20,2"/>
+                                            <TextBlock Text="  • Requires: SATA port on motherboard" Foreground="#dc7700" Margin="20,2"/>
+                                        </StackPanel>
+                                        
+                                        <StackPanel Margin="0,0,0,10">
+                                            <TextBlock Text="✅ Good: USB 3.2 Gen 2 External SSD" FontWeight="Bold" Foreground="#6c757d"/>
+                                            <TextBlock Text="  • Speed: Up to 1,000 MB/s (USB 3.2 Gen 2)" Foreground="Gray" Margin="20,2"/>
+                                            <TextBlock Text="  • Use Case: Portable backups, laptops" Foreground="Gray" Margin="20,2"/>
+                                            <TextBlock Text="  • Requires: USB 3.0+ port (USB-C recommended)" Foreground="#dc7700" Margin="20,2"/>
+                                        </StackPanel>
+                                        
+                                        <StackPanel Margin="0,0,0,10">
+                                            <TextBlock Text="⚠️ Acceptable: External HDD (7200 RPM)" FontWeight="Bold" Foreground="#856404"/>
+                                            <TextBlock Text="  • Speed: ~120-200 MB/s" Foreground="Gray" Margin="20,2"/>
+                                            <TextBlock Text="  • Use Case: Large capacity, budget backups" Foreground="Gray" Margin="20,2"/>
+                                            <TextBlock Text="  • Note: Slower, but good for archival storage" Foreground="#dc7700" Margin="20,2"/>
+                                        </StackPanel>
+                                        
+                                        <Border Background="#fff3cd" BorderBrush="#ffc107" BorderThickness="1" Margin="0,10,0,0" Padding="10">
+                                            <StackPanel>
+                                                <TextBlock Text="💡 Investment Recommendation:" FontWeight="Bold" Foreground="#856404"/>
+                                                <TextBlock TextWrapping="Wrap" Foreground="#856404" Margin="0,5,0,0">
+                                                    <Run Text="For desktop PCs: Add a secondary NVMe SSD dedicated to backups. Requires available M.2 slot (may need motherboard upgrade)."/>
+                                                </TextBlock>
+                                                <TextBlock TextWrapping="Wrap" Foreground="#856404" Margin="0,5,0,0">
+                                                    <Run Text="For laptops: USB 3.2 Gen 2 external SSD is ideal (portable + fast)."/>
+                                                </TextBlock>
+                                            </StackPanel>
+                                        </Border>
+                                    </StackPanel>
+                                </GroupBox>
+                                
+                                <!-- Wizard Button -->
+                                <GroupBox Header="Get Personalized Recommendations" Margin="0,0,0,10">
+                                    <StackPanel Margin="10">
+                                        <TextBlock TextWrapping="Wrap" Margin="0,0,0,10">
+                                            <Run Text="Answer a few questions about your system and needs to get tailored backup hardware and software recommendations."/>
+                                        </TextBlock>
+                                        <Button Content="🧙 Start Backup Wizard" Name="BtnBackupWizard" Background="#6f42c1" Foreground="White" Width="200" Height="35" FontWeight="Bold"/>
+                                    </StackPanel>
+                                </GroupBox>
+                                
+                                <!-- Free Backup Software -->
+                                <GroupBox Header="Recommended Free Backup Software" Margin="0,0,0,15">
+                                    <StackPanel Margin="10">
+                                        <StackPanel Margin="0,0,0,10">
+                                            <TextBlock Text="1. Macrium Reflect Free" FontWeight="Bold" FontSize="13" Foreground="#28a745"/>
+                                            <TextBlock Text="  Full system imaging, bootable rescue media" Foreground="Gray" Margin="20,2"/>
+                                            <Button Content="Get Macrium Free" Name="BtnMacriumFreeWeb" Background="#28a745" Foreground="White" Width="150" Height="25" Margin="20,5,0,0" HorizontalAlignment="Left"/>
+                                        </StackPanel>
+                                        
+                                        <StackPanel Margin="0,0,0,10">
+                                            <TextBlock Text="2. AOMEI Backupper Standard" FontWeight="Bold" FontSize="13" Foreground="#0078D7"/>
+                                            <TextBlock Text="  System/disk/partition backup, scheduling" Foreground="Gray" Margin="20,2"/>
+                                            <Button Content="Get AOMEI Free" Name="BtnAOMEIFreeWeb" Background="#0078D7" Foreground="White" Width="150" Height="25" Margin="20,5,0,0" HorizontalAlignment="Left"/>
+                                        </StackPanel>
+                                        
+                                        <StackPanel Margin="0,0,0,10">
+                                            <TextBlock Text="3. Windows Backup (Built-in)" FontWeight="Bold" FontSize="13" Foreground="#6c757d"/>
+                                            <TextBlock Text="  File History + System Image backup" Foreground="Gray" Margin="20,2"/>
+                                            <TextBlock Text="  Access via: Control Panel → Backup and Restore" Foreground="Gray" Margin="20,2" FontStyle="Italic"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </GroupBox>
+                                
+                                <!-- Environment-Specific Tips -->
+                                <GroupBox Header="Environment-Specific Backup Tips" Margin="0,0,0,10">
+                                    <StackPanel Margin="10">
+                                        <TextBlock Text="In Full Windows (FullOS):" FontWeight="Bold" Margin="0,0,0,5"/>
+                                        <BulletDecorator Margin="20,3">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Install and run backup software directly" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,3">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#28a745" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Create bootable rescue media for recovery" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <TextBlock Text="In WinPE/WinRE (Recovery Environment):" FontWeight="Bold" Margin="0,15,0,5"/>
+                                        <BulletDecorator Margin="20,3">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#0078D7" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Use bootable media created from backup software" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,3">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#0078D7" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Access image files on external drives for restore" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        
+                                        <TextBlock Text="In Windows Installer (Shift+F10):" FontWeight="Bold" Margin="0,15,0,5"/>
+                                        <BulletDecorator Margin="20,3">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#dc7700" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Limited to command-line tools" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                        <BulletDecorator Margin="20,3">
+                                            <BulletDecorator.Bullet><Ellipse Fill="#dc7700" Width="4" Height="4" Margin="0,0,5,0"/></BulletDecorator.Bullet>
+                                            <TextBlock Text="Better to boot into WinPE or use rescue media" TextWrapping="Wrap"/>
+                                        </BulletDecorator>
+                                    </StackPanel>
+                                </GroupBox>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </TabItem>
+                </TabControl>
             </Grid>
         </TabItem>
 </TabControl>
@@ -515,15 +915,18 @@ function Get-BCDDefaultEntryId {
 # Logic for BCD - Enhanced parser with duplicate detection
 $W.FindName("BtnBCD").Add_Click({
     try {
-        # Force UI update immediately
-        $W.Dispatcher.Invoke([action]{
-            Update-StatusBar -Message "Loading BCD entries..." -ShowProgress
-        }, [System.Windows.Threading.DispatcherPriority]::Render)
+        # Show initial loading message
+        Update-StatusBar -Message "Loading BCD Entries..." -ShowProgress
+        
+        # Force UI to update before blocking operation
+        $W.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
+        [System.Windows.Forms.Application]::DoEvents()
         
         $rawBcd = bcdedit /enum
         $W.FindName("BCDBox").Text = $rawBcd
         
         Update-StatusBar -Message "Parsing BCD entries..." -ShowProgress
+        $W.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
         
         # Get default boot entry ID
         $defaultEntryId = Get-BCDDefaultEntryId
@@ -533,6 +936,7 @@ $W.FindName("BtnBCD").Add_Click({
         $script:BCDEntriesCache = $entries
         
         Update-StatusBar -Message "Processing boot entries..." -ShowProgress
+        $W.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
         
         $bcdItems = @()
         foreach ($entry in $entries) {
@@ -561,6 +965,7 @@ $W.FindName("BtnBCD").Add_Click({
         }
         
         Update-StatusBar -Message "Updating BCD list..." -ShowProgress
+        $W.Dispatcher.Invoke([action]{}, [System.Windows.Threading.DispatcherPriority]::Background)
         
         $W.FindName("BCDList").ItemsSource = $bcdItems
         
@@ -1523,6 +1928,61 @@ $W.FindName("BtnFullBootDiagnosis").Add_Click({
     $W.FindName("LogAnalysisBox").Text = $output
 })
 
+# In-Place Upgrade Readiness Check button
+$W.FindName("BtnUpgradeReadiness").Add_Click({
+    $selectedDrive = $W.FindName("LogDriveCombo").SelectedItem
+    $drive = "C"
+    
+    if ($selectedDrive) {
+        if ($selectedDrive -match '^([A-Z]):') {
+            $drive = $matches[1]
+        }
+    }
+    
+    $W.FindName("LogAnalysisBox").Text = "Checking in-place upgrade readiness for $drive`:...`n`n"
+    $W.FindName("LogAnalysisBox").Text += "Analyzing system logs, component health, and upgrade blockers...`n"
+    $W.FindName("LogAnalysisBox").Text += "This may take a moment...`n`n"
+    
+    # Run upgrade readiness check
+    $readiness = Get-InPlaceUpgradeReadiness -TargetDrive $drive
+    
+    # Display the comprehensive report
+    $W.FindName("LogAnalysisBox").Text = $readiness.Summary
+    
+    # Show a summary message box
+    if ($readiness.Ready) {
+        if ($readiness.Warnings.Count -gt 0) {
+            [System.Windows.MessageBox]::Show(
+                "✓ System is READY for in-place upgrade!`n`n" +
+                "However, there are $($readiness.Warnings.Count) warning(s) that should be addressed for best results.`n`n" +
+                "Review the detailed report in the output window.",
+                "Upgrade Readiness - Ready with Warnings",
+                "OK",
+                "Information"
+            )
+        } else {
+            [System.Windows.MessageBox]::Show(
+                "✓ System is READY for in-place upgrade!`n`n" +
+                "No blockers or warnings detected.`n" +
+                "System appears healthy and ready to proceed.",
+                "Upgrade Readiness - Ready",
+                "OK",
+                "Information"
+            )
+        }
+    } else {
+        [System.Windows.MessageBox]::Show(
+            "✗ System is NOT READY for in-place upgrade!`n`n" +
+            "Found $($readiness.Blockers.Count) critical blocker(s) that MUST be resolved first.`n" +
+            "Additional warnings: $($readiness.Warnings.Count)`n`n" +
+            "Review the detailed report for specific issues and recommendations.",
+            "Upgrade Readiness - Blocked",
+            "OK",
+            "Warning"
+        )
+    }
+})
+
 $W.FindName("BtnHardwareSupport").Add_Click({
     $W.FindName("LogAnalysisBox").Text = "Gathering hardware information and support links...`n`n"
     
@@ -2144,6 +2604,417 @@ $W.FindName("BtnStartRepair").Add_Click({
     } else {
         Update-StatusBar -Message "Repair install cancelled" -HideProgress
     }
+})
+
+# =====================================================================
+# Recommended Tools Tab - Event Handlers
+# =====================================================================
+
+# Update environment info in the Tools tab
+$toolsEnvInfo = $W.FindName("ToolsEnvInfo")
+if ($toolsEnvInfo) {
+    $toolsEnvInfo.Text = "Current Environment: $envType"
+}
+
+# Ventoy Website
+$W.FindName("BtnVentoyWeb").Add_Click({
+    try {
+        Start-Process "https://www.ventoy.net"
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not open browser. Please visit: https://www.ventoy.net", "Info", "OK", "Information")
+    }
+})
+
+# Ventoy WimBoot Plugin Link
+$ventoyWimBootLink = $W.FindName("LinkVentoyWimBoot")
+if ($ventoyWimBootLink) {
+    $ventoyWimBootLink.Add_Click({
+        try {
+            Start-Process "https://www.ventoy.net/en/plugin_wimboot.html"
+        } catch {
+            [System.Windows.MessageBox]::Show("Could not open browser. Please visit: https://www.ventoy.net/en/plugin_wimboot.html", "Info", "OK", "Information")
+        }
+    })
+}
+
+# Hiren's BootCD Website
+$W.FindName("BtnHirensWeb").Add_Click({
+    try {
+        Start-Process "https://www.hirensbootcd.org"
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not open browser. Please visit: https://www.hirensbootcd.org", "Info", "OK", "Information")
+    }
+})
+
+# Acronis Website
+$W.FindName("BtnAcronisWeb").Add_Click({
+    try {
+        Start-Process "https://www.acronis.com"
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not open browser. Please visit: https://www.acronis.com", "Info", "OK", "Information")
+    }
+})
+
+# Macrium Website
+$W.FindName("BtnMacriumWeb").Add_Click({
+    try {
+        Start-Process "https://www.macrium.com"
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not open browser. Please visit: https://www.macrium.com", "Info", "OK", "Information")
+    }
+})
+
+# Paragon Website
+$W.FindName("BtnParagonWeb").Add_Click({
+    try {
+        Start-Process "https://www.paragon-software.com"
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not open browser. Please visit: https://www.paragon-software.com", "Info", "OK", "Information")
+    }
+})
+
+# Macrium Free Website
+$W.FindName("BtnMacriumFreeWeb").Add_Click({
+    try {
+        Start-Process "https://www.macrium.com/reflectfree"
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not open browser. Please visit: https://www.macrium.com/reflectfree", "Info", "OK", "Information")
+    }
+})
+
+# AOMEI Free Website
+$W.FindName("BtnAOMEIFreeWeb").Add_Click({
+    try {
+        Start-Process "https://www.aomeitech.com/aomei-backupper.html"
+    } catch {
+        [System.Windows.MessageBox]::Show("Could not open browser. Please visit: https://www.aomeitech.com/aomei-backupper.html", "Info", "OK", "Information")
+    }
+})
+
+# Backup Wizard
+$W.FindName("BtnBackupWizard").Add_Click({
+    # Create wizard dialog
+    $wizardXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Backup Hardware Wizard" Width="700" Height="600" WindowStartupLocation="CenterScreen" Background="#F0F0F0">
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <StackPanel Grid.Row="0" Margin="0,0,0,15">
+            <TextBlock Text="🧙 Backup Hardware Wizard" FontSize="18" FontWeight="Bold" Foreground="#6f42c1"/>
+            <TextBlock Text="Answer a few questions to get personalized recommendations" Foreground="Gray" Margin="0,5,0,0"/>
+        </StackPanel>
+        
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <GroupBox Header="1. What type of computer do you have?" Margin="0,0,0,10">
+                    <StackPanel Margin="10">
+                        <RadioButton Name="RbDesktop" Content="Desktop PC" IsChecked="True" Margin="0,5"/>
+                        <RadioButton Name="RbLaptop" Content="Laptop" Margin="0,5"/>
+                        <RadioButton Name="RbWorkstation" Content="Workstation/Server" Margin="0,5"/>
+                    </StackPanel>
+                </GroupBox>
+                
+                <GroupBox Header="2. What is your Windows edition?" Margin="0,0,0,10">
+                    <StackPanel Margin="10">
+                        <RadioButton Name="RbWin10" Content="Windows 10" IsChecked="True" Margin="0,5"/>
+                        <RadioButton Name="RbWin11" Content="Windows 11" Margin="0,5"/>
+                        <RadioButton Name="RbWinOther" Content="Other/Older Windows" Margin="0,5"/>
+                    </StackPanel>
+                </GroupBox>
+                
+                <GroupBox Header="3. How much data do you need to back up?" Margin="0,0,0,10">
+                    <StackPanel Margin="10">
+                        <RadioButton Name="RbDataSmall" Content="Less than 500GB" IsChecked="True" Margin="0,5"/>
+                        <RadioButton Name="RbDataMedium" Content="500GB - 2TB" Margin="0,5"/>
+                        <RadioButton Name="RbDataLarge" Content="More than 2TB" Margin="0,5"/>
+                    </StackPanel>
+                </GroupBox>
+                
+                <GroupBox Header="4. What is your budget for backup hardware?" Margin="0,0,0,10">
+                    <StackPanel Margin="10">
+                        <RadioButton Name="RbBudgetLow" Content="Budget-friendly (Under \$100)" IsChecked="True" Margin="0,5"/>
+                        <RadioButton Name="RbBudgetMid" Content="Mid-range (\$100-\$300)" Margin="0,5"/>
+                        <RadioButton Name="RbBudgetHigh" Content="Premium (\$300+)" Margin="0,5"/>
+                    </StackPanel>
+                </GroupBox>
+                
+                <GroupBox Header="5. How important is backup speed to you?" Margin="0,0,0,10">
+                    <StackPanel Margin="10">
+                        <RadioButton Name="RbSpeedLow" Content="Not important (Occasional backups)" Margin="0,5"/>
+                        <RadioButton Name="RbSpeedMed" Content="Somewhat important (Weekly backups)" IsChecked="True" Margin="0,5"/>
+                        <RadioButton Name="RbSpeedHigh" Content="Very important (Daily/frequent backups)" Margin="0,5"/>
+                    </StackPanel>
+                </GroupBox>
+            </StackPanel>
+        </ScrollViewer>
+        
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
+            <Button Name="BtnWizardCancel" Content="Cancel" Width="100" Height="30" Margin="0,0,10,0"/>
+            <Button Name="BtnWizardGenerate" Content="Get Recommendations" Width="150" Height="30" Background="#6f42c1" Foreground="White" FontWeight="Bold"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+    
+    $wizardWindow = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$wizardXaml)))
+    
+    $wizardWindow.FindName("BtnWizardCancel").Add_Click({
+        $wizardWindow.Close()
+    })
+    
+    $wizardWindow.FindName("BtnWizardGenerate").Add_Click({
+        # Gather selections
+        $computerType = "Desktop"
+        if ($wizardWindow.FindName("RbLaptop").IsChecked) { $computerType = "Laptop" }
+        if ($wizardWindow.FindName("RbWorkstation").IsChecked) { $computerType = "Workstation" }
+        
+        $windowsVersion = "Windows 10"
+        if ($wizardWindow.FindName("RbWin11").IsChecked) { $windowsVersion = "Windows 11" }
+        if ($wizardWindow.FindName("RbWinOther").IsChecked) { $windowsVersion = "Other Windows" }
+        
+        $dataSize = "Small"
+        if ($wizardWindow.FindName("RbDataMedium").IsChecked) { $dataSize = "Medium" }
+        if ($wizardWindow.FindName("RbDataLarge").IsChecked) { $dataSize = "Large" }
+        
+        $budget = "Low"
+        if ($wizardWindow.FindName("RbBudgetMid").IsChecked) { $budget = "Mid" }
+        if ($wizardWindow.FindName("RbBudgetHigh").IsChecked) { $budget = "High" }
+        
+        $speedImportance = "Medium"
+        if ($wizardWindow.FindName("RbSpeedLow").IsChecked) { $speedImportance = "Low" }
+        if ($wizardWindow.FindName("RbSpeedHigh").IsChecked) { $speedImportance = "High" }
+        
+        # Generate recommendations
+        $recommendations = @"
+═══════════════════════════════════════════════════════════════
+    PERSONALIZED BACKUP RECOMMENDATIONS
+═══════════════════════════════════════════════════════════════
+
+Your Profile:
+  • Computer Type: $computerType
+  • Windows Version: $windowsVersion
+  • Data Size: $dataSize (< 500GB / 500GB-2TB / > 2TB)
+  • Budget: $budget
+  • Speed Priority: $speedImportance
+
+───────────────────────────────────────────────────────────────
+HARDWARE RECOMMENDATIONS:
+───────────────────────────────────────────────────────────────
+
+"@
+        
+        # Hardware recommendations based on profile
+        if ($computerType -eq "Desktop") {
+            if ($budget -eq "High" -and $speedImportance -eq "High") {
+                $recommendations += @"
+🏆 RECOMMENDED: Internal NVMe SSD (PCIe 4.0 or 5.0)
+   • Capacity: 1TB or 2TB (based on your data size)
+   • Speed: Up to 7,000 MB/s (PCIe 4.0) or 14,000 MB/s (PCIe 5.0)
+   • Installation: Requires M.2 slot on motherboard
+   • Estimated Cost: `$150-`$400
+   • Example Products:
+     - Samsung 990 PRO (PCIe 4.0)
+     - Crucial T700 (PCIe 5.0)
+     - WD Black SN850X (PCIe 4.0)
+
+⚠️ NOTE: Check if your motherboard has an available M.2 slot.
+   If not, consider a motherboard upgrade or external option.
+
+"@
+            } elseif ($budget -eq "Mid" -or $speedImportance -eq "Medium") {
+                $recommendations += @"
+✅ RECOMMENDED: USB 3.2 Gen 2 External SSD
+   • Capacity: 1TB or 2TB
+   • Speed: Up to 1,000 MB/s
+   • Connection: USB-C (USB 3.2 Gen 2)
+   • Estimated Cost: `$100-`$250
+   • Example Products:
+     - Samsung T7/T9 Portable SSD
+     - SanDisk Extreme Pro Portable SSD
+     - Crucial X8/X10 Portable SSD
+
+💡 TIP: Also works great if you want portability!
+
+"@
+            } else {
+                $recommendations += @"
+💰 BUDGET OPTION: External HDD (7200 RPM) or SATA SSD
+   • Capacity: 2TB or 4TB (HDD) / 1TB (SSD)
+   • Speed: ~150 MB/s (HDD) / ~550 MB/s (SATA SSD)
+   • Connection: USB 3.0
+   • Estimated Cost: `$50-`$100
+   • Example Products:
+     - WD Elements/My Passport (HDD)
+     - Seagate Backup Plus (HDD)
+     - Samsung 870 QVO in USB enclosure (SATA SSD)
+
+💡 TIP: HDDs offer more storage per dollar but are slower.
+
+"@
+            }
+        } else {
+            # Laptop recommendations
+            $recommendations += @"
+✅ RECOMMENDED: USB 3.2 Gen 2 External SSD
+   • Capacity: 1TB or 2TB
+   • Speed: Up to 1,000 MB/s
+   • Connection: USB-C (USB 3.2 Gen 2)
+   • Portable and fast!
+   • Estimated Cost: `$100-`$250
+   • Example Products:
+     - Samsung T7/T9 Portable SSD
+     - SanDisk Extreme Pro Portable SSD
+     - Crucial X8/X10 Portable SSD
+
+💡 TIP: Perfect for laptops - portable and fast enough for frequent backups.
+
+"@
+        }
+        
+        # Software recommendations
+        $recommendations += @"
+───────────────────────────────────────────────────────────────
+SOFTWARE RECOMMENDATIONS:
+───────────────────────────────────────────────────────────────
+
+"@
+        
+        if ($budget -eq "Low") {
+            $recommendations += @"
+🆓 FREE SOFTWARE:
+
+1. Macrium Reflect Free ⭐ RECOMMENDED
+   • Full system imaging with bootable rescue media
+   • Reliable and fast
+   • Best free option available
+   • Download: https://www.macrium.com/reflectfree
+
+2. AOMEI Backupper Standard
+   • System/disk/partition backup
+   • Scheduling support
+   • Download: https://www.aomeitech.com
+
+3. Windows Built-in Backup
+   • File History + System Image
+   • Already on your PC
+   • Access via: Control Panel → Backup and Restore
+
+"@
+        } else {
+            $recommendations += @"
+💎 PAID SOFTWARE (Best Performance):
+
+1. Macrium Reflect Home ⭐ RECOMMENDED
+   • Professional features with commercial-grade reliability
+   • Fast imaging and restore
+   • Excellent WinPE rescue media
+   • Cost: ~`$70
+   • Download: https://www.macrium.com
+
+2. Acronis Cyber Protect Home Office
+   • Cloud integration and ransomware protection
+   • Time estimates for operations
+   • Cost: ~`$50-100/year (subscription)
+   • Download: https://www.acronis.com
+
+💡 OR use the free options above - they work great too!
+
+"@
+        }
+        
+        # Backup strategy
+        $recommendations += @"
+───────────────────────────────────────────────────────────────
+RECOMMENDED BACKUP STRATEGY:
+───────────────────────────────────────────────────────────────
+
+"@
+        
+        if ($speedImportance -eq "High") {
+            $recommendations += @"
+⚡ HIGH-SPEED BACKUP PLAN:
+   • Full System Image: Weekly (automated)
+   • Incremental Backups: Daily (automated)
+   • Critical Files: Real-time sync to cloud (OneDrive/Google Drive)
+   • Keep 3-4 versions of system images
+
+"@
+        } elseif ($speedImportance -eq "Medium") {
+            $recommendations += @"
+✅ BALANCED BACKUP PLAN:
+   • Full System Image: Every 2 weeks or before major changes
+   • Important Files: Weekly (automated)
+   • Critical Documents: Cloud sync (OneDrive/Google Drive)
+   • Keep 2-3 versions of system images
+
+"@
+        } else {
+            $recommendations += @"
+💰 OCCASIONAL BACKUP PLAN:
+   • Full System Image: Monthly or before major changes
+   • Important Files: Weekly
+   • Keep 1-2 versions of system images
+   • Consider cloud storage for critical files
+
+"@
+        }
+        
+        # Additional tips
+        $recommendations += @"
+───────────────────────────────────────────────────────────────
+ADDITIONAL TIPS:
+───────────────────────────────────────────────────────────────
+
+✓ Always test your backups by doing a trial restore
+✓ Keep backups in a different physical location when possible
+✓ Create bootable rescue media and test it before you need it
+✓ Document your backup locations and passwords
+✓ Schedule automatic backups to avoid forgetting
+✓ Consider the 3-2-1 rule: 3 copies, 2 different media, 1 offsite
+
+───────────────────────────────────────────────────────────────
+
+Need help? Check the other tabs for tool links and instructions!
+
+"@
+        
+        # Display recommendations
+        $resultXaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        Title="Your Backup Recommendations" Width="800" Height="700" WindowStartupLocation="CenterScreen" Background="#F0F0F0">
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <TextBlock Grid.Row="0" Text="Your Personalized Recommendations" FontSize="16" FontWeight="Bold" Margin="0,0,0,10"/>
+        
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <TextBox Name="RecommendationsText" Text="" TextWrapping="Wrap" IsReadOnly="True" 
+                     FontFamily="Consolas" Background="White" BorderThickness="1" BorderBrush="#CCC" Padding="10"/>
+        </ScrollViewer>
+        
+        <Button Grid.Row="2" Name="BtnClose" Content="Close" Width="100" Height="30" Margin="0,10,0,0" HorizontalAlignment="Right"/>
+    </Grid>
+</Window>
+"@
+        
+        $resultWindow = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$resultXaml)))
+        $resultWindow.FindName("RecommendationsText").Text = $recommendations
+        $resultWindow.FindName("BtnClose").Add_Click({ $resultWindow.Close() })
+        
+        $wizardWindow.Close()
+        $resultWindow.ShowDialog() | Out-Null
+    })
+    
+    $wizardWindow.ShowDialog() | Out-Null
 })
 
 $W.ShowDialog() | Out-Null
