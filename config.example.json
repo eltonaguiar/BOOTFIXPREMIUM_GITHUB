@@ -1,0 +1,34 @@
+{
+  "version": "1.0.0",
+  "settings": {
+    "auto_backup": true,
+    "backup_retention_days": 30,
+    "verbose_logging": false,
+    "verify_after_repair": true,
+    "skip_warnings": false,
+    "preferred_bootloader": "auto"
+  },
+  "backup": {
+    "enabled": true,
+    "location": "~/.bootfix_backups",
+    "max_backups": 10,
+    "compress": false
+  },
+  "repair": {
+    "grub": {
+      "timeout": 5,
+      "default_entry": 0,
+      "enable_os_prober": true
+    },
+    "windows": {
+      "fix_mbr": true,
+      "fix_boot": true,
+      "rebuild_bcd": true
+    }
+  },
+  "advanced": {
+    "command_timeout": 300,
+    "parallel_operations": false,
+    "custom_scripts": []
+  }
+}
