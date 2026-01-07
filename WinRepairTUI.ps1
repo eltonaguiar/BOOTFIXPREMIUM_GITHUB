@@ -33,6 +33,8 @@ function Start-TUI {
         Write-Host "4) Quick View BCD" -ForegroundColor White
         Write-Host "5) Edit BCD Entry" -ForegroundColor White
         Write-Host "6) Recommended Recovery Tools" -ForegroundColor Green
+        Write-Host "7) Utilities & Tools" -ForegroundColor Magenta
+        Write-Host "8) Network & Internet Help" -ForegroundColor Cyan
         Write-Host "Q) Quit" -ForegroundColor Yellow
         Write-Host ""
 
@@ -344,6 +346,440 @@ function Start-TUI {
                 if ($toolChoice.ToUpper() -ne "R") {
                     # Recursive call to show tools menu again
                     continue
+                }
+            }
+            "7" {
+                Clear-Host
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Magenta
+                Write-Host "  UTILITIES & TOOLS" -ForegroundColor Magenta
+                Write-Host "  Environment: $envDisplay" -ForegroundColor Gray
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Magenta
+                Write-Host ""
+                Write-Host "A) Open Notepad" -ForegroundColor White
+                Write-Host "B) Open Registry Editor (regedit)" -ForegroundColor White
+                Write-Host "C) Open Disk Management (diskpart)" -ForegroundColor White
+                Write-Host "D) Open Task Manager" -ForegroundColor White
+                Write-Host "E) Open Command Prompt" -ForegroundColor White
+                Write-Host "F) Open PowerShell" -ForegroundColor White
+                Write-Host "G) Open File Explorer" -ForegroundColor White
+                Write-Host "H) System Information (systeminfo)" -ForegroundColor White
+                Write-Host "I) Check Disk (chkdsk)" -ForegroundColor Yellow
+                Write-Host "J) Network Configuration (ipconfig)" -ForegroundColor Cyan
+                Write-Host "R) Return to Main Menu" -ForegroundColor Gray
+                Write-Host ""
+                
+                $utilChoice = Read-Host "Select"
+                switch ($utilChoice.ToUpper()) {
+                    "A" {
+                        Write-Host "`nLaunching Notepad..." -ForegroundColor Green
+                        try {
+                            Start-Process "notepad.exe" -ErrorAction Stop
+                            Write-Host "Notepad opened successfully." -ForegroundColor Green
+                        } catch {
+                            Write-Host "Failed to open Notepad: $_" -ForegroundColor Red
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "B" {
+                        Write-Host "`nLaunching Registry Editor..." -ForegroundColor Green
+                        Write-Host "WARNING: Be careful when editing the registry!" -ForegroundColor Yellow
+                        try {
+                            Start-Process "regedit.exe" -ErrorAction Stop
+                            Write-Host "Registry Editor opened successfully." -ForegroundColor Green
+                        } catch {
+                            Write-Host "Failed to open Registry Editor: $_" -ForegroundColor Red
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "C" {
+                        Write-Host "`nLaunching DiskPart (interactive mode)..." -ForegroundColor Green
+                        Write-Host "Type 'help' for commands, 'exit' to return." -ForegroundColor Yellow
+                        Write-Host ""
+                        diskpart
+                        Write-Host "`nReturning to utilities menu..." -ForegroundColor Gray
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "D" {
+                        Write-Host "`nLaunching Task Manager..." -ForegroundColor Green
+                        try {
+                            Start-Process "taskmgr.exe" -ErrorAction Stop
+                            Write-Host "Task Manager opened successfully." -ForegroundColor Green
+                        } catch {
+                            Write-Host "Failed to open Task Manager: $_" -ForegroundColor Red
+                            Write-Host "Task Manager may not be available in $envDisplay" -ForegroundColor Yellow
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "E" {
+                        Write-Host "`nLaunching Command Prompt..." -ForegroundColor Green
+                        Write-Host "Type 'exit' to return to this menu." -ForegroundColor Yellow
+                        Write-Host ""
+                        cmd.exe
+                        Write-Host "`nReturning to utilities menu..." -ForegroundColor Gray
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "F" {
+                        Write-Host "`nLaunching PowerShell..." -ForegroundColor Green
+                        Write-Host "Type 'exit' to return to this menu." -ForegroundColor Yellow
+                        Write-Host ""
+                        powershell.exe
+                        Write-Host "`nReturning to utilities menu..." -ForegroundColor Gray
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "G" {
+                        Write-Host "`nLaunching File Explorer..." -ForegroundColor Green
+                        try {
+                            Start-Process "explorer.exe" -ErrorAction Stop
+                            Write-Host "File Explorer opened successfully." -ForegroundColor Green
+                        } catch {
+                            Write-Host "Failed to open File Explorer: $_" -ForegroundColor Red
+                            Write-Host "File Explorer may not be available in $envDisplay" -ForegroundColor Yellow
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "H" {
+                        Write-Host "`nGathering system information..." -ForegroundColor Green
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        systeminfo | more
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "I" {
+                        Write-Host "`nCheck Disk Utility" -ForegroundColor Yellow
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host ""
+                        $driveLetter = Read-Host "Enter drive letter to check (e.g., C)"
+                        if ($driveLetter) {
+                            $driveNormalized = $driveLetter.TrimEnd(':').ToUpper()
+                            Write-Host "`nRunning chkdsk on ${driveNormalized}:..." -ForegroundColor Green
+                            Write-Host "This may take several minutes..." -ForegroundColor Yellow
+                            chkdsk "${driveNormalized}:" /F /R
+                            Write-Host "`nCheck disk operation completed." -ForegroundColor Green
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "J" {
+                        Write-Host "`nNetwork Configuration" -ForegroundColor Cyan
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host ""
+                        ipconfig /all | more
+                        Write-Host ""
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "R" {
+                        # Return to main menu
+                        break
+                    }
+                    default {
+                        Write-Host "`nInvalid selection. Press any key to continue..." -ForegroundColor Red
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                }
+            }
+            "8" {
+                Clear-Host
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+                Write-Host "  NETWORK & INTERNET HELP" -ForegroundColor Cyan
+                Write-Host "  Environment: $envDisplay" -ForegroundColor Gray
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "A) Check Network Status" -ForegroundColor White
+                Write-Host "B) Enable Network Adapters (WinPE)" -ForegroundColor Green
+                Write-Host "C) Test Internet Connectivity" -ForegroundColor White
+                Write-Host "D) Get Windows Help (Text Browser)" -ForegroundColor Yellow
+                Write-Host "E) Install Portable Browser (WinPE Only)" -ForegroundColor Magenta
+                Write-Host "F) Launch Browser (if available)" -ForegroundColor Cyan
+                Write-Host "R) Return to Main Menu" -ForegroundColor Gray
+                Write-Host ""
+                
+                $netChoice = Read-Host "Select"
+                switch ($netChoice.ToUpper()) {
+                    "A" {
+                        Write-Host "`nChecking network adapters..." -ForegroundColor Green
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host ""
+                        
+                        try {
+                            $adapters = Get-NetAdapter -ErrorAction Stop
+                            Write-Host "Network Adapters Found:" -ForegroundColor Cyan
+                            Write-Host ""
+                            foreach ($adapter in $adapters) {
+                                $statusColor = if ($adapter.Status -eq "Up") { "Green" } else { "Yellow" }
+                                Write-Host "  Name: $($adapter.Name)" -ForegroundColor White
+                                Write-Host "  Status: $($adapter.Status)" -ForegroundColor $statusColor
+                                Write-Host "  Interface: $($adapter.InterfaceDescription)" -ForegroundColor Gray
+                                Write-Host ""
+                            }
+                        } catch {
+                            Write-Host "Get-NetAdapter not available. Using netsh..." -ForegroundColor Yellow
+                            netsh interface show interface
+                        }
+                        
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "B" {
+                        Write-Host "`nEnabling network adapters in WinPE..." -ForegroundColor Green
+                        Write-Host ""
+                        
+                        if ($envDisplay -eq "WinPE" -or $envDisplay -eq "WinRE") {
+                            Write-Host "Method 1: Running wpeinit (WinPE Network Initialization)..." -ForegroundColor Cyan
+                            try {
+                                wpeinit
+                                Write-Host "Network stack initialized successfully!" -ForegroundColor Green
+                            } catch {
+                                Write-Host "wpeinit not available or failed." -ForegroundColor Yellow
+                            }
+                            
+                            Write-Host ""
+                            Write-Host "Method 2: Enabling disabled network adapters..." -ForegroundColor Cyan
+                            try {
+                                $disabledAdapters = Get-NetAdapter | Where-Object {$_.Status -eq 'Disabled'}
+                                if ($disabledAdapters) {
+                                    foreach ($adapter in $disabledAdapters) {
+                                        Write-Host "  Enabling: $($adapter.Name)..." -ForegroundColor Gray
+                                        Enable-NetAdapter -Name $adapter.Name -Confirm:$false -ErrorAction Stop
+                                    }
+                                    Write-Host "All disabled adapters enabled!" -ForegroundColor Green
+                                } else {
+                                    Write-Host "No disabled adapters found." -ForegroundColor Yellow
+                                }
+                            } catch {
+                                Write-Host "Failed to enable adapters: $_" -ForegroundColor Red
+                                Write-Host "Try manually: netsh interface set interface 'Ethernet' enable" -ForegroundColor Yellow
+                            }
+                        } else {
+                            Write-Host "This option is primarily for WinPE/WinRE environments." -ForegroundColor Yellow
+                            Write-Host "Current environment: $envDisplay" -ForegroundColor Gray
+                            Write-Host ""
+                            Write-Host "In Full OS, network adapters are typically already enabled." -ForegroundColor White
+                        }
+                        
+                        Write-Host ""
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "C" {
+                        Write-Host "`nTesting internet connectivity..." -ForegroundColor Green
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host ""
+                        
+                        Write-Host "Test 1: Ping Google DNS (8.8.8.8)..." -ForegroundColor Cyan
+                        $pingResult = Test-Connection -ComputerName "8.8.8.8" -Count 2 -Quiet
+                        if ($pingResult) {
+                            Write-Host "  ✓ Internet connectivity: OK" -ForegroundColor Green
+                        } else {
+                            Write-Host "  ✗ No internet connection" -ForegroundColor Red
+                        }
+                        
+                        Write-Host ""
+                        Write-Host "Test 2: DNS Resolution (google.com)..." -ForegroundColor Cyan
+                        try {
+                            $dnsResult = Resolve-DnsName "google.com" -ErrorAction Stop
+                            Write-Host "  ✓ DNS resolution: OK" -ForegroundColor Green
+                        } catch {
+                            Write-Host "  ✗ DNS resolution failed" -ForegroundColor Red
+                        }
+                        
+                        Write-Host ""
+                        Write-Host "Test 3: HTTP Connectivity (microsoft.com)..." -ForegroundColor Cyan
+                        try {
+                            $webResult = Invoke-WebRequest -Uri "https://www.microsoft.com" -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop
+                            Write-Host "  ✓ Web access: OK (Status $($webResult.StatusCode))" -ForegroundColor Green
+                        } catch {
+                            Write-Host "  ✗ Web access failed: $_" -ForegroundColor Red
+                        }
+                        
+                        Write-Host ""
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "D" {
+                        Write-Host "`nText-Based Web Browser" -ForegroundColor Yellow
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host ""
+                        Write-Host "This feature fetches web content as text (no images/CSS)." -ForegroundColor Gray
+                        Write-Host ""
+                        Write-Host "1) Microsoft Support - Windows Boot Issues" -ForegroundColor White
+                        Write-Host "2) Microsoft Support - Windows Startup Settings" -ForegroundColor White
+                        Write-Host "3) Custom URL" -ForegroundColor Cyan
+                        Write-Host "R) Return" -ForegroundColor Gray
+                        Write-Host ""
+                        
+                        $browserChoice = Read-Host "Select"
+                        $url = ""
+                        
+                        switch ($browserChoice) {
+                            "1" { $url = "https://support.microsoft.com/en-us/windows/advanced-startup-options-including-safe-mode-b90e7808-80b5-a291-d4b8-1a1af602b617" }
+                            "2" { $url = "https://support.microsoft.com/en-us/windows/start-your-pc-in-safe-mode-in-windows-92c27cff-db89-8644-1ce4-b3e5e56fe234" }
+                            "3" { $url = Read-Host "Enter URL (must start with http:// or https://)" }
+                            "R" { break }
+                        }
+                        
+                        if ($url -and $url -ne "") {
+                            Write-Host "`nFetching content from: $url" -ForegroundColor Green
+                            Write-Host "Please wait..." -ForegroundColor Yellow
+                            Write-Host ""
+                            
+                            try {
+                                $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+                                
+                                # Extract plain text from HTML (basic parsing)
+                                $content = $response.Content
+                                $content = $content -replace '<script[^>]*>.*?</script>', ''  # Remove scripts
+                                $content = $content -replace '<style[^>]*>.*?</style>', ''    # Remove styles
+                                $content = $content -replace '<[^>]+>', "`n"                  # Remove HTML tags
+                                $content = $content -replace '&nbsp;', ' '                    # Replace nbsp
+                                $content = $content -replace '&quot;', '"'                    # Replace quotes
+                                $content = $content -replace '&amp;', '&'                     # Replace ampersand
+                                $content = $content -replace '&#39;', "'"                     # Replace apostrophe
+                                $content = $content -replace '\s+', ' '                       # Normalize whitespace
+                                $content = ($content -split "`n") | Where-Object { $_.Trim() -ne "" } | Select-Object -First 100
+                                
+                                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+                                Write-Host "Content Preview (first 100 lines):" -ForegroundColor Cyan
+                                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                                Write-Host ""
+                                $content | ForEach-Object { Write-Host $_.Trim() }
+                                Write-Host ""
+                                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                                
+                                # Offer to save to file
+                                $saveChoice = Read-Host "`nSave full content to file? (Y/N)"
+                                if ($saveChoice -eq 'Y' -or $saveChoice -eq 'y') {
+                                    $savePath = Read-Host "Enter file path (e.g., C:\help.txt)"
+                                    if ($savePath) {
+                                        $response.Content | Out-File -FilePath $savePath -Encoding UTF8
+                                        Write-Host "Content saved to: $savePath" -ForegroundColor Green
+                                    }
+                                }
+                                
+                            } catch {
+                                Write-Host "Failed to fetch web content: $_" -ForegroundColor Red
+                                Write-Host ""
+                                Write-Host "Possible reasons:" -ForegroundColor Yellow
+                                Write-Host "  • No internet connection" -ForegroundColor White
+                                Write-Host "  • Network adapters not enabled" -ForegroundColor White
+                                Write-Host "  • Firewall blocking connection" -ForegroundColor White
+                                Write-Host "  • DNS not configured" -ForegroundColor White
+                            }
+                        }
+                        
+                        Write-Host ""
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "E" {
+                        Write-Host "`nPortable Browser Installation for WinPE" -ForegroundColor Magenta
+                        Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
+                        Write-Host ""
+                        Write-Host "IMPORTANT NOTES:" -ForegroundColor Yellow
+                        Write-Host ""
+                        Write-Host "Shift+F10 Environment:" -ForegroundColor Cyan
+                        Write-Host "  • No graphical browsers will work (no GUI framework)" -ForegroundColor Red
+                        Write-Host "  • Limited to command-line tools only" -ForegroundColor White
+                        Write-Host "  • Use text-based browser (Option D) instead" -ForegroundColor Green
+                        Write-Host ""
+                        Write-Host "WinPE/WinRE with GUI:" -ForegroundColor Cyan
+                        Write-Host "  • Some portable browsers may work if GUI available" -ForegroundColor Green
+                        Write-Host "  • Requires display drivers loaded" -ForegroundColor Yellow
+                        Write-Host "  • Best option: Include browser in custom WinPE build" -ForegroundColor White
+                        Write-Host ""
+                        Write-Host "RECOMMENDED APPROACH:" -ForegroundColor Yellow
+                        Write-Host ""
+                        Write-Host "1. Download Portable Browser:" -ForegroundColor White
+                        Write-Host "   • Firefox Portable: https://portableapps.com/apps/internet/firefox_portable" -ForegroundColor Gray
+                        Write-Host "   • Chrome Portable: https://portableapps.com/apps/internet/google_chrome_portable" -ForegroundColor Gray
+                        Write-Host ""
+                        Write-Host "2. Copy to USB Drive:" -ForegroundColor White
+                        Write-Host "   • Extract portable browser to USB" -ForegroundColor Gray
+                        Write-Host "   • Access from WinPE if GUI available" -ForegroundColor Gray
+                        Write-Host ""
+                        Write-Host "3. For Shift+F10:" -ForegroundColor White
+                        Write-Host "   • Browsers will NOT work (no GUI)" -ForegroundColor Red
+                        Write-Host "   • Use Option D (Text Browser) for help content" -ForegroundColor Green
+                        Write-Host ""
+                        Write-Host "4. Better Alternative:" -ForegroundColor White
+                        Write-Host "   • Use Hiren's BootCD PE (includes browsers pre-installed)" -ForegroundColor Green
+                        Write-Host "   • Download: https://www.hirensbootcd.org" -ForegroundColor Gray
+                        Write-Host ""
+                        Write-Host "Current Environment: $envDisplay" -ForegroundColor Cyan
+                        if ($envDisplay -eq "FullOS") {
+                            Write-Host "  → Browsers already available on your system!" -ForegroundColor Green
+                        } elseif ($envDisplay -eq "WinPE" -or $envDisplay -eq "WinRE") {
+                            Write-Host "  → Check if GUI is available (explorer.exe)" -ForegroundColor Yellow
+                            Write-Host "  → If no GUI, use text-based browser (Option D)" -ForegroundColor White
+                        }
+                        
+                        Write-Host ""
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "F" {
+                        Write-Host "`nLaunching Browser..." -ForegroundColor Cyan
+                        Write-Host ""
+                        
+                        $browsers = @(
+                            @{Name="Microsoft Edge"; Path="msedge.exe"; Args="https://chatgpt.com"},
+                            @{Name="Google Chrome"; Path="chrome.exe"; Args="https://chatgpt.com"},
+                            @{Name="Firefox"; Path="firefox.exe"; Args="https://chatgpt.com"},
+                            @{Name="Internet Explorer"; Path="iexplore.exe"; Args="https://chatgpt.com"}
+                        )
+                        
+                        $launched = $false
+                        foreach ($browser in $browsers) {
+                            try {
+                                Write-Host "Trying $($browser.Name)..." -ForegroundColor Gray
+                                Start-Process $browser.Path -ArgumentList $browser.Args -ErrorAction Stop
+                                Write-Host "✓ $($browser.Name) launched successfully!" -ForegroundColor Green
+                                Write-Host "Opening ChatGPT for Windows boot assistance..." -ForegroundColor Cyan
+                                $launched = $true
+                                break
+                            } catch {
+                                Write-Host "  $($browser.Name) not available" -ForegroundColor DarkGray
+                            }
+                        }
+                        
+                        if (-not $launched) {
+                            Write-Host ""
+                            Write-Host "No graphical browser found." -ForegroundColor Red
+                            Write-Host ""
+                            Write-Host "Environment: $envDisplay" -ForegroundColor Yellow
+                            if ($envDisplay -ne "FullOS") {
+                                Write-Host "Graphical browsers typically don't work in $envDisplay" -ForegroundColor Yellow
+                                Write-Host ""
+                                Write-Host "Alternative options:" -ForegroundColor Cyan
+                                Write-Host "  • Use Option D (Text-Based Browser) for help content" -ForegroundColor White
+                                Write-Host "  • Boot into Full Windows to access browsers" -ForegroundColor White
+                                Write-Host "  • Use Hiren's BootCD PE (includes browsers)" -ForegroundColor White
+                            }
+                        }
+                        
+                        Write-Host ""
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "R" {
+                        # Return to main menu
+                        break
+                    }
+                    default {
+                        Write-Host "`nInvalid selection. Press any key to continue..." -ForegroundColor Red
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
                 }
             }
             "Q" { 
