@@ -32,7 +32,16 @@ sudo python3 bootfix.py --install
 ```
 
 ### Windows (Run as Administrator)
+
+**Command Prompt:**
 ```cmd
+git clone https://github.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB.git
+cd BOOTFIXPREMIUM_GITHUB
+python bootfix.py --install
+```
+
+**PowerShell:**
+```powershell
 git clone https://github.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB.git
 cd BOOTFIXPREMIUM_GITHUB
 python bootfix.py --install
@@ -60,6 +69,11 @@ sudo python3 bootfix.py --repair-grub
 python bootfix.py --repair-windows-boot
 ```
 
+**On Windows PowerShell (Run as Administrator):**
+```powershell
+python bootfix.py --repair-windows-boot
+```
+
 ### Full System Scan and Auto-Repair
 ```bash
 sudo python3 bootfix.py --auto-fix
@@ -68,6 +82,33 @@ sudo python3 bootfix.py --auto-fix
 ### Create Backup
 ```bash
 sudo python3 bootfix.py --backup
+```
+
+## 🪟 PowerShell Quick Start (Windows)
+
+**Open PowerShell as Administrator** (Right-click PowerShell → "Run as Administrator")
+
+```powershell
+# Navigate to the tool directory
+cd BOOTFIXPREMIUM_GITHUB
+
+# View all available options
+python bootfix.py --help
+
+# Run diagnostics (safe, no changes made)
+python bootfix.py --diagnose
+
+# Preview what would be fixed (dry-run mode)
+python bootfix.py --dry-run --repair-windows-boot
+
+# Repair Windows boot issues
+python bootfix.py --repair-windows-boot
+
+# Create a backup
+python bootfix.py --backup
+
+# Automatic repair with backup
+python bootfix.py --auto-fix
 ```
 
 ## 🔧 Advanced Options
