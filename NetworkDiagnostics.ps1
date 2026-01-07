@@ -2065,12 +2065,44 @@ function Get-BootBlockingDrivers {
         $result.Details += "Target: Windows $TargetOSVersion"
         $result.Details += ""
         
-        # Load offline registry
-        try {
-            reg load HKLM\OfflineWin $OfflineWinRegPath -ErrorAction SilentlyContinue
-            Start-Sleep -Milliseconds 500
-        } catch {
-            $result.Details += "Could not load offline registry: $_"
+        # Load offline registry with retry logic
+        $regLoaded = $false
+        $maxRetries = 3
+        $retryCount = 0
+        
+        while (-not $regLoaded -and $retryCount -lt $maxRetries) {
+            try {
+                $output = reg load HKLM\OfflineWin $OfflineWinRegPath 2>&1
+                
+                # Wait and verify registry is actually loaded
+                Start-Sleep -Milliseconds 500
+                
+                # Test if registry is accessible
+                $testKey = Get-ItemProperty -Path "HKLM:\OfflineWin" -ErrorAction SilentlyContinue
+                if ($testKey) {
+                    $regLoaded = $true
+                    $result.Details += "Loaded offline registry successfully"
+                } else {
+                    $retryCount++
+                    if ($retryCount -lt $maxRetries) {
+                        $result.Details += "Registry load attempt $retryCount failed, retrying..."
+                        Start-Sleep -Seconds 1
+                    }
+                }
+            } catch {
+                $retryCount++
+                if ($retryCount -lt $maxRetries) {
+                    $result.Details += "Registry load attempt $retryCount failed: $_, retrying..."
+                    Start-Sleep -Seconds 1
+                } else {
+                    $result.Details += "Could not load offline registry after $maxRetries attempts: $_"
+                    return $result
+                }
+            }
+        }
+        
+        if (-not $regLoaded) {
+            $result.Details += "ERROR: Could not load offline registry after $maxRetries attempts"
             return $result
         }
         
@@ -3070,24 +3102,34 @@ function Test-NetworkPerformance {
         $result.Details += "[Phase 2/3] Estimating bandwidth..."
         
         try {
-            # Test download speed by downloading a small file
-            $testUrl = "http://ipv4.download.thinkbroadband.com/5MB.zip"
+            # Test download speed by downloading a small file from Microsoft (HTTPS)
+            # Using Microsoft's CDN for better security and reliability
+            $testUrl = "https://download.microsoft.com/download/4/3/1/4317947D-1F4D-423A-9916-75E7CB36BF6A/msedge-stable-win-x64.exe"
             $testFile = "$env:TEMP\speedtest_$(Get-Date -Format 'yyyyMMddHHmmss').tmp"
             
             $startTime = Get-Date
-            $webClient = New-Object System.Net.WebClient
-            $webClient.DownloadFile($testUrl, $testFile)
+            
+            # Use Invoke-WebRequest with progress disabled for speed
+            $ProgressPreference = 'SilentlyContinue'
+            Invoke-WebRequest -Uri $testUrl -OutFile $testFile -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
+            $ProgressPreference = 'Continue'
+            
             $endTime = Get-Date
             
             $duration = ($endTime - $startTime).TotalSeconds
-            $fileSize = (Get-Item $testFile).Length
-            $speedMbps = [math]::Round((($fileSize * 8) / $duration) / 1MB, 2)
-            
-            $result.DownloadSpeed = $speedMbps
-            $result.Details += "  Download Speed: $speedMbps Mbps"
-            
-            # Clean up
-            Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+            if (Test-Path $testFile) {
+                $fileSize = (Get-Item $testFile).Length
+                $speedMbps = [math]::Round((($fileSize * 8) / $duration) / 1MB, 2)
+                
+                $result.DownloadSpeed = $speedMbps
+                $result.Details += "  Download Speed: $speedMbps Mbps"
+                
+                # Clean up
+                Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+            } else {
+                $result.Warnings += "Bandwidth test file not created"
+                $result.Details += "  ⚠ Bandwidth test unavailable"
+            }
             
         } catch {
             $result.Warnings += "Bandwidth test failed: $_"
