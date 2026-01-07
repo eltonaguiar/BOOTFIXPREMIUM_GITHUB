@@ -4,8 +4,14 @@ Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force -ErrorAction S
 $ErrorActionPreference = 'Stop'
 
 function Get-EnvironmentType {
-    # More robust detection - check multiple indicators
+    <#
+    .SYNOPSIS
+    Detects the current Windows environment (FullOS, WinRE, or WinPE).
     
+    .DESCRIPTION
+    Uses multiple detection methods to reliably identify the running environment.
+    Primary indicator is SystemDrive (C: for FullOS, X: for recovery).
+    #>
     # Primary check: SystemDrive is the most reliable indicator
     # In FullOS, SystemDrive is usually C:, in WinPE/WinRE it's X:
     if ($env:SystemDrive -eq 'X:') {
@@ -47,6 +53,112 @@ function Get-EnvironmentType {
     return 'FullOS'
 }
 
+function Test-PowerShellAvailability {
+    <#
+    .SYNOPSIS
+    Tests if PowerShell is available and functional.
+    
+    .OUTPUTS
+    HashTable with Available, Version, and Message properties
+    #>
+    try {
+        $psVersion = $PSVersionTable.PSVersion
+        return @{
+            Available = $true
+            Version = $psVersion.ToString()
+            Message = "PowerShell $($psVersion.Major).$($psVersion.Minor) available"
+        }
+    } catch {
+        return @{
+            Available = $false
+            Version = "Unknown"
+            Message = "PowerShell not available"
+        }
+    }
+}
+
+function Test-NetworkAvailability {
+    <#
+    .SYNOPSIS
+    Tests if network adapters are available (not necessarily connected).
+    
+    .OUTPUTS
+    HashTable with Available, AdapterCount, EnabledCount, and Message properties
+    #>
+    try {
+        $adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Hidden' }
+        if ($adapters) {
+            $enabled = ($adapters | Where-Object { $_.Status -eq 'Up' }).Count
+            return @{
+                Available = $true
+                AdapterCount = $adapters.Count
+                EnabledCount = $enabled
+                Message = "$($adapters.Count) network adapter(s) found ($enabled enabled)"
+            }
+        }
+
+        # Fallback: Check with netsh
+        $netshOutput = netsh interface show interface 2>&1
+        if ($netshOutput -match 'connected|disconnected') {
+            return @{
+                Available = $true
+                AdapterCount = 1
+                EnabledCount = 0
+                Message = "Network adapters detected (via netsh)"
+            }
+        }
+
+        return @{
+            Available = $false
+            AdapterCount = 0
+            EnabledCount = 0
+            Message = "No network adapters found"
+        }
+    } catch {
+        return @{
+            Available = $false
+            AdapterCount = 0
+            EnabledCount = 0
+            Message = "Could not detect network adapters: $_"
+        }
+    }
+}
+
+function Test-BrowserAvailability {
+    <#
+    .SYNOPSIS
+    Tests if a web browser is available for accessing help documentation.
+    
+    .OUTPUTS
+    HashTable with Available, Browser, and Message properties
+    #>
+    $browsers = @(
+        @{ Name = "Edge"; Path = "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe" },
+        @{ Name = "Chrome"; Path = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" },
+        @{ Name = "Firefox"; Path = "$env:ProgramFiles\Mozilla Firefox\firefox.exe" }
+    )
+
+    foreach ($browser in $browsers) {
+        try {
+            if (Test-Path $browser.Path -ErrorAction SilentlyContinue) {
+                return @{
+                    Available = $true
+                    Browser = $browser.Name
+                    Message = "$($browser.Name) browser available"
+                }
+            }
+        } catch {
+            continue
+        }
+    }
+
+    return @{
+        Available = $false
+        Browser = "None"
+        Message = "No browser found for help documentation"
+    }
+}
+
 # Initialize script root path
 if ($null -eq $PSScriptRoot -or $PSScriptRoot -eq '') {
     $PSScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -74,9 +186,32 @@ try {
     exit 1
 }
 
+# Load repair-install readiness module
+try {
+    . "$PSScriptRoot\EnsureRepairInstallReady.ps1"
+} catch {
+    Write-Host "WARNING: EnsureRepairInstallReady.ps1 not available - repair-install readiness feature disabled" -ForegroundColor Yellow
+}
+
 # Launch appropriate interface
+Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║          MiracleBoot v7.2.0 - Windows Recovery Toolkit          ║" -ForegroundColor Cyan
+Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
 Write-Host "Detected Environment: $envType" -ForegroundColor Cyan
 Write-Host "SystemDrive: $env:SystemDrive" -ForegroundColor Gray
+
+# Check environment capabilities
+$psInfo = Test-PowerShellAvailability
+$networkInfo = Test-NetworkAvailability
+$browserInfo = Test-BrowserAvailability
+
+Write-Host ""
+Write-Host "Environment Capabilities:" -ForegroundColor Cyan
+Write-Host "  PowerShell: $($psInfo.Message)" -ForegroundColor $(if ($psInfo.Available) { "Green" } else { "Yellow" })
+Write-Host "  Network: $($networkInfo.Message)" -ForegroundColor $(if ($networkInfo.Available) { "Green" } else { "Yellow" })
+Write-Host "  Browser: $($browserInfo.Message)" -ForegroundColor $(if ($browserInfo.Available) { "Green" } else { "Yellow" })
+Write-Host ""
 
 if ($envType -eq 'FullOS') {
     Write-Host "Attempting to launch GUI mode..." -ForegroundColor Green
@@ -88,7 +223,7 @@ if ($envType -eq 'FullOS') {
         Write-Host "WPF assemblies loaded successfully." -ForegroundColor Green
     } catch {
         Write-Host "WARNING: WPF assemblies not available: $_" -ForegroundColor Yellow
-        Write-Host "Falling back to MS-DOS Style mode..." -ForegroundColor Yellow
+        Write-Host "Falling back to TUI mode..." -ForegroundColor Yellow
         . "$PSScriptRoot\WinRepairTUI.ps1"
         Start-TUI
         exit
@@ -110,8 +245,8 @@ if ($envType -eq 'FullOS') {
         Start-TUI
     }
 } else {
-    # WinRE or WinPE - use MS-DOS Style mode
-    Write-Host "Running in $envType environment - using MS-DOS Style mode." -ForegroundColor Yellow
+    # WinRE or WinPE - use TUI mode
+    Write-Host "Running in $envType environment - using TUI mode." -ForegroundColor Yellow
     . "$PSScriptRoot\WinRepairTUI.ps1"
     Start-TUI
 }
