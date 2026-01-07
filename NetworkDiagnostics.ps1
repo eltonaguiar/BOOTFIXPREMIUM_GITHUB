@@ -2092,10 +2092,10 @@ function Get-BootBlockingDrivers {
             } catch {
                 $retryCount++
                 if ($retryCount -lt $maxRetries) {
-                    $result.Details += "Registry load attempt $retryCount failed: $_, retrying..."
+                    $result.Details += "Registry load attempt $retryCount failed: $($_.Exception.Message), retrying..."
                     Start-Sleep -Seconds 1
                 } else {
-                    $result.Details += "Could not load offline registry after $maxRetries attempts: $_"
+                    $result.Details += "Could not load offline registry after $maxRetries attempts: $($_.Exception.Message)"
                     return $result
                 }
             }
@@ -3104,36 +3104,60 @@ function Test-NetworkPerformance {
         try {
             # Test download speed by downloading a small file from Microsoft (HTTPS)
             # Using Microsoft's CDN for better security and reliability
-            $testUrl = "https://download.microsoft.com/download/4/3/1/4317947D-1F4D-423A-9916-75E7CB36BF6A/msedge-stable-win-x64.exe"
+            # Fallback URLs in case primary fails
+            $testUrls = @(
+                "https://speed.hetzner.de/1MB.bin",
+                "https://proof.ovh.net/files/1Mb.dat",
+                "https://download.microsoft.com/download/2/0/E/20E90413-712F-438C-988E-FDAA79A8AC3D/dotnetfx35.exe"
+            )
+            
             $testFile = "$env:TEMP\speedtest_$(Get-Date -Format 'yyyyMMddHHmmss').tmp"
+            $downloadSuccess = $false
+            $originalProgress = $ProgressPreference
             
-            $startTime = Get-Date
+            foreach ($testUrl in $testUrls) {
+                try {
+                    $startTime = Get-Date
+                    
+                    # Use Invoke-WebRequest with progress disabled for speed
+                    try {
+                        $ProgressPreference = 'SilentlyContinue'
+                        Invoke-WebRequest -Uri $testUrl -OutFile $testFile -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
+                    } finally {
+                        $ProgressPreference = $originalProgress
+                    }
+                    
+                    $endTime = Get-Date
+                    
+                    $duration = ($endTime - $startTime).TotalSeconds
+                    if (Test-Path $testFile) {
+                        $fileSize = (Get-Item $testFile).Length
+                        $speedMbps = [math]::Round((($fileSize * 8) / $duration) / 1MB, 2)
+                        
+                        $result.DownloadSpeed = $speedMbps
+                        $result.Details += "  Download Speed: $speedMbps Mbps"
+                        $downloadSuccess = $true
+                        
+                        # Clean up
+                        Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+                        break
+                    }
+                } catch {
+                    # Try next URL
+                    continue
+                }
+            }
             
-            # Use Invoke-WebRequest with progress disabled for speed
-            $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -Uri $testUrl -OutFile $testFile -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
-            $ProgressPreference = 'Continue'
-            
-            $endTime = Get-Date
-            
-            $duration = ($endTime - $startTime).TotalSeconds
-            if (Test-Path $testFile) {
-                $fileSize = (Get-Item $testFile).Length
-                $speedMbps = [math]::Round((($fileSize * 8) / $duration) / 1MB, 2)
-                
-                $result.DownloadSpeed = $speedMbps
-                $result.Details += "  Download Speed: $speedMbps Mbps"
-                
-                # Clean up
-                Remove-Item $testFile -Force -ErrorAction SilentlyContinue
-            } else {
-                $result.Warnings += "Bandwidth test file not created"
-                $result.Details += "  ⚠ Bandwidth test unavailable"
+            if (-not $downloadSuccess) {
+                $result.Warnings += "All bandwidth test URLs failed"
+                $result.Details += "  ⚠ Bandwidth test unavailable (requires internet)"
             }
             
         } catch {
-            $result.Warnings += "Bandwidth test failed: $_"
+            $result.Warnings += "Bandwidth test failed: $($_.Exception.Message)"
             $result.Details += "  ⚠ Bandwidth test unavailable (requires internet)"
+        } finally {
+            $ProgressPreference = $originalProgress
         }
         
         # Phase 3: Connection Quality Assessment
