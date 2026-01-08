@@ -1,0 +1,160 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║               QUICK ERROR SUMMARY - QUICK REFERENCE CARD                     ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+📍 LOCATION
+─────────────────────────────────────────────────────────────────────────────
+  Script:  HELPER SCRIPTS\QuickErrorSummary.ps1
+  Launcher: HELPER SCRIPTS\RUN_QUICK_ERROR_SUMMARY.cmd
+  Guide:   DOCUMENTATION\QUICK_ERROR_SUMMARY_GUIDE.md
+
+🚀 FASTEST START (GUI Menu)
+─────────────────────────────────────────────────────────────────────────────
+  1. Run as Administrator
+  2. Double-click: RUN_QUICK_ERROR_SUMMARY.cmd
+  3. Select option 1-5
+  4. Copy output to ChatGPT
+
+⚡ QUICK COMMANDS
+─────────────────────────────────────────────────────────────────────────────
+
+# Default (24 hours, summary format)
+.\QuickErrorSummary.ps1
+
+# Quick copy to clipboard
+.\QuickErrorSummary.ps1 -CopyToClipboard
+
+# Last 48 hours, full details
+.\QuickErrorSummary.ps1 -HoursBack 48 -DetailLevel Full
+
+# Save to file
+.\QuickErrorSummary.ps1 -OutputFile "C:\errors.txt"
+
+# Show top 20 errors, compact format
+.\QuickErrorSummary.ps1 -TopErrors 20 -DetailLevel Compact
+
+# Include warnings too
+.\QuickErrorSummary.ps1 -IncludeWarnings
+
+📊 OUTPUT FORMATS
+─────────────────────────────────────────────────────────────────────────────
+
+  Compact  : Minimal output, just error codes and counts
+  Summary  : Balanced format, ChatGPT-ready (DEFAULT)
+  Full     : Comprehensive with all details and context
+
+💾 OUTPUT OPTIONS
+─────────────────────────────────────────────────────────────────────────────
+
+  Screen        : Default (just displays results)
+  Clipboard     : -CopyToClipboard (ready to paste to ChatGPT)
+  File          : -OutputFile "path\file.txt" (save for later)
+  Both          : Use both parameters together
+
+🎯 COMMON SCENARIOS
+─────────────────────────────────────────────────────────────────────────────
+
+Get errors for ChatGPT:
+  .\QuickErrorSummary.ps1 -DetailLevel Summary -CopyToClipboard
+  → Ctrl+V into ChatGPT
+
+Share with support:
+  .\QuickErrorSummary.ps1 -HoursBack 72 -DetailLevel Full `
+    -OutputFile "C:\support_errors.txt"
+
+Extended troubleshooting:
+  .\QuickErrorSummary.ps1 -HoursBack 168 -DetailLevel Full -TopErrors 30
+
+Just check what happened:
+  .\QuickErrorSummary.ps1 -DetailLevel Compact
+
+📋 PARAMETERS
+─────────────────────────────────────────────────────────────────────────────
+
+Parameter          | Default | Values
+─────────────────────────────────────────────────────────────────────────────
+-HoursBack         | 24      | Any number (e.g., 48, 72, 168)
+-DetailLevel       | Summary | Compact, Summary, Full
+-TopErrors         | 15      | Any number (e.g., 10, 20, 50)
+-CopyToClipboard   | false   | -CopyToClipboard (switch)
+-OutputFile        | none    | "path\filename.txt"
+-IncludeWarnings   | false   | -IncludeWarnings (switch)
+
+✅ REQUIREMENT CHECKLIST
+─────────────────────────────────────────────────────────────────────────────
+
+  □ Windows 7 or later
+  □ PowerShell 3.0+ (Run: $PSVersionTable.PSVersion)
+  □ Administrator privileges (right-click → Run as Administrator)
+  □ Event Viewer enabled (default - verify: eventvwr.msc)
+
+🔧 TROUBLESHOOTING
+─────────────────────────────────────────────────────────────────────────────
+
+Problem: "Access Denied"
+→ Run PowerShell as Administrator
+
+Problem: No errors found
+→ Try: -HoursBack 72 (look further back)
+→ Try: -IncludeWarnings (include warnings too)
+
+Problem: Output too long
+→ Use: -DetailLevel Compact
+→ Or: -TopErrors 10 (show fewer errors)
+
+Problem: Can't use -CopyToClipboard
+→ May need permissions update (run in admin PowerShell):
+  Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
+🆚 COMPARING WITH OTHER TOOLS
+─────────────────────────────────────────────────────────────────────────────
+
+AutoLogAnalyzer      : Comprehensive (1-3 minutes) - for deep analysis
+AutoLogAnalyzer_Lite : Medium (30-60 seconds) - balanced
+QuickErrorSummary    : Fast (10-30 seconds) - for ChatGPT/quick check
+MiracleBoot-Advanced : Deep forensics - for crash/boot issues
+
+💡 TIPS
+─────────────────────────────────────────────────────────────────────────────
+
+1. Always run as Administrator
+2. Use -CopyToClipboard for instant ChatGPT paste
+3. Include system context when asking ChatGPT
+4. Try different -HoursBack values if first run finds nothing
+5. Save reports for future reference: -OutputFile "report.txt"
+6. For ongoing monitoring, run daily to track trends
+
+🔗 WORKFLOW FOR CHATGPT ANALYSIS
+─────────────────────────────────────────────────────────────────────────────
+
+  1. Open PowerShell as Administrator
+  2. Run: .\QuickErrorSummary.ps1 -CopyToClipboard
+  3. Open ChatGPT (chatgpt.com)
+  4. Paste: Ctrl+V
+  5. Add context: "My computer is Windows 10, happening after..."
+  6. Ask: "What do these errors mean? How do I fix them?"
+  7. Follow ChatGPT's recommendations
+
+📞 QUICK HELP
+─────────────────────────────────────────────────────────────────────────────
+
+View all options:
+  Get-Help .\QuickErrorSummary.ps1 -Full
+
+Test Event Log access:
+  Get-EventLog -List
+
+Open Event Viewer manually:
+  eventvwr.msc
+
+Open PowerShell as Admin (easy way):
+  Win+X → Select "Windows PowerShell (Admin)"
+  Then: cd "path\to\script"
+
+═════════════════════════════════════════════════════════════════════════════
+
+Version: 1.0
+Created: January 7, 2026
+Part of: MiracleBoot v7.1.1
+
+═════════════════════════════════════════════════════════════════════════════

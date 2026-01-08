@@ -1,0 +1,208 @@
+# AutoLogAnalyzer - Desktop Quick Card
+
+## 🚀 START HERE
+
+### 3-Step Process (5 Minutes)
+
+```
+STEP 1: Run Analysis
+────────────────────
+Open PowerShell and run:
+  cd "c:\Users\zerou\Downloads\MiracleBoot_v7_1_1 - Github code"
+  .\AutoLogAnalyzer_Lite.ps1
+
+STEP 2: Wait for Results
+────────────────────────
+Reports open automatically in File Explorer
+Look for: CHATGPT_PROMPT.txt
+
+STEP 3: Use ChatGPT
+─────────────────
+1. Open: https://chat.openai.com/
+2. Copy: Error codes from CHATGPT_PROMPT.txt
+3. Ask: "What do these error codes mean?"
+4. Get: AI-powered troubleshooting help
+```
+
+---
+
+## 📊 What You'll Get
+
+✅ **CHATGPT_PROMPT.txt**
+   - Pre-formatted error codes
+   - Copy-paste ready for ChatGPT
+   - Top errors highlighted
+
+✅ **ERROR_CODES.csv**
+   - Spreadsheet format
+   - Open in Excel
+   - Sort and analyze
+
+✅ **Detailed report**
+   - All errors found
+   - Frequency count
+   - Error sources
+
+---
+
+## 💬 Example ChatGPT Prompts
+
+### Prompt 1 (Understanding)
+```
+"What do these error codes mean and 
+how serious are they?
+
+[Copy error codes here]"
+```
+
+### Prompt 2 (Fixing)
+```
+"Based on these errors, what's the 
+best way to fix them? What should 
+I do first?
+
+[Copy error codes here]"
+```
+
+---
+
+## ⚡ Quick Commands
+
+```powershell
+# Default analysis (48 hours)
+.\AutoLogAnalyzer_Lite.ps1
+
+# Last 24 hours only
+.\AutoLogAnalyzer_Lite.ps1 -HoursBack 24
+
+# Last 7 days
+.\AutoLogAnalyzer_Lite.ps1 -HoursBack 168
+
+# Custom location
+.\AutoLogAnalyzer_Lite.ps1 -OutputPath "C:\Reports"
+```
+
+---
+
+## 📍 File Locations
+
+**Reports**: `LOG_ANALYSIS\` folder  
+**Chat Prompts**: `CHATGPT_PROMPT.txt`  
+**Data**: `ERROR_CODES.csv`  
+**Docs**: `AUTOANALYZER_*.md` files
+
+---
+
+## 🔄 Before/After Repairs
+
+```
+BEFORE: Run analysis
+       .\AutoLogAnalyzer_Lite.ps1
+
+RUN: Your repairs
+     .\MiracleBoot.ps1
+
+AFTER: Run analysis again
+       .\AutoLogAnalyzer_Lite.ps1
+
+COMPARE: View results
+         Check how many errors fixed
+```
+
+---
+
+## ❌ Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Script won't run | Run PowerShell as Admin |
+| No logs found | Try: `.\AutoLogAnalyzer_Lite.ps1 -HoursBack 168` |
+| File not found | Make sure you're in the right directory |
+
+---
+
+## 📚 Help Files
+
+```
+AUTOANALYZER_README.md          - Full guide
+AUTOANALYZER_QUICKREF.md        - One page
+AUTOANALYZER_VISUAL_GUIDE.md    - Examples
+AUTOANALYZER_INDEX.md           - Navigation
+```
+
+---
+
+## ✨ Key Error Types
+
+**EventID_XXXX**
+- Windows system event code
+- Example: EventID_36871
+
+**0xXXXXXXXX**
+- API error code
+- Example: 0x80004005
+
+**STATUS_XXXXX**
+- Kernel error
+- Example: STATUS_FILE_NOT_FOUND
+
+---
+
+## 🎯 When to Use
+
+**Issue Investigation**
+```
+→ Run AutoLogAnalyzer
+→ Copy to ChatGPT
+→ Get troubleshooting help
+```
+
+**Repair Validation**
+```
+→ Before: Run analysis
+→ Repair: Run MiracleBoot
+→ After: Run analysis
+→ Compare: See improvements
+```
+
+**System Monitoring**
+```
+→ Weekly: Run analysis
+→ Monthly: Compare trends
+→ Act: On recurring issues
+```
+
+---
+
+## 📞 Support Chain
+
+1. **This Card** ← You are here
+2. `AUTOANALYZER_QUICKREF.md` - Detailed reference
+3. `AUTOANALYZER_README.md` - Full guide
+4. `AUTOANALYZER_VISUAL_GUIDE.md` - See examples
+5. ChatGPT - Ask about your error codes!
+
+---
+
+## ✅ Checklist
+
+Before running:
+- [ ] Using Administrator PowerShell?
+- [ ] In correct directory?
+- [ ] Have 5-10 minutes?
+- [ ] Ready to wait for analysis?
+
+---
+
+## 🎉 Ready?
+
+```powershell
+cd "c:\Users\zerou\Downloads\MiracleBoot_v7_1_1 - Github code"
+.\AutoLogAnalyzer_Lite.ps1
+```
+
+Then copy `CHATGPT_PROMPT.txt` to ChatGPT! 🚀
+
+---
+
+**Version**: 1.0 | **Date**: Jan 7, 2026 | **Status**: Ready ✅

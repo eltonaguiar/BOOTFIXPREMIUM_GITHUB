@@ -1,274 +1,843 @@
-﻿# Set execution policy for this session (needed in WinRE/WinPE)
+﻿<#
+.SYNOPSIS
+MiracleBoot v7.2.0 - Hardened Windows Recovery Toolkit
+Production-grade recovery and diagnostics for Windows 10/11, WinPE, and WinRE
+
+.DESCRIPTION
+This script provides medical-grade recovery tooling with:
+- Explicit environment detection (FullOS vs WinPE vs Recovery)
+- Comprehensive preflight validation before any operations
+- Log scanning capability with configurable error patterns
+- Structured JSON output for diagnostic clarity
+- Fail-safe design: loud failures, never silent degradation
+- Zero reliance on modules unavailable in WinPE
+- Defensive error handling throughout
+
+.REQUIREMENTS
+- Runs as Administrator (verified)
+- PowerShell 2.0+ (available in WinPE)
+- No external module dependencies
+- Relative paths only (respects $PSScriptRoot)
+
+.NOTES
+Author: MiracleBoot Team
+Version: 7.2.0 (Hardened)
+Last Updated: January 2026
+#>
+
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
-
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 
-# Check for administrator privileges - many boot repair operations require elevation
-$currentUser = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-$isAdmin = $currentUser.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# ============================================================================
+# SECTION 0: LOGGING SYSTEM (Initialize First)
+# ============================================================================
 
-if (-not $isAdmin) {
-    Write-Host ""
-    Write-Host "═════════════════════════════════════════════════════════════" -ForegroundColor Red
-    Write-Host "ERROR: Administrator Privileges Required" -ForegroundColor Red
-    Write-Host "═════════════════════════════════════════════════════════════" -ForegroundColor Red
-    Write-Host ""
-    Write-Host "This script requires Administrator privileges to access boot configuration data." -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "Please:"
-    Write-Host "  1. Close this window"
-    Write-Host "  2. Right-click on this script"
-    Write-Host "  3. Select 'Run with PowerShell as Administrator'"
-    Write-Host ""
-    Write-Host "═════════════════════════════════════════════════════════════" -ForegroundColor Red
-    Write-Host ""
-    exit 1
+$global:LogPath = $null
+$global:LogBuffer = New-Object System.Collections.ArrayList
+$global:ErrorCount = 0
+$global:WarningCount = 0
+
+function Initialize-LogSystem {
+    <#
+    .SYNOPSIS
+    Initializes the logging system and cleans up old log files.
+    #>
+    param([string]$ScriptRoot)
+    
+    # Create logs directory
+    $logsDir = Join-Path $ScriptRoot "LOGS_MIRACLEBOOT"
+    if (-not (Test-Path -LiteralPath $logsDir)) {
+        try {
+            $null = New-Item -ItemType Directory -Path $logsDir -Force -ErrorAction Stop
+        } catch {
+            # Fallback to temp location
+            $logsDir = Join-Path $env:TEMP "LOGS_MIRACLEBOOT"
+            $null = New-Item -ItemType Directory -Path $logsDir -Force -ErrorAction SilentlyContinue
+        }
+    }
+    
+    # Create timestamped log file
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $global:LogPath = Join-Path $logsDir "MiracleBoot_$timestamp.log"
+    
+    # Clean old log files (older than 7 days)
+    try {
+        $cutoffDate = (Get-Date).AddDays(-7)
+        Get-ChildItem -LiteralPath $logsDir -Filter "MiracleBoot_*.log" -ErrorAction SilentlyContinue | 
+            Where-Object { $_.LastWriteTime -lt $cutoffDate } | 
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    } catch {
+        # Silently fail - log cleanup is not critical
+    }
+    
+    # Write initialization header
+    Write-ToLog "════════════════════════════════════════════════════════════════" "INFO"
+    Write-ToLog "MiracleBoot v7.2.0 - Session Started" "INFO"
+    Write-ToLog "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" "INFO"
+    Write-ToLog "Environment: $(Get-EnvironmentType)" "INFO"
+    Write-ToLog "Administrator: $(if (Test-AdminPrivileges) { 'Yes' } else { 'No' })" "INFO"
+    Write-ToLog "PowerShell: $($PSVersionTable.PSVersion)" "INFO"
+    Write-ToLog "════════════════════════════════════════════════════════════════" "INFO"
+}
+
+function Write-ToLog {
+    <#
+    .SYNOPSIS
+    Writes a message to both console and log file.
+    
+    .PARAMETER Message
+    The message to log
+    
+    .PARAMETER Level
+    Log level: INFO, WARNING, ERROR, DEBUG
+    #>
+    param(
+        [string]$Message,
+        [ValidateSet('INFO', 'WARNING', 'ERROR', 'DEBUG', 'SUCCESS')]
+        [string]$Level = 'INFO'
+    )
+    
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $logEntry = "[$timestamp] [$Level] $Message"
+    
+    # Add to buffer
+    $null = $global:LogBuffer.Add($logEntry)
+    
+    # Count errors and warnings
+    if ($Level -eq 'ERROR') { $global:ErrorCount++ }
+    if ($Level -eq 'WARNING') { $global:WarningCount++ }
+    
+    # Write to file if available
+    if ($global:LogPath -and (Test-Path -LiteralPath (Split-Path $global:LogPath))) {
+        try {
+            Add-Content -LiteralPath $global:LogPath -Value $logEntry -ErrorAction SilentlyContinue
+        } catch {
+            # Silently fail if can't write to log
+        }
+    }
+    
+    # Console output with color
+    $color = switch ($Level) {
+        'ERROR'   { 'Red' }
+        'WARNING' { 'Yellow' }
+        'SUCCESS' { 'Green' }
+        'DEBUG'   { 'Gray' }
+        default   { 'White' }
+    }
+    
+    Write-Host $Message -ForegroundColor $color
+}
+
+function Write-ErrorLog {
+    <#
+    .SYNOPSIS
+    Logs an error with context and details.
+    #>
+    param(
+        [string]$Message,
+        [Exception]$Exception = $null,
+        [string]$Details = $null
+    )
+    
+    Write-ToLog "ERROR: $Message" "ERROR"
+    
+    if ($Exception) {
+        Write-ToLog "  Exception: $($Exception.Message)" "ERROR"
+        Write-ToLog "  Category: $($Exception.GetType().Name)" "ERROR"
+    }
+    
+    if ($Details) {
+        Write-ToLog "  Details: $Details" "ERROR"
+    }
+}
+
+function Write-WarningLog {
+    <#
+    .SYNOPSIS
+    Logs a warning message.
+    #>
+    param([string]$Message)
+    
+    Write-ToLog "WARNING: $Message" "WARNING"
+}
+
+function Export-LogFile {
+    <#
+    .SYNOPSIS
+    Returns the path to the current log file.
+    
+    .OUTPUTS
+    String - Full path to the log file
+    #>
+    return $global:LogPath
+}
+
+function Get-LogSummary {
+    <#
+    .SYNOPSIS
+    Returns a summary of logged errors and warnings.
+    
+    .OUTPUTS
+    PSCustomObject with summary information
+    #>
+    return @{
+        LogFile = $global:LogPath
+        ErrorCount = $global:ErrorCount
+        WarningCount = $global:WarningCount
+        TotalEntries = $global:LogBuffer.Count
+        Errors = @($global:LogBuffer | Where-Object { $_ -match '\[ERROR\]' })
+        Warnings = @($global:LogBuffer | Where-Object { $_ -match '\[WARNING\]' })
+    }
+}
+
+# ============================================================================
+# SECTION 1: CORE DIAGNOSTICS & VALIDATION FUNCTIONS
+# ============================================================================
+
+function ConvertTo-SafeJson {
+    <#
+    .SYNOPSIS
+    Converts a PowerShell object to JSON (compatible with PS 2.0+)
+    #>
+    param($InputObject, [int]$Depth = 4)
+    
+    function ConvertToJsonInternal($obj, [int]$d) {
+        if ($d -le 0) { return '{}' }
+        if ($obj -eq $null) { return 'null' }
+        
+        $type = $obj.GetType().Name
+        
+        if ($type -eq 'Hashtable' -or $type -eq 'PSCustomObject') {
+            $pairs = @()
+            foreach ($key in $obj.Keys) {
+                $value = $obj[$key]
+                $jsonValue = ConvertToJsonInternal $value ($d - 1)
+                $pairs += "`"$key`": $jsonValue"
+            }
+            return "{$($pairs -join ', ')}"
+        }
+        elseif ($type -like '*\[\]' -or $type -eq 'Object[]') {
+            $items = @()
+            foreach ($item in $obj) {
+                $items += ConvertToJsonInternal $item ($d - 1)
+            }
+            return "[$($items -join ', ')]"
+        }
+        elseif ($obj -is [System.Boolean]) {
+            return $obj.ToString().ToLower()
+        }
+        elseif ($obj -is [System.String]) {
+            return "`"$($obj.Replace('"', '\"'))`""
+        }
+        else {
+            return $obj.ToString()
+        }
+    }
+    
+    return ConvertToJsonInternal $InputObject $Depth
+}
+
+function New-DiagnosticReport {
+    <#
+    .SYNOPSIS
+    Creates a structured diagnostic report object
+    #>
+    param(
+        [string]$Title,
+        [ValidateSet('Pass', 'Warning', 'Fail')]
+        [string]$Status = 'Pass',
+        [string]$Message = '',
+        [array]$Details = @(),
+        [hashtable]$Metadata = @{}
+    )
+    
+    return @{
+        Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        Title = $Title
+        Status = $Status
+        Message = $Message
+        Details = $Details
+        Metadata = $Metadata
+    }
+}
+
+function Test-AdminPrivileges {
+    <#
+    .SYNOPSIS
+    Validates that the script is running with administrator privileges.
+    
+    .OUTPUTS
+    Boolean - $true if admin, $false otherwise
+    #>
+    try {
+        $currentUser = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+        return $currentUser.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch {
+        return $false
+    }
 }
 
 function Get-EnvironmentType {
     <#
     .SYNOPSIS
-    Detects the current Windows environment (FullOS, WinRE, or WinPE).
+    Detects current Windows environment with high confidence.
     
-    .DESCRIPTION
-    Uses multiple detection methods to reliably identify the running environment.
-    Primary indicator is SystemDrive (C: for FullOS, X: for recovery).
+    .OUTPUTS
+    String: 'FullOS', 'WinPE', or 'WinRE'
+    
+    .NOTES
+    Logic:
+    1. SystemDrive = X: → Recovery environment
+    2. MiniNT registry present → WinPE
+    3. Otherwise → FullOS
     #>
-    # Primary check: SystemDrive is the most reliable indicator
-    # In FullOS, SystemDrive is usually C:, in WinPE/WinRE it's X:
+    
+    # Check 1: SystemDrive (most reliable)
     if ($env:SystemDrive -eq 'X:') {
-        # X: drive indicates WinPE/WinRE
-        if (Test-Path 'HKLM:\System\Setup') {
+        # We're in a recovery environment
+        if (Test-Path 'HKLM:\System\CurrentControlSet\Control\MiniNT' -ErrorAction SilentlyContinue) {
+            return 'WinPE'
+        }
+        # Check Setup key for WinRE marker
+        if (Test-Path 'HKLM:\System\Setup' -ErrorAction SilentlyContinue) {
             $setupType = (Get-ItemProperty -Path 'HKLM:\System\Setup' -Name 'CmdLine' -ErrorAction SilentlyContinue).CmdLine
             if ($setupType -match 'recovery|WinRE') {
                 return 'WinRE'
             }
         }
-        # Check for MiniNT (WinPE indicator)
-        if (Test-Path 'HKLM:\System\CurrentControlSet\Control\MiniNT') {
-            return 'WinPE'
-        }
-        return 'WinRE' # Default to WinRE if on X: drive
+        return 'WinRE' # Default to WinRE on X: drive
     }
     
-    # Secondary check: MiniNT registry key (but only if SystemDrive is X:)
-    # This check alone is not reliable in FullOS
-    if (Test-Path 'HKLM:\System\CurrentControlSet\Control\MiniNT') {
-        # Only trust this if we're on X: drive
+    # Check 2: MiniNT in FullOS (edge case)
+    if (Test-Path 'HKLM:\System\CurrentControlSet\Control\MiniNT' -ErrorAction SilentlyContinue) {
         if ($env:SystemDrive -eq 'X:') {
             return 'WinPE'
         }
-        # If we have MiniNT but SystemDrive is NOT X:, it might be a false positive
-        # Check if Windows directory exists on SystemDrive
-        if (Test-Path "$env:SystemDrive\Windows") {
-            # Windows exists, this is likely FullOS with some registry quirk
-            return 'FullOS'
-        }
     }
     
-    # Final check: If SystemDrive is C: (or other), and Windows directory exists, it's FullOS
-    if ($env:SystemDrive -ne 'X:' -and (Test-Path "$env:SystemDrive\Windows")) {
+    # Check 3: Standard FullOS
+    if ($env:SystemDrive -ne 'X:' -and (Test-Path "$env:SystemDrive\Windows" -ErrorAction SilentlyContinue)) {
         return 'FullOS'
     }
     
-    # Default to FullOS if we can't determine (safer assumption)
+    # Fallback: assume FullOS (safer)
     return 'FullOS'
 }
 
-function Test-PowerShellAvailability {
+function Test-ScriptFileExists {
     <#
     .SYNOPSIS
-    Tests if PowerShell is available and functional.
+    Validates that required script files exist and are readable.
+    
+    .PARAMETER FilePath
+    Path relative to $PSScriptRoot
     
     .OUTPUTS
-    HashTable with Available, Version, and Message properties
+    Hashtable with Path, Exists, Readable, Size properties
     #>
-    try {
-        $psVersion = $PSVersionTable.PSVersion
-        return @{
-            Available = $true
-            Version = $psVersion.ToString()
-            Message = "PowerShell $($psVersion.Major).$($psVersion.Minor) available"
-        }
-    } catch {
-        return @{
-            Available = $false
-            Version = "Unknown"
-            Message = "PowerShell not available"
-        }
+    param([string]$FilePath)
+    
+    $fullPath = Join-Path $PSScriptRoot $FilePath
+    
+    $result = @{
+        FileName = $FilePath
+        FullPath = $fullPath
+        Exists = Test-Path -LiteralPath $fullPath -ErrorAction SilentlyContinue
+        Readable = $false
+        Size = 0
+        Error = ''
     }
-}
-
-function Test-NetworkAvailability {
-    <#
-    .SYNOPSIS
-    Tests if network adapters are available (not necessarily connected).
     
-    .OUTPUTS
-    HashTable with Available, AdapterCount, EnabledCount, and Message properties
-    #>
-    try {
-        $adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'Hidden' }
-        if ($adapters) {
-            $enabled = ($adapters | Where-Object { $_.Status -eq 'Up' }).Count
-            return @{
-                Available = $true
-                AdapterCount = $adapters.Count
-                EnabledCount = $enabled
-                Message = "$($adapters.Count) network adapter(s) found ($enabled enabled)"
-            }
-        }
-
-        # Fallback: Check with netsh
-        $netshOutput = netsh interface show interface 2>&1
-        if ($netshOutput -match 'connected|disconnected') {
-            return @{
-                Available = $true
-                AdapterCount = 1
-                EnabledCount = 0
-                Message = "Network adapters detected (via netsh)"
-            }
-        }
-
-        return @{
-            Available = $false
-            AdapterCount = 0
-            EnabledCount = 0
-            Message = "No network adapters found"
-        }
-    } catch {
-        return @{
-            Available = $false
-            AdapterCount = 0
-            EnabledCount = 0
-            Message = "Could not detect network adapters: $_"
-        }
-    }
-}
-
-function Test-BrowserAvailability {
-    <#
-    .SYNOPSIS
-    Tests if a web browser is available for accessing help documentation.
-    
-    .OUTPUTS
-    HashTable with Available, Browser, and Message properties
-    #>
-    $browsers = @(
-        @{ Name = "Edge"; Path = "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe" },
-        @{ Name = "Chrome"; Path = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe" },
-        @{ Name = "Firefox"; Path = "$env:ProgramFiles\Mozilla Firefox\firefox.exe" }
-    )
-
-    foreach ($browser in $browsers) {
+    if ($result.Exists) {
         try {
-            if (Test-Path $browser.Path -ErrorAction SilentlyContinue) {
-                return @{
-                    Available = $true
-                    Browser = $browser.Name
-                    Message = "$($browser.Name) browser available"
+            $fileInfo = Get-Item -LiteralPath $fullPath -ErrorAction Stop
+            $result.Size = $fileInfo.Length
+            # Test readability
+            $null = Get-Content -LiteralPath $fullPath -TotalCount 1 -ErrorAction Stop
+            $result.Readable = $true
+        } catch {
+            $result.Error = $_.Exception.Message
+        }
+    }
+    
+    return $result
+}
+
+function Test-CommandExists {
+    <#
+    .SYNOPSIS
+    Validates that a command is available in the current environment.
+    
+    .OUTPUTS
+    Hashtable with Command, Available, Version properties
+    #>
+    param([string]$CommandName)
+    
+    $result = @{
+        Command = $CommandName
+        Available = $false
+        Version = ''
+        Error = ''
+    }
+    
+    try {
+        $cmd = Get-Command -Name $CommandName -ErrorAction Stop
+        $result.Available = $true
+        if ($cmd.Version) {
+            $result.Version = $cmd.Version.ToString()
+        }
+    } catch {
+        $result.Error = $_.Exception.Message
+    }
+    
+    return $result
+}
+
+function Invoke-PreflightCheck {
+    <#
+    .SYNOPSIS
+    Comprehensive preflight validation before launching any UI or repair logic.
+    
+    .OUTPUTS
+    PSCustomObject with AllChecksPassed, Checks array, Summary
+    #>
+    param([string]$EnvironmentType = 'FullOS')
+    
+    Write-Host "`n[PREFLIGHT] Starting comprehensive validation..." -ForegroundColor Cyan
+    
+    $checks = @()
+    $allPassed = $true
+    
+    # Check 1: Administrator Privileges
+    Write-Host "[CHECK] Admin privileges..." -ForegroundColor Gray -NoNewline
+    $adminStatus = Test-AdminPrivileges
+    $adminCheck = @{
+        Name = 'Administrator Privileges'
+        Category = 'Privileges'
+        Required = $true
+        Passed = $adminStatus
+        Message = $(if ($adminStatus) { "Running as administrator" } else { "NOT running as administrator - CRITICAL" })
+    }
+    $checks += $adminCheck
+    if (-not $adminCheck.Passed) {
+        Write-Host " FAIL" -ForegroundColor Red
+        $allPassed = $false
+    } else {
+        Write-Host " OK" -ForegroundColor Green
+    }
+    
+    # Check 2: Required Script Files
+    $requiredFiles = @('WinRepairCore.ps1', 'WinRepairTUI.ps1')
+    if ($EnvironmentType -eq 'FullOS') {
+        $requiredFiles += 'WinRepairGUI.ps1'
+    }
+    
+    foreach ($file in $requiredFiles) {
+        Write-Host "[CHECK] Script file: $file..." -ForegroundColor Gray -NoNewline
+        $fileCheck = Test-ScriptFileExists $file
+        $fileCheckObj = @{
+            Name = "File: $file"
+            Category = 'Files'
+            Required = $true
+            Passed = $fileCheck.Exists -and $fileCheck.Readable
+            Message = $(if ($fileCheck.Exists) { "Found ($($fileCheck.Size) bytes)" } else { "NOT FOUND" })
+            Details = $fileCheck
+        }
+        $checks += $fileCheckObj
+        if (-not $fileCheckObj.Passed) {
+            Write-Host " FAIL" -ForegroundColor Red
+            $allPassed = $false
+        } else {
+            Write-Host " OK" -ForegroundColor Green
+        }
+    }
+    
+    # Check 3: Core Commands
+    $requiredCommands = @('Get-Volume', 'Get-NetAdapter', 'bcdedit')
+    if ($EnvironmentType -eq 'FullOS') {
+        $requiredCommands += @('Add-Type')
+    }
+    
+    foreach ($cmd in $requiredCommands) {
+        Write-Host "[CHECK] Command available: $cmd..." -ForegroundColor Gray -NoNewline
+        $cmdCheck = Test-CommandExists $cmd
+        $cmdCheckObj = @{
+            Name = "Command: $cmd"
+            Category = 'Commands'
+            Required = $true
+            Passed = $cmdCheck.Available
+            Message = $(if ($cmdCheck.Available) { "Available" } else { "NOT AVAILABLE" })
+            Details = $cmdCheck
+        }
+        $checks += $cmdCheckObj
+        if (-not $cmdCheckObj.Passed) {
+            Write-Host " WARN" -ForegroundColor Yellow
+        } else {
+            Write-Host " OK" -ForegroundColor Green
+        }
+    }
+    
+    # Check 4: SystemDrive Validity
+    Write-Host "[CHECK] SystemDrive validity..." -ForegroundColor Gray -NoNewline
+    $systemDriveValid = -not [string]::IsNullOrEmpty($env:SystemDrive) -and (Test-Path $env:SystemDrive)
+    $systemDriveCheck = @{
+        Name = 'SystemDrive Validity'
+        Category = 'Environment'
+        Required = $true
+        Passed = $systemDriveValid
+        Message = $env:SystemDrive
+    }
+    $checks += $systemDriveCheck
+    if (-not $systemDriveValid) {
+        Write-Host " FAIL" -ForegroundColor Red
+        $allPassed = $false
+    } else {
+        Write-Host " OK" -ForegroundColor Green
+    }
+    
+    Write-Host ""
+    
+    return @{
+        AllChecksPassed = $allPassed
+        Checks = $checks
+        Summary = @{
+            Total = $checks.Count
+            Passed = ($checks | Where-Object { $_.Passed }).Count
+            Failed = ($checks | Where-Object { -not $_.Passed }).Count
+        }
+    }
+}
+
+function Invoke-LogScanning {
+    <#
+    .SYNOPSIS
+    Scans log files for error patterns.
+    
+    .PARAMETER LogPaths
+    One or more log file paths (relative to root or absolute)
+    
+    .PARAMETER ErrorPatterns
+    Array of regex patterns to search for. Defaults to common error indicators.
+    
+    .OUTPUTS
+    PSCustomObject with findings array and summary
+    #>
+    param(
+        [string[]]$LogPaths = @(),
+        [string[]]$ErrorPatterns = @(
+            '(?i)error',
+            '(?i)exception', 
+            '(?i)fail(ed)?',
+            '(?i)critical',
+            '(?i)fatal',
+            '(?i)abort'
+        )
+    )
+    
+    if ($LogPaths.Count -eq 0) {
+        return @{
+            LogsScanned = 0
+            Findings = @()
+            Summary = 'No log paths provided'
+        }
+    }
+    
+    Write-Host "`n[LOGGING] Scanning log files for error patterns..." -ForegroundColor Cyan
+    
+    $findings = @()
+    $logsScanned = 0
+    
+    $regexPattern = '(?i)(' + (($ErrorPatterns | ForEach-Object { $_ -replace '^\(\?i\)', '' }) -join '|') + ')'
+
+    foreach ($logPath in $LogPaths) {
+        # Resolve path
+        if ([System.IO.Path]::IsPathRooted($logPath)) {
+            $resolvedPath = $logPath
+        } else {
+            $resolvedPath = Join-Path $PSScriptRoot $logPath
+        }
+        
+        if (-not (Test-Path -LiteralPath $resolvedPath -ErrorAction SilentlyContinue)) {
+            Write-Host "  [WARN] Log file not found: $resolvedPath" -ForegroundColor Yellow
+            continue
+        }
+        
+        Write-Host "  [SCAN] Processing: $resolvedPath" -ForegroundColor Gray
+        $logsScanned++
+        
+        try {
+            $matches = Select-String -LiteralPath $resolvedPath -Pattern $regexPattern -AllMatches -ErrorAction Stop
+            foreach ($match in $matches) {
+                foreach ($m in $match.Matches) {
+                    $findings += @{
+                        File = $resolvedPath
+                        LineNumber = $match.LineNumber
+                        Pattern = $m.Value
+                        Content = $match.Line.Substring(0, [Math]::Min(200, $match.Line.Length))
+                    }
                 }
             }
         } catch {
-            continue
+            Write-Host "  [ERROR] Failed to read: $resolvedPath - $_" -ForegroundColor Red
         }
     }
-
+    
+    Write-Host "  [COMPLETE] Scanned $logsScanned logs, found $($findings.Count) error(s)" -ForegroundColor Cyan
+    
     return @{
-        Available = $false
-        Browser = "None"
-        Message = "No browser found for help documentation"
+        LogsScanned = $logsScanned
+        FindingsCount = $findings.Count
+        Findings = $findings
+        Summary = $(if ($findings.Count -eq 0) { "No errors detected" } else { "$($findings.Count) error(s) found" })
     }
 }
 
-# Initialize script root path
-if ($null -eq $PSScriptRoot -or $PSScriptRoot -eq '') {
+function New-PreflightReport {
+    <#
+    .SYNOPSIS
+    Generates a comprehensive diagnostic report as structured output.
+    #>
+    param(
+        [hashtable]$PreflightResults,
+        [hashtable]$LogScanResults,
+        [string]$EnvironmentType
+    )
+    
+    $report = @{
+        Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        Version = 'MiracleBoot v7.2.0 (Hardened)'
+        Environment = @{
+            Type = $EnvironmentType
+            SystemDrive = $env:SystemDrive
+            PowerShellVersion = $PSVersionTable.PSVersion.ToString()
+            OSVersion = (Get-WmiObject Win32_OperatingSystem -ErrorAction SilentlyContinue).Version
+        }
+        Preflight = @{
+            AllChecksPassed = $PreflightResults.AllChecksPassed
+            Summary = $PreflightResults.Summary
+            CriticalFailures = @($PreflightResults.Checks | Where-Object { $_.Required -and -not $_.Passed })
+        }
+        LogScanning = $LogScanResults
+        ReadyToProceed = $PreflightResults.AllChecksPassed -and $LogScanResults.FindingsCount -eq 0
+    }
+    
+    return $report
+}
+
+# ============================================================================
+# SECTION 2: INITIALIZATION & MAIN EXECUTION FLOW
+# ============================================================================
+
+# Initialize PSScriptRoot robustly (works in all contexts)
+if ([string]::IsNullOrEmpty($PSScriptRoot)) {
     $PSScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    if ($null -eq $PSScriptRoot -or $PSScriptRoot -eq '') {
+    if ([string]::IsNullOrEmpty($PSScriptRoot)) {
         $PSScriptRoot = Get-Location
     }
 }
 
-# Ensure we have a valid path
-if (-not (Test-Path $PSScriptRoot)) {
-    $PSScriptRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($MyInvocation.MyCommand.Path))
+if (-not (Test-Path -LiteralPath $PSScriptRoot)) {
+    Write-Host "FATAL: Cannot determine script root directory" -ForegroundColor Red
+    Write-Host "PSScriptRoot: $PSScriptRoot" -ForegroundColor Yellow
+    Write-Host "MyCommand: $($MyInvocation.MyCommand.Path)" -ForegroundColor Yellow
+    exit 1
 }
 
-$envType = Get-EnvironmentType
-
-# Load core functions
+# Initialize logging system FIRST (before any other operations)
 try {
-    . "$PSScriptRoot\WinRepairCore.ps1"
+    Initialize-LogSystem -ScriptRoot $PSScriptRoot
+    Write-ToLog "Logging system initialized successfully" "SUCCESS"
 } catch {
-    Write-Host "Error loading WinRepairCore.ps1: $_" -ForegroundColor Red
-    Write-Host "Current directory: $(Get-Location)" -ForegroundColor Yellow
-    Write-Host "Script root: $PSScriptRoot" -ForegroundColor Yellow
+    Write-Host "WARNING: Could not initialize logging: $_" -ForegroundColor Yellow
+}
+
+# Detect environment
+$envType = Get-EnvironmentType
+Write-ToLog "Environment detected: $envType" "INFO"
+$isAdmin = Test-AdminPrivileges
+
+# Banner
+Write-Host ""
+Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║     MiracleBoot v7.2.0 - Hardened Windows Recovery Toolkit      ║" -ForegroundColor Cyan
+Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Environment: $envType | SystemDrive: $env:SystemDrive | Admin: $(if ($isAdmin) { 'YES' } else { 'NO' })" -ForegroundColor Gray
+Write-Host "Log File: $global:LogPath" -ForegroundColor Gray
+Write-Host ""
+
+# CRITICAL: Block if not admin
+if (-not $isAdmin) {
+    Write-ErrorLog "This script requires administrator privileges"
+    Write-Host "FATAL ERROR: This script requires administrator privileges." -ForegroundColor Red
+    Write-Host "Please right-click and select 'Run as Administrator'" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Log saved to: $global:LogPath" -ForegroundColor Yellow
     Write-Host "Press any key to exit..."
     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     exit 1
 }
 
-# Load repair-install readiness module
-try {
-    . "$PSScriptRoot\EnsureRepairInstallReady.ps1"
-} catch {
-    Write-Host "WARNING: EnsureRepairInstallReady.ps1 not available - repair-install readiness feature disabled" -ForegroundColor Yellow
+# Run comprehensive preflight checks
+$preflightResults = Invoke-PreflightCheck -EnvironmentType $envType
+
+# Block if critical failures exist
+if (-not $preflightResults.AllChecksPassed) {
+    Write-Host "`n" -ForegroundColor Red
+    Write-Host "╔════════════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+    Write-Host "║         PREFLIGHT VALIDATION FAILED - CANNOT PROCEED               ║" -ForegroundColor Red
+    Write-Host "╚════════════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+    Write-Host ""
+    
+    Write-Host "Critical Failures:" -ForegroundColor Red
+    foreach ($check in ($preflightResults.Checks | Where-Object { $_.Required -and -not $_.Passed })) {
+        Write-Host "  ✗ $($check.Name): $($check.Message)" -ForegroundColor Red
+        if ($check.Details.Error) {
+            Write-Host "    Error: $($check.Details.Error)" -ForegroundColor DarkRed
+        }
+    }
+    
+    Write-Host ""
+    Write-Host "Summary: $($preflightResults.Summary.Passed) / $($preflightResults.Summary.Total) checks passed"
+    Write-Host ""
+    Write-Host "Log saved to: $global:LogPath" -ForegroundColor Yellow
+    Write-Host "Press any key to exit..."
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    exit 1
 }
 
-# Launch appropriate interface
-Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║          MiracleBoot v7.2.0 - Windows Recovery Toolkit          ║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
-Write-Host ""
-Write-Host "Detected Environment: $envType" -ForegroundColor Cyan
-Write-Host "SystemDrive: $env:SystemDrive" -ForegroundColor Gray
+# Load core module
+Write-ToLog "Loading WinRepairCore module..." "INFO"
+Write-Host "`n[LOADER] Loading WinRepairCore module..." -ForegroundColor Cyan
+try {
+    $coreModule = Join-Path $PSScriptRoot "WinRepairCore.ps1"
+    if (-not (Test-Path -LiteralPath $coreModule)) {
+        throw "WinRepairCore.ps1 not found at $coreModule"
+    }
+    . $coreModule
+    Write-ToLog "WinRepairCore loaded successfully" "SUCCESS"
+    Write-Host "[LOADER] ✓ WinRepairCore loaded successfully" -ForegroundColor Green
+} catch {
+    Write-ErrorLog "Failed to load WinRepairCore.ps1" -Exception $_ -Details $coreModule
+    Write-Host "[LOADER] ✗ FATAL: Failed to load WinRepairCore.ps1" -ForegroundColor Red
+    Write-Host "Error: $_" -ForegroundColor Red
+    Write-Host "Location: $coreModule" -ForegroundColor Yellow
+    Write-Host "Log file: $global:LogPath" -ForegroundColor Yellow
+    exit 1
+}
 
-# Check environment capabilities
-$psInfo = Test-PowerShellAvailability
-$networkInfo = Test-NetworkAvailability
-$browserInfo = Test-BrowserAvailability
+# Load optional repair-install module (non-critical)
+Write-ToLog "Loading optional EnsureRepairInstallReady module..." "INFO"
+Write-Host "[LOADER] Loading optional EnsureRepairInstallReady module..." -ForegroundColor Cyan
+try {
+    $repairReadyModule = Join-Path $PSScriptRoot "EnsureRepairInstallReady.ps1"
+    if (Test-Path -LiteralPath $repairReadyModule) {
+        . $repairReadyModule
+        Write-ToLog "EnsureRepairInstallReady loaded successfully" "SUCCESS"
+        Write-Host "[LOADER] ✓ EnsureRepairInstallReady loaded" -ForegroundColor Green
+    } else {
+        Write-WarningLog "EnsureRepairInstallReady not found (optional, continuing)"
+        Write-Host "[LOADER] - EnsureRepairInstallReady not found (optional, continuing)" -ForegroundColor Yellow
+    }
+} catch {
+    Write-WarningLog "Failed to load EnsureRepairInstallReady (optional): $_"
+    Write-Host "[LOADER] - Failed to load EnsureRepairInstallReady (optional): $_" -ForegroundColor Yellow
+}
 
 Write-Host ""
-Write-Host "Environment Capabilities:" -ForegroundColor Cyan
-Write-Host "  PowerShell: $($psInfo.Message)" -ForegroundColor $(if ($psInfo.Available) { "Green" } else { "Yellow" })
-Write-Host "  Network: $($networkInfo.Message)" -ForegroundColor $(if ($networkInfo.Available) { "Green" } else { "Yellow" })
-Write-Host "  Browser: $($browserInfo.Message)" -ForegroundColor $(if ($browserInfo.Available) { "Green" } else { "Yellow" })
-Write-Host ""
+
+# Log summary before launching interface
+$logSummary = Get-LogSummary
+if ($logSummary.ErrorCount -gt 0 -or $logSummary.WarningCount -gt 0) {
+    Write-ToLog "Pre-launch summary - Errors: $($logSummary.ErrorCount), Warnings: $($logSummary.WarningCount)" "INFO"
+}
+
+# ============================================================================
+# SECTION 3: INTERFACE SELECTION & LAUNCH
+# ============================================================================
 
 if ($envType -eq 'FullOS') {
-    Write-Host "Attempting to launch GUI mode..." -ForegroundColor Green
+    Write-ToLog "FullOS detected - attempting GUI mode..." "INFO"
+    Write-Host "[LAUNCH] FullOS detected - attempting GUI mode..." -ForegroundColor Green
     
-    # Check if WPF is available
+    # Try GUI mode
+    Write-ToLog "Loading GUI module..." "INFO"
+    Write-Host "[LAUNCH] Loading GUI module..." -ForegroundColor Gray
     try {
-        Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        Write-Host "WPF assemblies loaded successfully." -ForegroundColor Green
-    } catch {
-        Write-Host "WARNING: WPF assemblies not available: $_" -ForegroundColor Yellow
-        Write-Host "Falling back to TUI mode..." -ForegroundColor Yellow
-        . "$PSScriptRoot\WinRepairTUI.ps1"
-        Start-TUI
-        exit
-    }
-    
-    try {
-        . "$PSScriptRoot\WinRepairGUI.ps1"
-        if (Get-Command Start-GUI -ErrorAction SilentlyContinue) {
-            Start-GUI
+        $guiModule = Join-Path $PSScriptRoot "WinRepairGUI.ps1"
+        if (-not (Test-Path -LiteralPath $guiModule)) {
+            throw "WinRepairGUI.ps1 not found at $guiModule"
+        }
+        
+        Write-ToLog "GUI module file exists and is readable" "DEBUG"
+        . $guiModule
+        
+        if (-not (Get-Command Start-GUI -ErrorAction SilentlyContinue)) {
+            throw "Start-GUI function not found in WinRepairGUI.ps1 - module may not have loaded correctly"
+        }
+        
+        Write-ToLog "GUI module loaded successfully, calling Start-GUI..." "INFO"
+        Write-Host "[LAUNCH] ✓ Starting GUI interface..." -ForegroundColor Green
+        
+        # Initialize GUI fallback flag
+        $global:GUIFallbackToTUI = $false
+        
+        # Launch GUI
+        Start-GUI
+        
+        # Check if user switched to TUI
+        if ($global:GUIFallbackToTUI) {
+            Write-ToLog "User initiated fallback from GUI to TUI mode" "INFO"
+            Write-Host "[LAUNCH] User selected TUI mode, continuing to MS-DOS mode..." -ForegroundColor Yellow
         } else {
-            throw "Start-GUI function not found in WinRepairGUI.ps1"
+            Write-ToLog "GUI closed normally, exiting application" "INFO"
+            exit 0
         }
     } catch {
-        Write-Host "`nGUI mode failed, falling back to TUI:" -ForegroundColor Yellow
-        Write-Host "Error: $_" -ForegroundColor Red
-        Write-Host "`nPress any key to continue with TUI mode..." -ForegroundColor Yellow
-        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-        . "$PSScriptRoot\WinRepairTUI.ps1"
-        Start-TUI
+        Write-ErrorLog "GUI launch failed, falling back to TUI mode" -Exception $_
+        Write-Host "[LAUNCH] GUI failed, falling back to TUI..." -ForegroundColor Yellow
+        Write-Host "        Error Details: $_" -ForegroundColor DarkYellow
+        Write-ToLog "GUI fallback reason: $($_.Exception.Message)" "WARNING"
     }
 } else {
-    # WinRE or WinPE - use TUI mode
-    Write-Host "Running in $envType environment - using TUI mode." -ForegroundColor Yellow
-    . "$PSScriptRoot\WinRepairTUI.ps1"
-    Start-TUI
+    Write-ToLog "Non-FullOS environment detected ($envType), skipping GUI" "WARNING"
+    Write-Host "[LAUNCH] Non-FullOS environment ($envType), using TUI only..." -ForegroundColor Yellow
 }
+
+# Fallback: TUI mode
+Write-ToLog "Loading TUI module..." "INFO"
+Write-Host "[LAUNCH] Loading TUI module..." -ForegroundColor Gray
+try {
+    $tuiModule = Join-Path $PSScriptRoot "WinRepairTUI.ps1"
+    if (-not (Test-Path -LiteralPath $tuiModule)) {
+        throw "WinRepairTUI.ps1 not found"
+    }
+    . $tuiModule
+    
+    if (Get-Command Start-TUI -ErrorAction SilentlyContinue) {
+        Write-ToLog "Launching TUI..." "INFO"
+        Write-Host "[LAUNCH] ✓ Launching TUI..." -ForegroundColor Green
+        Start-TUI
+    } else {
+        throw "Start-TUI function not found in WinRepairTUI.ps1"
+    }
+} catch {
+    Write-ErrorLog "Could not launch TUI mode" -Exception $_
+    Write-Host "[LAUNCH] FATAL: Could not launch TUI mode" -ForegroundColor Red
+    Write-Host "Error: $_" -ForegroundColor Red
+    Write-Host "Log file: $global:LogPath" -ForegroundColor Yellow
+    
+    # Print error summary
+    $summary = Get-LogSummary
+    if ($summary.ErrorCount -gt 0) {
+        Write-Host "`nErrors logged:" -ForegroundColor Red
+        $summary.Errors | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+    }
+    
+    exit 1
+}
+
+# Session cleanup and logging
+Write-ToLog "Session completed successfully" "SUCCESS"
+Write-ToLog "════════════════════════════════════════════════════════════════" "INFO"

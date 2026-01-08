@@ -1,0 +1,77 @@
+=== SYSTEM LOG ERROR ANALYSIS REPORT ===
+Generated: 2026-01-07 16:40:16
+Analysis Period: Last 12 hours
+
+PROMPT 1 - PRIMARY ERROR CODES:
+========================================
+I am experiencing the following error codes on my Windows system:
+
+Error Code: EventID_36871
+  Type: Event Viewer
+  Occurrences: 104
+  Severity: Error
+  Sources: Schannel
+
+Error Code: EventID_10016
+  Type: Event Viewer
+  Occurrences: 15
+  Severity: Warning
+  Sources: DCOM
+
+Error Code: EventID_7034
+  Type: Event Viewer
+  Occurrences: 2
+  Severity: Error
+  Sources: Service Control Manager
+
+Error Code: EventID_7009
+  Type: Event Viewer
+  Occurrences: 2
+  Severity: Error
+  Sources: Service Control Manager
+
+Error Code: EventID_219
+  Type: Event Viewer
+  Occurrences: 2
+  Severity: Warning
+  Sources: Microsoft-Windows-Kernel-PnP
+
+Error Code: EventID_27
+  Type: Event Viewer
+  Occurrences: 2
+  Severity: Warning
+  Sources: e2fnexpress, e2fexpress
+
+Error Code: EventID_4096
+  Type: Event Viewer
+  Occurrences: 1
+  Severity: Warning
+  Sources: VBScriptDeprecationAlert
+
+Error Code: EventID_10005
+  Type: Event Viewer
+  Occurrences: 1
+  Severity: Error
+  Sources: MsiInstaller
+
+Error Code: EventID_100
+  Type: Event Viewer
+  Occurrences: 1
+  Severity: Warning
+  Sources: winsrvext
+
+Error Code: EventID_1000
+  Type: Event Viewer
+  Occurrences: 1
+  Severity: Error
+  Sources: Application Error
+
+
+PROMPT 2 - ASK CHATGPT:
+========================================
+1. Copy the error codes above
+2. Paste into ChatGPT with this message:
+   'What do these error codes mean and how serious are they?'
+3. For detailed troubleshooting, ask:
+   'How can I fix these errors?'
+

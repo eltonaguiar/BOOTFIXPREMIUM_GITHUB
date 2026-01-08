@@ -25,6 +25,13 @@ MiracleBoot/
 │   └── [Other docs & reports]
 │
 ├── HELPER SCRIPTS/                    🔧 Core modules & utilities
+│   ├── 📊 DIAGNOSTIC SUITE (NEW v7.2)
+│   │   ├── MiracleBoot-DiagnosticHub.ps1         ← START HERE (GUI)
+│   │   ├── MiracleBoot-LogGatherer.ps1           (Collect 5-tier logs)
+│   │   ├── MiracleBoot-AdvancedLogAnalyzer.ps1   (Deep analysis)
+│   │   ├── Setup-CrashAnalyzer.ps1               (Crash dump analysis)
+│   │   └── CrashAnalyzer/                        (crashanalyze.exe + DLLs)
+│   │
 │   ├── MiracleBoot-Automation.ps1
 │   ├── MiracleBoot-BootRecovery.ps1
 │   ├── MiracleBoot-Diagnostics.ps1
@@ -108,6 +115,55 @@ RunMiracleBoot.cmd
 - **REPAIR_INSTALL_READINESS.md** — Windows repair processes
 - **FUTURE_ENHANCEMENTS.md** — Planned improvements (based on industry research)
 - **PREMIUM_ROADMAP_2026-2028.md** — Long-term vision
+
+### 🆕 NEW: Diagnostic Suite Documentation (v7.2)
+- **DIAGNOSTIC_SUITE_GUIDE.md** — Comprehensive diagnostic framework
+- **DIAGNOSTIC_QUICK_REFERENCE.md** — Cheat sheet for diagnostics
+  
+**Use for:**
+- Gathering 5-tier diagnostic logs
+- Analyzing boot failures
+- Root cause determination  
+- INACCESSIBLE_BOOT_DEVICE troubleshooting
+- Crash dump analysis
+- Event Viewer integration
+
+---
+
+## 🆕 NEW Diagnostic Suite (v7.2)
+
+### Fastest Start
+```powershell
+# Launch main diagnostic GUI
+cd "HELPER SCRIPTS"
+powershell -File MiracleBoot-DiagnosticHub.ps1
+```
+
+### What It Does
+**Gathers & Analyzes:**
+- ✅ Kernel crash dumps (MEMORY.DMP)
+- ✅ Live kernel reports (silent hangs)
+- ✅ Boot setup logs (setupact.log)
+- ✅ Boot trace logs (ntbtlog.txt)
+- ✅ Event logs (System.evtx)
+- ✅ BCD configuration
+- ✅ Storage driver status
+
+**Provides:**
+- ✅ Prioritized findings (TIER 1-5)
+- ✅ Root cause analysis
+- ✅ Decision tree for INACCESSIBLE_BOOT_DEVICE
+- ✅ Remediation recommendations
+- ✅ Integration with Crash Analyzer
+- ✅ Event Viewer launcher
+
+### Key Tools
+| Tool | Purpose | Launch |
+|------|---------|--------|
+| DiagnosticHub | Central GUI | `MiracleBoot-DiagnosticHub.ps1` |
+| LogGatherer | Collect logs | `MiracleBoot-LogGatherer.ps1` |
+| AdvancedAnalyzer | Deep analysis | `MiracleBoot-AdvancedLogAnalyzer.ps1 -Interactive` |
+| CrashAnalyzer | Dump analysis | `Setup-CrashAnalyzer.ps1` + `crashanalyze.exe` |
 
 ---
 

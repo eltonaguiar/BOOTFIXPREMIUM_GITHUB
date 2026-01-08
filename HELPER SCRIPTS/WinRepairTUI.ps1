@@ -429,6 +429,7 @@
                 Write-Host "H) System Information (systeminfo)" -ForegroundColor White
                 Write-Host "I) Check Disk (chkdsk)" -ForegroundColor Yellow
                 Write-Host "J) Network Configuration (ipconfig)" -ForegroundColor Cyan
+                Write-Host "K) Restart Windows Explorer" -ForegroundColor Yellow
                 Write-Host "R) Return to Main Menu" -ForegroundColor Gray
                 Write-Host ""
                 
@@ -539,6 +540,25 @@
                         Write-Host ""
                         Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Gray
                         Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "K" {
+                        Write-Host "`nRestarting Windows Explorer..." -ForegroundColor Yellow
+                        Write-Host ""
+                        $result = Restart-WindowsExplorer
+                        
+                        Write-Host "Status: $($result.Status)" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
+                        Write-Host "Message: $($result.Message)" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
+                        
+                        if ($result.ActionTaken -eq "Restarted") {
+                            Write-Host "`n✓ Windows Explorer has been successfully restarted." -ForegroundColor Green
+                        } elseif ($result.ExplorerRunning) {
+                            Write-Host "`n✓ Windows Explorer is running normally - no restart needed." -ForegroundColor Green
+                        } else {
+                            Write-Host "`n✗ An error occurred while restarting Windows Explorer." -ForegroundColor Red
+                        }
+                        
+                        Write-Host "`nPress any key to continue..." -ForegroundColor Gray
                         $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
                     }
                     "R" {

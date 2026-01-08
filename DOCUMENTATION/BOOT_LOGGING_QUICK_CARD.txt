@@ -1,0 +1,182 @@
+# BOOT LOGGING QUICK REFERENCE CARD
+## For MiracleBoot Diagnostic Suite v7.2
+
+---
+
+## ⚠️ CRITICAL: Boot logs ONLY exist if enabled BEFORE issues occur!
+
+---
+
+## ENABLE BOOT LOGGING (Pick One Method)
+
+### 🔵 METHOD 1: PowerShell (Best)
+```powershell
+# Run as Administrator
+bcdedit /set {current} bootlog yes
+
+# Verify enabled
+bcdedit /enum | findstr bootlog
+```
+
+### 🟢 METHOD 2: Windows GUI
+1. Press **Windows + R**
+2. Type: `msconfig`
+3. Click **Boot** tab
+4. ✓ Check **"Boot log"**
+5. Click **Apply** → **OK** → **Restart**
+
+### 🟡 METHOD 3: Command Prompt
+```cmd
+REM Run as Administrator
+bcdedit /set {current} bootlog yes
+```
+
+---
+
+## FIND THE BOOT LOG FILE
+
+**If system boots normally:**
+```
+C:\Windows\ntbtlog.txt
+```
+
+**If analyzing from WinPE or external drive:**
+```
+<DriveLetter>:\Windows\ntbtlog.txt
+Example: D:\Windows\ntbtlog.txt
+```
+
+---
+
+## ANALYZE BOOT LOG
+
+### Find Failed Drivers (Root Cause)
+```powershell
+Select-String "Did not load" C:\Windows\ntbtlog.txt
+```
+
+### Find Storage Driver Failures (0x7B)
+```powershell
+Select-String -Pattern "storage|nvme|ahci|raid" C:\Windows\ntbtlog.txt
+```
+
+### View Entire Log
+```powershell
+Get-Content C:\Windows\ntbtlog.txt | Out-GridView
+```
+
+---
+
+## CRITICAL DRIVERS (Must Load Successfully)
+
+❌ If any of these show "Did not load" → **Boot failure cause found**
+
+- `disk.sys`
+- `partmgr.sys`
+- `volmgr.sys`
+- `storahci.sys` (AHCI)
+- `stornvme.sys` (NVMe)
+- `ntfs.sys`
+- `mountmgr.sys`
+
+---
+
+## INTERPRETING RESULTS
+
+### ✅ Boot Log Shows All Critical Drivers Loaded
+→ No driver issue. Check other diagnostics (MEMORY.DMP, Setup logs)
+
+### ❌ Boot Log Shows Storage Driver Failed to Load
+→ **ROOT CAUSE FOUND**: Inject driver or enable in registry (WinPE)
+
+### ❌ Boot Log Shows File System Driver Failed
+→ **CRITICAL**: File system can't load. Likely disk corruption or BSOD.
+
+### ❌ Multiple Failed Drivers
+→ Check which are critical drivers. Prioritize storage/file system failures.
+
+---
+
+## USE MIRACLEBOOT FOR AUTOMATED ANALYSIS
+
+```powershell
+# GUI method (Recommended)
+cd "HELPER SCRIPTS"
+powershell -File MiracleBoot-DiagnosticHub.ps1
+# Then click: "Analyze Boot Log"
+
+# Command line method
+powershell -File "MiracleBoot-AdvancedLogAnalyzer.ps1" -Interactive
+```
+
+---
+
+## DISABLE BOOT LOGGING (After Diagnosis)
+
+```powershell
+# Improves performance
+bcdedit /set {current} bootlog no
+
+# Verify disabled
+bcdedit /enum | findstr bootlog
+```
+
+---
+
+## TROUBLESHOOTING
+
+| Problem | Solution |
+|---------|----------|
+| **Boot log not found after enabling** | System may not have fully booted. Restart and try again. |
+| **Boot log is empty** | Disable `bootoptimization`: `bcdedit /set {current} bootoptimization off` |
+| **Can't verify bootlog setting** | Make sure you ran command as **Administrator** |
+| **System hangs during boot** | Boot log may be incomplete. Check what's there anyway. |
+
+---
+
+## QUICK DIAGNOSTIC WORKFLOW
+
+1. **Enable boot logging** (use Method 1 above)
+2. **Restart system**
+3. **Allow issue to occur** (don't force restart)
+4. **Check boot log** (use analysis commands above)
+5. **Review failures** (match against critical drivers list)
+6. **Use MiracleBoot** for root cause analysis
+7. **Disable boot logging** when done
+
+---
+
+## WHERE TO FIND HELP
+
+- **Full Guide**: `DOCUMENTATION/BOOT_LOGGING_GUIDE.md`
+- **Quick Ref**: `DOCUMENTATION/DIAGNOSTIC_QUICK_REFERENCE.md`
+- **Diagnostic Guide**: `DOCUMENTATION/DIAGNOSTIC_SUITE_GUIDE.md`
+- **MiracleBoot GUI**: `HELPER SCRIPTS/MiracleBoot-DiagnosticHub.ps1`
+
+---
+
+## KEY COMMANDS (Copy-Paste Ready)
+
+```powershell
+# Enable
+bcdedit /set {current} bootlog yes
+
+# Verify
+bcdedit /enum | findstr bootlog
+
+# Analyze - Failed drivers
+Select-String "Did not load" C:\Windows\ntbtlog.txt
+
+# Analyze - Storage failures
+Select-String -Pattern "storage|nvme|ahci|raid" C:\Windows\ntbtlog.txt
+
+# Disable
+bcdedit /set {current} bootlog no
+```
+
+---
+
+**Created:** January 7, 2026  
+**For:** MiracleBoot Diagnostic Suite v7.2  
+**Status:** Boot logging fully documented and integrated
+
