@@ -20,6 +20,7 @@ MiracleBoot/
 │   ├── TOOLS_USER_GUIDE.md            (Tool descriptions)
 │   ├── BACKUP_SYSTEM.md               (Version control system)
 │   ├── REPAIR_INSTALL_READINESS.md    (Windows repair guide)
+│   ├── INDUSTRY_BEST_PRACTICES_COMPARISON.md  (Research & gap analysis)
 │   ├── PREMIUM_ROADMAP_2026-2028.md   (Future features)
 │   ├── FUTURE_ENHANCEMENTS.md         (Based on industry research)
 │   └── [Other docs & reports]
@@ -106,6 +107,7 @@ RunMiracleBoot.cmd
 - **TOOLS_USER_GUIDE.md** — Individual tool descriptions
 - **BACKUP_SYSTEM.md** — Version control & rollback system
 - **REPAIR_INSTALL_READINESS.md** — Windows repair processes
+- **INDUSTRY_BEST_PRACTICES_COMPARISON.md** — Comprehensive industry research (NEW!)
 - **FUTURE_ENHANCEMENTS.md** — Planned improvements (based on industry research)
 - **PREMIUM_ROADMAP_2026-2028.md** — Long-term vision
 

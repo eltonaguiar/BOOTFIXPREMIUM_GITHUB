@@ -31,6 +31,12 @@
 | [TEST_RESULTS_SUMMARY.md](DOCUMENTATION/TEST_RESULTS_SUMMARY.md) | Detailed test results | QA/Managers | 15 min |
 | [FINAL_VALIDATION_REPORT.md](DOCUMENTATION/FINAL_VALIDATION_REPORT.md) | Implementation report | All | 10 min |
 
+### Research & Planning
+| File | Purpose | Read Time |
+|------|---------|-----------|
+| [INDUSTRY_BEST_PRACTICES_COMPARISON.md](DOCUMENTATION/INDUSTRY_BEST_PRACTICES_COMPARISON.md) | Industry research & gap analysis | 30 min |
+| [FUTURE_ENHANCEMENTS.md](DOCUMENTATION/FUTURE_ENHANCEMENTS.md) | Roadmap & planned features | 20 min |
+
 ### Other Documentation
 | File | Purpose |
 |------|---------|
