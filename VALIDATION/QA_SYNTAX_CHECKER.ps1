@@ -43,7 +43,9 @@ foreach ($file in $psFiles) {
             Write-Host "[FAIL] $($file.Name) - $($errors.Count) errors" -ForegroundColor Red
             $totalErrors += $errors.Count
             foreach ($err in $errors) {
-                $warnings += "Line $($err.Token.StartLine): $($err.Message)"
+                $errorDetail = "Line $($err.Token.StartLine): $($err.Message)"
+                Write-Host "  $errorDetail" -ForegroundColor Yellow
+                $warnings += $errorDetail
             }
         }
     } catch {

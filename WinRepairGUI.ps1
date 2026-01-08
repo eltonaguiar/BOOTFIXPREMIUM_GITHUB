@@ -161,7 +161,7 @@ function Show-SymbolHelper {
     Write-Host "Alt+0169 = © (copyright)" -ForegroundColor White
     Write-Host "Alt+0174 = ® (registered)" -ForegroundColor White
     Write-Host "Alt+0153 = ™ (trademark)" -ForegroundColor White
-    Write-Host "Alt+0131 = ƒ (function)" -ForegroundColor White
+    Write-Host "Alt+0131 = f (function)" -ForegroundColor White
     Write-Host ""
     Write-Host "Use Windows Character Map for more symbols." -ForegroundColor Gray
 }
@@ -171,7 +171,7 @@ function Show-SymbolHelper {
 
 function Start-GUI {
     # XAML definition for the main window
-    $XAML = @"
+    $XAML = @'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  Title="Miracle Boot v7.2.0 - Advanced Recovery (GitHub + Cursor)"
@@ -633,7 +633,8 @@ function Start-GUI {
     </StatusBar>
 </Grid>
 </Window>
-"@
+'@
+
 
 # #region agent log
 try {
