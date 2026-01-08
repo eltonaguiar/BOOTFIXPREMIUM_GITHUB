@@ -41,8 +41,7 @@ param(
     [string]$ImagePath = "",
     [switch]$Online,
     [switch]$OfflineReg,
-    [string]$EvidencePath = "",
-    [switch]$Verbose = $false
+    [string]$EvidencePath = ""
 )
 
 # ============================================================================
@@ -610,36 +609,52 @@ function Test-SetupExeReadiness {
         
         # Check 2: Antivirus/Real-time protection
         Write-Host "      Checking antivirus status..." -ForegroundColor White
-        $wdefend = Get-MpComputerStatus -ErrorAction SilentlyContinue
-        if ($wdefend.RealTimeProtectionEnabled) {
-            $validation.Recommendations += "Disable real-time antivirus protection before setup to prevent conflicts"
-            Write-Host "         Real-time protection enabled (should be disabled during setup)" -ForegroundColor Yellow
+        if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
+            $wdefend = Get-MpComputerStatus -ErrorAction SilentlyContinue
+            if ($wdefend -and $wdefend.RealTimeProtectionEnabled) {
+                $validation.Recommendations += "Disable real-time antivirus protection before setup to prevent conflicts"
+                Write-Host "         Real-time protection enabled (should be disabled during setup)" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "         Antivirus status check not available" -ForegroundColor Gray
         }
         
         # Check 3: Network connectivity
         Write-Host "      Checking network connectivity..." -ForegroundColor White
-        $netAdapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" }
-        if ($netAdapters) {
-            Write-Host "         Network connected" -ForegroundColor Green
+        if (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue) {
+            $netAdapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq "Up" }
+            if ($netAdapters) {
+                Write-Host "         Network connected" -ForegroundColor Green
+            } else {
+                $validation.Recommendations += "Network offline - setup may fail to download updates"
+                Write-Host "         Network disconnected" -ForegroundColor Yellow
+            }
         } else {
-            $validation.Recommendations += "Network offline - setup may fail to download updates"
-            Write-Host "         Network disconnected" -ForegroundColor Yellow
+            Write-Host "         Network check not available" -ForegroundColor Gray
         }
         
         # Check 4: Power state
         Write-Host "      Checking power configuration..." -ForegroundColor White
-        $powerPlan = Get-PowerPlan -ErrorAction SilentlyContinue
-        if ($powerPlan) {
-            Write-Host "         Power plan configured: $($powerPlan.FriendlyName)" -ForegroundColor Green
-            $validation.Recommendations += "Ensure system stays powered during setup (high performance mode recommended)"
+        if (Get-Command Get-PowerPlan -ErrorAction SilentlyContinue) {
+            $powerPlan = Get-PowerPlan -ErrorAction SilentlyContinue
+            if ($powerPlan) {
+                Write-Host "         Power plan configured: $($powerPlan.FriendlyName)" -ForegroundColor Green
+                $validation.Recommendations += "Ensure system stays powered during setup (high performance mode recommended)"
+            }
+        } else {
+            Write-Host "         Power plan check not available" -ForegroundColor Gray
         }
         
         # Check 5: Pending updates
         Write-Host "      Checking for pending updates..." -ForegroundColor White
-        $updates = Get-WindowsUpdate -ErrorAction SilentlyContinue
-        if ($updates) {
-            $validation.Recommendations += "Install pending Windows Updates before setup to prevent re-updates"
-            Write-Host "         Pending updates detected: $($updates.Count)" -ForegroundColor Yellow
+        if (Get-Command Get-WindowsUpdate -ErrorAction SilentlyContinue) {
+            $updates = Get-WindowsUpdate -ErrorAction SilentlyContinue
+            if ($updates) {
+                $validation.Recommendations += "Install pending Windows Updates before setup to prevent re-updates"
+                Write-Host "         Pending updates detected: $($updates.Count)" -ForegroundColor Yellow
+            }
+        } else {
+            Write-Host "         Update check not available" -ForegroundColor Gray
         }
         
         Write-Host "  [2] Readiness Summary:" -ForegroundColor White
@@ -878,8 +893,8 @@ function Invoke-RepairInstallReadinessCheck {
         $preBootSnapshot = Get-BootSnapshot -TargetDrive $TargetDrive
         $workflow.Steps += @{ Step = "Boot Snapshot (Pre)"; Result = $preBootSnapshot }
         
-        # Phase 2: Repairs (if needed)
-        if ($AutoRepair -or $eligibility.Blockers.Count -gt 0) {
+        # Phase 2: Repairs (only when explicitly requested)
+        if ($AutoRepair) {
             Write-Host "`n[PHASE 2] Automatic Repairs" -ForegroundColor Magenta
             Write-Host "" -ForegroundColor Gray
             
@@ -897,6 +912,8 @@ function Invoke-RepairInstallReadinessCheck {
             $eligibilityPost = Test-SetupEligibility -TargetDrive $TargetDrive
             $workflow.Steps += @{ Step = "Post-Repair Eligibility"; Result = $eligibilityPost }
             $eligibility = $eligibilityPost
+        } elseif ($eligibility.Blockers.Count -gt 0) {
+            Write-Host "`n[PHASE 2] Automatic Repairs skipped (AutoRepair disabled)" -ForegroundColor Yellow
         }
         
         # Phase 3: Pre-validation

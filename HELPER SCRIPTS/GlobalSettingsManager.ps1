@@ -29,6 +29,7 @@ $global:MiracleBoot_DefaultSettings = @{
     VerboseLogging = $false
     AutoBackupBeforeRepair = $true
     ConfirmDestructiveOperations = $true
+    ReadOnlyMode = $false
     LastUsedDrive = $null
     LastUsedOperation = $null
     RememberLastDrive = $true
@@ -374,6 +375,36 @@ function Set-AutoBackupBeforeRepair {
     return Set-Setting -Name "AutoBackupBeforeRepair" -Value $Enable
 }
 
+function Get-ReadOnlyMode {
+    <#
+    .SYNOPSIS
+    Gets the read-only mode setting.
+    
+    .OUTPUTS
+    Boolean - $true if read-only mode is enabled
+    #>
+    return Get-Setting -Name "ReadOnlyMode" -Default $false
+}
+
+function Set-ReadOnlyMode {
+    <#
+    .SYNOPSIS
+    Sets read-only mode for potentially destructive operations.
+    
+    .PARAMETER Enable
+    $true to enable read-only mode, $false to disable
+    
+    .OUTPUTS
+    Boolean - $true if successful
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [bool]$Enable
+    )
+    
+    return Set-Setting -Name "ReadOnlyMode" -Value $Enable
+}
+
 function Reset-ToDefaults {
     <#
     .SYNOPSIS
@@ -523,6 +554,8 @@ Export-ModuleMember -Function @(
     'Set-VerboseLogging',
     'Get-AutoBackupBeforeRepair',
     'Set-AutoBackupBeforeRepair',
+    'Get-ReadOnlyMode',
+    'Set-ReadOnlyMode',
     'Reset-ToDefaults',
     'Export-Settings',
     'Import-Settings',

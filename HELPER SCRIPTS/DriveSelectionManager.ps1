@@ -350,7 +350,7 @@ function Show-DefaultDriveChoiceDialog {
         
         <StackPanel Grid.Row="1" Margin="0,0,0,10">
             <TextBlock Text="Operation: $Operation" Margin="0,0,0,4"/>
-            <TextBlock Text="Default Drive: $drive:`nLabel: $label`nSize: $size GB  Free: $free GB" />
+            <TextBlock Text="Default Drive: ${drive}:`nLabel: $label`nSize: $size GB  Free: $free GB" />
         </StackPanel>
         
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">

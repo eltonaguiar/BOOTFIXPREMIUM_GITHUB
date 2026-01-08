@@ -6,6 +6,26 @@
         Write-ToLog "═════════════════════════════════════════════════════════════" "INFO"
     }
     
+    # Load global settings for read-only mode if available
+    try {
+        $gsmPath = Join-Path $PSScriptRoot "HELPER SCRIPTS\GlobalSettingsManager.ps1"
+        if (Test-Path -LiteralPath $gsmPath) {
+            . $gsmPath
+            if (Get-Command Load-Settings -ErrorAction SilentlyContinue) {
+                Load-Settings | Out-Null
+            }
+        }
+    } catch {
+        # Non-fatal; continue without settings
+    }
+    
+    function Get-ReadOnlyModeEnabled {
+        if (Get-Command Get-ReadOnlyMode -ErrorAction SilentlyContinue) {
+            return (Get-ReadOnlyMode -eq $true)
+        }
+        return $false
+    }
+    
     # Detect environment for display (matching main script logic)
     $envDisplay = "FullOS"
     
@@ -87,6 +107,13 @@
                 $win = Read-Host "Target Windows drive letter (e.g. C)"
                 $path = Read-Host "Path to driver folder"
                 if ($win -and $path) {
+                    if (Get-ReadOnlyModeEnabled) {
+                        Write-Host "`nRead-only mode enabled. Preview only:" -ForegroundColor Yellow
+                        Write-Host "  Inject-Drivers-Offline $win $path" -ForegroundColor Gray
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                        break
+                    }
                     Write-Host "Injecting drivers into ${win}: using DISM..." -ForegroundColor Gray
                     Inject-Drivers-Offline $win $path
                     Write-Host "Driver injection complete. Press any key to continue..." -ForegroundColor Green
@@ -106,6 +133,15 @@
                 Write-Host "  BCD EDIT + QUICK FIXES" -ForegroundColor Cyan
                 Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
                 Write-Host ""
+                if (Get-ReadOnlyModeEnabled) {
+                    Write-Host "Read-only mode enabled. BCD modifications are disabled." -ForegroundColor Yellow
+                    Write-Host "Preview commands:" -ForegroundColor Gray
+                    Write-Host "  bcdedit /set {default} recoveryenabled no" -ForegroundColor Gray
+                    Write-Host "  bcdedit /set {default} bootmenupolicy legacy" -ForegroundColor Gray
+                    Write-Host "Press any key to continue..." -ForegroundColor Gray
+                    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    break
+                }
                 Write-Host "1) Edit BCD Entry Description" -ForegroundColor White
                 Write-Host "2) Break Recovery Loop (recoveryenabled no)" -ForegroundColor Yellow
                 Write-Host "3) Enable Legacy F8 Menu (bootmenupolicy legacy)" -ForegroundColor Yellow
@@ -176,7 +212,7 @@
                         
                         try {
                             if (Get-Command Invoke-RepairInstallReadinessCheck -ErrorAction SilentlyContinue) {
-                                $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair $false
+                                $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair:$false
                                 
                                 Write-Host "`n" -ForegroundColor Gray
                                 Write-Host "FINAL RECOMMENDATION: $($result.FinalRecommendation)" -ForegroundColor Cyan
@@ -201,7 +237,7 @@
                         if ($confirm -eq 'Y' -or $confirm -eq 'y') {
                             try {
                                 if (Get-Command Invoke-RepairInstallReadinessCheck -ErrorAction SilentlyContinue) {
-                                    $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair $true
+                                    $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair:$true
                                     
                                     Write-Host "`n" -ForegroundColor Gray
                                     Write-Host "FINAL RECOMMENDATION: $($result.FinalRecommendation)" -ForegroundColor Cyan
@@ -636,6 +672,13 @@
                         $driveLetter = Read-Host "Enter drive letter to check (e.g., C)"
                         if ($driveLetter) {
                             $driveNormalized = $driveLetter.TrimEnd(':').ToUpper()
+                            if (Get-ReadOnlyModeEnabled) {
+                                Write-Host "`nRead-only mode enabled. Preview only:" -ForegroundColor Yellow
+                                Write-Host "  chkdsk ${driveNormalized}: /F /R" -ForegroundColor Gray
+                                Write-Host "Press any key to continue..." -ForegroundColor Gray
+                                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                                break
+                            }
                             Write-Host "`nRunning chkdsk on ${driveNormalized}:..." -ForegroundColor Green
                             Write-Host "This may take several minutes..." -ForegroundColor Yellow
                             chkdsk "${driveNormalized}:" /F /R

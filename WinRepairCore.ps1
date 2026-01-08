@@ -1890,16 +1890,284 @@ function Test-BitLockerStatus {
     return $status
 }
 
+function Get-StorageControllerSignature {
+    param(
+        [string[]]$HardwareIds,
+        [string]$Name
+    )
+
+    $hwid = if ($HardwareIds -and $HardwareIds.Count -gt 0) { $HardwareIds[0] } else { "" }
+    $vendor = "Unknown"
+    $controllerType = "Unknown"
+    $requiredInf = "Unknown"
+    $driverName = "Unknown Driver"
+
+    # Vendor detection
+    if ($hwid -match "VEN_8086") { $vendor = "Intel" }
+    elseif ($hwid -match "VEN_1022") { $vendor = "AMD" }
+    elseif ($hwid -match "VEN_1B21") { $vendor = "ASMedia" }
+    elseif ($hwid -match "VEN_1B4B") { $vendor = "Marvell" }
+    elseif ($hwid -match "VEN_197B") { $vendor = "JMicron" }
+    elseif ($hwid -match "VEN_10DE") { $vendor = "NVIDIA" }
+    elseif ($hwid -match "VEN_144D") { $vendor = "Samsung" }
+
+    # Controller type + INF hints (PCI class codes or known device IDs)
+    if ($hwid -match "VEN_8086&DEV_9A0B|VEN_8086&DEV_467F|VEN_8086&DEV_467D") {
+        $controllerType = "Intel VMD"
+        $requiredInf = "iaStorVD.inf"
+        $driverName = "Intel VMD (Volume Management Device)"
+    } elseif ($hwid -match "VEN_8086&DEV_2822|VEN_8086&DEV_282A|VEN_8086&DEV_2826") {
+        $controllerType = "Intel RST RAID"
+        $requiredInf = "iaStorAC.inf"
+        $driverName = "Intel RST RAID Controller"
+    } elseif ($hwid -match "VEN_8086&DEV_06EF|VEN_8086&DEV_06E0") {
+        $controllerType = "Intel VROC"
+        $requiredInf = "iaStorAVC.inf"
+        $driverName = "Intel VROC (Virtual RAID on CPU)"
+    } elseif ($hwid -match "CC_0108|NVMe|NVM") {
+        $controllerType = "NVMe"
+        $requiredInf = "stornvme.inf"
+        $driverName = "Standard NVMe Controller"
+    } elseif ($hwid -match "CC_0106") {
+        $controllerType = "SATA AHCI"
+        $requiredInf = "storahci.inf"
+        $driverName = "Standard SATA AHCI Controller"
+    } elseif ($hwid -match "CC_0104") {
+        $controllerType = "RAID"
+        $requiredInf = "iaStorAC.inf"
+        $driverName = "RAID Controller"
+    } elseif ($hwid -match "CC_0101|CC_0100|CC_0105") {
+        $controllerType = "IDE/SCSI"
+        $requiredInf = "pciide.inf"
+        $driverName = "Legacy IDE/SCSI Controller"
+    }
+
+    # Brand-specific overrides
+    if ($vendor -eq "AMD" -and $controllerType -in @("RAID","Unknown")) {
+        $controllerType = "AMD RAID"
+        $requiredInf = "rcraid.inf or rccfg.inf"
+        $driverName = "AMD RAID Controller"
+    } elseif ($vendor -eq "AMD" -and $controllerType -eq "SATA AHCI") {
+        $requiredInf = "amd_sata.inf or storahci.inf"
+        $driverName = "AMD SATA AHCI Controller"
+    } elseif ($vendor -eq "ASMedia") {
+        $controllerType = "ASMedia SATA/RAID"
+        $requiredInf = "asstor64.inf or asahci64.inf"
+        $driverName = "ASMedia Storage Controller"
+    } elseif ($vendor -eq "Marvell") {
+        $controllerType = "Marvell SATA/RAID"
+        $requiredInf = "mv91xx.inf"
+        $driverName = "Marvell Storage Controller"
+    } elseif ($vendor -eq "JMicron") {
+        $controllerType = "JMicron SATA/RAID"
+        $requiredInf = "jmsahci.inf"
+        $driverName = "JMicron Storage Controller"
+    } elseif ($vendor -eq "Samsung" -and $controllerType -eq "NVMe") {
+        $requiredInf = "stornvme.inf or secnvme.inf"
+        $driverName = "Samsung NVMe Controller"
+    } elseif ($vendor -eq "NVIDIA") {
+        $controllerType = "NVIDIA Storage"
+        $requiredInf = "nvgrd.inf or nvraid.inf"
+        $driverName = "NVIDIA Storage Controller"
+    }
+
+    # Name-based fallback
+    if ($controllerType -eq "Unknown" -and $Name) {
+        if ($Name -match "VMD") { $controllerType = "Intel VMD"; $requiredInf = "iaStorVD.inf" }
+        elseif ($Name -match "RST|RAID|VROC") { $controllerType = "RAID"; $requiredInf = "iaStorAC.inf" }
+        elseif ($Name -match "NVMe|NVM") { $controllerType = "NVMe"; $requiredInf = "stornvme.inf" }
+        elseif ($Name -match "AHCI|SATA") { $controllerType = "SATA AHCI"; $requiredInf = "storahci.inf" }
+    }
+
+    return @{
+        Vendor = $vendor
+        ControllerType = $controllerType
+        RequiredInf = $requiredInf
+        DriverName = $driverName
+        HardwareId = $hwid
+    }
+}
+
+function Test-IsMassStorageClassCode {
+    param([string[]]$HardwareIds)
+    if (-not $HardwareIds) { return $false }
+    foreach ($id in $HardwareIds) {
+        if ($id -match "CC_01[0-9A-F]{2}") { return $true }
+    }
+    return $false
+}
+
+function Get-StorageControllerCandidates {
+    $candidates = @{}
+
+    if (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue) {
+        $pnpDevices = Get-PnpDevice -PresentOnly:$false -ErrorAction SilentlyContinue
+        foreach ($dev in $pnpDevices) {
+            $hwids = @()
+            if ($dev.HardwareId) { $hwids = @($dev.HardwareId) }
+            $isStorage = $dev.Class -match 'SCSIAdapter|Storage|HDC|IDE' -or
+                         $dev.FriendlyName -match 'VMD|RAID|NVMe|AHCI|SATA|SAS|Storage|Controller|NVM|VROC|RST' -or
+                         (Test-IsMassStorageClassCode -HardwareIds $hwids)
+            if (-not $isStorage) { continue }
+
+            $instanceId = $dev.InstanceId
+            if (-not $instanceId) { $instanceId = $dev.PNPDeviceID }
+            if (-not $instanceId) { continue }
+
+            if (-not $candidates.ContainsKey($instanceId)) {
+                $candidates[$instanceId] = [pscustomobject]@{
+                    InstanceId = $instanceId
+                    Name = $dev.FriendlyName
+                    Class = $dev.Class
+                    Status = $dev.Status
+                    ErrorCode = $dev.ConfigManagerErrorCode
+                    HardwareIds = $hwids
+                    Source = "PnpDevice"
+                }
+            }
+        }
+    }
+
+    try {
+        $wmiControllers = Get-CimInstance Win32_SCSIController -ErrorAction SilentlyContinue
+        $wmiControllers += Get-CimInstance Win32_IDEController -ErrorAction SilentlyContinue
+        foreach ($ctrl in $wmiControllers) {
+            $instanceId = $ctrl.PNPDeviceID
+            if (-not $instanceId) { continue }
+            if (-not $candidates.ContainsKey($instanceId)) {
+                $candidates[$instanceId] = [pscustomobject]@{
+                    InstanceId = $instanceId
+                    Name = $ctrl.Name
+                    Class = "StorageController"
+                    Status = $ctrl.Status
+                    ErrorCode = $null
+                    HardwareIds = @($ctrl.PNPDeviceID)
+                    Source = "WMI"
+                }
+            }
+        }
+    } catch {
+        # Ignore WMI errors
+    }
+
+    return $candidates.Values
+}
+
+function Get-StorageControllers {
+    param([string]$WindowsDrive = $env:SystemDrive.TrimEnd(':'))
+
+    $controllers = @()
+    $candidates = Get-StorageControllerCandidates
+    foreach ($dev in $candidates) {
+        $sig = Get-StorageControllerSignature -HardwareIds $dev.HardwareIds -Name $dev.Name
+        $driverLoaded = $true
+        if ($null -ne $dev.ErrorCode) {
+            $driverLoaded = ($dev.ErrorCode -eq 0)
+        }
+        $controllers += [pscustomobject]@{
+            FriendlyName = if ($dev.Name) { $dev.Name } else { $sig.DriverName }
+            HardwareID = $sig.HardwareId
+            ControllerType = $sig.ControllerType
+            Vendor = $sig.Vendor
+            DriverLoaded = $driverLoaded
+            ErrorCode = $dev.ErrorCode
+            Source = $dev.Source
+        }
+    }
+
+    return $controllers
+}
+
+function Get-AdvancedStorageControllerInfo {
+    param(
+        [switch]$IncludeNonCritical,
+        [switch]$Detailed
+    )
+
+    $controllers = @()
+    $candidates = Get-StorageControllerCandidates
+
+    foreach ($dev in $candidates) {
+        $sig = Get-StorageControllerSignature -HardwareIds $dev.HardwareIds -Name $dev.Name
+        $isBootCritical = $sig.ControllerType -match "VMD|RAID|NVMe|SATA|AHCI|SAS"
+        if (-not $IncludeNonCritical -and -not $isBootCritical) { continue }
+
+        $driverInf = $null
+        $driverVersion = $null
+        if (Get-Command Get-PnpDeviceProperty -ErrorAction SilentlyContinue) {
+            try {
+                $driverInf = (Get-PnpDeviceProperty -InstanceId $dev.InstanceId -KeyName "DEVPKEY_Device_DriverInfPath" -ErrorAction SilentlyContinue).Data
+                $driverVersion = (Get-PnpDeviceProperty -InstanceId $dev.InstanceId -KeyName "DEVPKEY_Device_DriverVersion" -ErrorAction SilentlyContinue).Data
+            } catch {
+                # Ignore property lookup errors
+            }
+        }
+
+        $hasDriver = $true
+        if ($null -ne $dev.ErrorCode) {
+            $hasDriver = ($dev.ErrorCode -eq 0)
+        } elseif (-not $driverInf) {
+            $hasDriver = $false
+        }
+
+        $needsDriver = (-not $hasDriver) -or ($dev.ErrorCode -in @(1,3,28))
+        $status = if ($dev.Status) { $dev.Status } else { "Unknown" }
+
+        $controller = [pscustomobject]@{
+            Name = if ($dev.Name) { $dev.Name } else { $sig.DriverName }
+            ControllerType = $sig.ControllerType
+            Vendor = $sig.Vendor
+            Status = $status
+            HasDriver = $hasDriver
+            NeedsDriver = $needsDriver
+            RequiredInf = $sig.RequiredInf
+            HardwareIDs = $dev.HardwareIds
+            IsBootCritical = $isBootCritical
+        }
+
+        if ($Detailed) {
+            $controller | Add-Member -NotePropertyName "ErrorCode" -NotePropertyValue $dev.ErrorCode
+            $controller | Add-Member -NotePropertyName "DriverInf" -NotePropertyValue $driverInf
+            $controller | Add-Member -NotePropertyName "DriverVersion" -NotePropertyValue $driverVersion
+            $controller | Add-Member -NotePropertyName "Source" -NotePropertyValue $dev.Source
+            $controller | Add-Member -NotePropertyName "InstanceId" -NotePropertyValue $dev.InstanceId
+            $controller | Add-Member -NotePropertyName "Class" -NotePropertyValue $dev.Class
+        }
+
+        $controllers += $controller
+    }
+
+    return $controllers
+}
+
 function Get-MissingStorageDevices {
     # Fix for #2: Format-Table causes truncation. We build a clean string instead.
     # Only report devices that are ACTUALLY missing drivers, not just disabled or in other states
-    $devices = Get-PnpDevice | Where-Object {
-        # Only include devices with error codes that indicate missing drivers
-        # Error code 28 = Driver not installed
-        # Error code 1 = Device not configured properly (often driver issue)
-        # Error code 3 = Driver may be corrupted
-        ($_.ConfigManagerErrorCode -eq 28 -or $_.ConfigManagerErrorCode -eq 1 -or $_.ConfigManagerErrorCode -eq 3) -and
-        $_.FriendlyName -match 'VMD|RAID|NVMe|Storage|USB|SCSI|Controller|Disk'
+    if (-not (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue)) {
+        return "Get-PnpDevice is not available in this environment.`n`nThis scan requires the PnpDevice cmdlets (Full Windows or compatible WinPE)."
+    }
+    
+    $devices = @()
+    try {
+        $rawDevices = Get-PnpDevice | Where-Object {
+            # Only include devices with error codes that indicate missing drivers
+            # Error code 28 = Driver not installed
+            # Error code 1 = Device not configured properly (often driver issue)
+            # Error code 3 = Driver may be corrupted
+            $_.ConfigManagerErrorCode -eq 28 -or $_.ConfigManagerErrorCode -eq 1 -or $_.ConfigManagerErrorCode -eq 3
+        }
+        foreach ($dev in $rawDevices) {
+            $hwids = @()
+            if ($dev.HardwareId) { $hwids = @($dev.HardwareId) }
+            $isStorage = $dev.Class -match 'SCSI|Storage|System|DiskDrive|HDC|IDE' -or
+                         $dev.FriendlyName -match 'VMD|RAID|NVMe|Storage|USB|SCSI|Controller|Disk|SATA|AHCI' -or
+                         (Test-IsMassStorageClassCode -HardwareIds $hwids)
+            if ($isStorage) {
+                $devices += $dev
+            }
+        }
+    } catch {
+        return "Storage driver scan failed: $($_.Exception.Message)"
     }
     
     if (!$devices) { return "No missing or errored storage drivers detected.`n`nNote: Devices with non-zero error codes that are not error codes 1, 3, or 28 (missing driver codes) are excluded to reduce false positives." }
@@ -1944,9 +2212,19 @@ function Get-MissingDriverForensics {
     # Error code 28 = Driver not installed
     # Error code 1 = Device not configured properly (often driver issue)
     # Error code 3 = Driver may be corrupted
-    $missing = Get-PnpDevice | Where-Object { 
-        ($_.ConfigManagerErrorCode -eq 28 -or $_.ConfigManagerErrorCode -eq 1 -or $_.ConfigManagerErrorCode -eq 3) -and 
-        ($_.Class -match 'SCSI|Storage|System|DiskDrive' -or $_.FriendlyName -match 'VMD|RAID|NVMe|Storage|Controller')
+    $missing = @()
+    $rawMissing = Get-PnpDevice | Where-Object { 
+        ($_.ConfigManagerErrorCode -eq 28 -or $_.ConfigManagerErrorCode -eq 1 -or $_.ConfigManagerErrorCode -eq 3)
+    }
+    foreach ($dev in $rawMissing) {
+        $hwids = @()
+        if ($dev.HardwareID) { $hwids = @($dev.HardwareID) }
+        $isStorage = $dev.Class -match 'SCSI|Storage|System|DiskDrive|HDC|IDE' -or
+                     $dev.FriendlyName -match 'VMD|RAID|NVMe|Storage|Controller|SATA|AHCI' -or
+                     (Test-IsMassStorageClassCode -HardwareIds $hwids)
+        if ($isStorage) {
+            $missing += $dev
+        }
     }
     
     if (!$missing) {
@@ -1967,54 +2245,29 @@ function Get-MissingDriverForensics {
     $report.AppendLine("") | Out-Null
     
     foreach ($dev in $missing) {
-        $hwid = if ($dev.HardwareID -and $dev.HardwareID.Count -gt 0) { $dev.HardwareID[0] } else { "Unknown" }
-        $likelyInf = "Unknown"
-        $driverName = "Unknown Driver"
+        $hwids = @()
+        if ($dev.HardwareID) { $hwids = @($dev.HardwareID) }
+        $sig = Get-StorageControllerSignature -HardwareIds $hwids -Name $dev.FriendlyName
         $downloadHint = ""
-        
-        # Forensics matching for Intel VMD and RST
-        if ($hwid -match "VEN_8086&DEV_9A0B|VEN_8086&DEV_467F|VEN_8086&DEV_467D") { 
-            $likelyInf = "iaStorVD.inf"
-            $driverName = "Intel VMD (Volume Management Device)"
-            $downloadHint = "Download Intel Rapid Storage Technology (RST) drivers from Intel.com"
-        }
-        elseif ($hwid -match "VEN_8086&DEV_2822|VEN_8086&DEV_282A|VEN_8086&DEV_2826") { 
-            $likelyInf = "iaStorAC.inf"
-            $driverName = "Intel RST RAID Controller"
-            $downloadHint = "Download Intel Rapid Storage Technology (RST) drivers from Intel.com"
-        }
-        elseif ($hwid -match "VEN_8086&DEV_06EF|VEN_8086&DEV_06E0") {
-            $likelyInf = "iaStorAVC.inf"
-            $driverName = "Intel RST VROC (Virtual RAID on CPU)"
-            $downloadHint = "Download Intel VROC drivers from Intel.com"
-        }
-        elseif ($hwid -match "VEN_1022") { 
-            $likelyInf = "rcraid.inf or rccfg.inf"
-            $driverName = "AMD RAID Controller"
-            $downloadHint = "Download AMD RAID drivers from AMD.com"
-        }
-        elseif ($hwid -match "VEN_144D") {
-            $likelyInf = "stornvme.inf"
-            $driverName = "Samsung NVMe Controller"
-            $downloadHint = "Usually included in Windows, but may need Samsung NVMe driver"
-        }
-        elseif ($hwid -match "VEN_10DE") {
-            $likelyInf = "nvgrd.inf or nvraid.inf"
-            $driverName = "NVIDIA Storage Controller"
+
+        if ($sig.Vendor -eq "Intel") {
+            $downloadHint = "Download Intel Rapid Storage Technology (RST/VMD/VROC) drivers from Intel.com"
+        } elseif ($sig.Vendor -eq "AMD") {
+            $downloadHint = "Download AMD RAID/SATA drivers from AMD.com"
+        } elseif ($sig.Vendor -eq "NVIDIA") {
             $downloadHint = "Download from NVIDIA or motherboard manufacturer"
-        }
-        elseif ($hwid -match "NVMe|PCI\\VEN_8086.*NVMe") {
-            $likelyInf = "stornvme.inf"
-            $driverName = "Standard NVMe Controller"
+        } elseif ($sig.Vendor -in @("ASMedia","Marvell","JMicron")) {
+            $downloadHint = "Download from motherboard or controller manufacturer"
+        } elseif ($sig.ControllerType -eq "NVMe") {
             $downloadHint = "Usually included in Windows. If missing, check motherboard manufacturer"
         }
         
         $report.AppendLine("DEVICE: $($dev.FriendlyName)")
         $report.AppendLine("STATUS: $($dev.Status)")
         $report.AppendLine("CLASS: $($dev.Class)")
-        $report.AppendLine("HARDWARE ID: $hwid")
-        $report.AppendLine("REQUIRED INF FILE: $likelyInf")
-        $report.AppendLine("DRIVER TYPE: $driverName")
+        $report.AppendLine("HARDWARE ID: $($sig.HardwareId)")
+        $report.AppendLine("REQUIRED INF FILE: $($sig.RequiredInf)")
+        $report.AppendLine("DRIVER TYPE: $($sig.DriverName)")
         if ($downloadHint) {
             $report.AppendLine("DOWNLOAD HINT: $downloadHint")
         }
@@ -2112,7 +2365,7 @@ function Scan-ForDrivers {
     # If showing all drivers, scan for all storage drivers
     # Otherwise, only scan for drivers that match missing device hardware IDs
     if ($ShowAll) {
-        $patterns = @("*iastor*", "*stornvme*", "*nvme*", "*uasp*", "*vmd*", "*raid*")
+        $patterns = @("*iastor*", "*stornvme*", "*storahci*", "*nvme*", "*uasp*", "*vmd*", "*raid*", "*rcraid*", "*rccfg*", "*asstor*", "*asahci*", "*mv91*", "*jms*")
     } else {
         # Build patterns based on missing device hardware IDs
         $patterns = @()
@@ -2124,9 +2377,17 @@ function Scan-ForDrivers {
                     } elseif ($hwid -match 'VEN_8086.*DEV_2822|VEN_8086.*DEV_282A') {
                         $patterns += "*iastor*", "*raid*"
                     } elseif ($hwid -match 'VEN_1022') {
-                        $patterns += "*rcraid*", "*raid*"
+                        $patterns += "*rcraid*", "*rccfg*", "*raid*"
+                    } elseif ($hwid -match 'VEN_1B21') {
+                        $patterns += "*asstor*", "*asahci*"
+                    } elseif ($hwid -match 'VEN_1B4B') {
+                        $patterns += "*mv91*"
+                    } elseif ($hwid -match 'VEN_197B') {
+                        $patterns += "*jms*"
                     } elseif ($hwid -match 'NVMe|nvme') {
                         $patterns += "*stornvme*", "*nvme*"
+                    } elseif ($hwid -match 'CC_0106') {
+                        $patterns += "*storahci*", "*ahci*"
                     }
                 }
             }
@@ -3839,6 +4100,408 @@ Total Files: {2}
     }
     
     return $result
+}
+
+function Export-DriverINFCollection {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$DestinationFolder,
+        [switch]$Zip
+    )
+
+    $result = @{
+        Success = $false
+        Report = ""
+        ExportPath = $DestinationFolder
+        ZipPath = ""
+        Errors = @()
+    }
+
+    $report = New-Object System.Text.StringBuilder
+    $separator = "=" * 80
+    $report.AppendLine($separator) | Out-Null
+    $report.AppendLine("DRIVER INF EXPORT") | Out-Null
+    $report.AppendLine("Generated: $([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))") | Out-Null
+    $report.AppendLine("Destination: $DestinationFolder") | Out-Null
+    $report.AppendLine($separator) | Out-Null
+    $report.AppendLine("") | Out-Null
+
+    try {
+        $export = Export-DriverFiles -DestinationFolder $DestinationFolder
+        if (-not $export.Success) {
+            $result.Errors += $export.Errors
+            $report.AppendLine("[ERROR] Export-DriverFiles failed.") | Out-Null
+            if ($export.Errors) {
+                $report.AppendLine(($export.Errors -join "`n")) | Out-Null
+            }
+            $result.Report = $report.ToString()
+            return $result
+        }
+
+        $report.AppendLine("[OK] Export complete.") | Out-Null
+        $report.AppendLine("Folders: $($export.FoldersCreated)") | Out-Null
+        $report.AppendLine("Files: $($export.FilesCopied)") | Out-Null
+        $report.AppendLine("Size: $([math]::Round($export.TotalSize/1MB, 2)) MB") | Out-Null
+        $report.AppendLine("") | Out-Null
+
+        if ($Zip) {
+            $zipName = "Driver_INF_Collection_{0}.zip" -f (Get-Date -Format "yyyyMMdd_HHmmss")
+            $zipPath = Join-Path $DestinationFolder $zipName
+            if (Get-Command Compress-Archive -ErrorAction SilentlyContinue) {
+                Compress-Archive -Path (Join-Path $DestinationFolder "*") -DestinationPath $zipPath -Force
+                $result.ZipPath = $zipPath
+                $report.AppendLine("[OK] ZIP created: $zipPath") | Out-Null
+            } else {
+                $result.Errors += "Compress-Archive is not available. ZIP not created."
+                $report.AppendLine("[WARN] Compress-Archive not available; ZIP skipped.") | Out-Null
+            }
+        }
+
+        $result.Success = $true
+    } catch {
+        $result.Errors += $_.Exception.Message
+        $report.AppendLine("[ERROR] Export failed: $_") | Out-Null
+    }
+
+    $result.Report = $report.ToString()
+    return $result
+}
+
+function Get-DriverErrorLogsSummary {
+    $report = New-Object System.Text.StringBuilder
+    $separator = "=" * 80
+    $report.AppendLine($separator) | Out-Null
+    $report.AppendLine("DRIVER ERROR LOG SUMMARY") | Out-Null
+    $report.AppendLine("Generated: $([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))") | Out-Null
+    $report.AppendLine($separator) | Out-Null
+    $report.AppendLine("") | Out-Null
+
+    $logPaths = @(
+        "$env:windir\inf\setupapi.dev.log",
+        "$env:windir\inf\setupapi.app.log"
+    )
+
+    foreach ($logPath in $logPaths) {
+        if (-not (Test-Path $logPath)) {
+            $report.AppendLine("[INFO] Log not found: $logPath") | Out-Null
+            $report.AppendLine("") | Out-Null
+            continue
+        }
+
+        $report.AppendLine("LOG: $logPath") | Out-Null
+        $report.AppendLine("-" * 80) | Out-Null
+
+        try {
+            $lines = Get-Content -Path $logPath -Tail 2000 -ErrorAction Stop
+            $errorLines = $lines | Where-Object { $_ -match '!!!' -or $_ -match 'error|failed' }
+            $report.AppendLine("Errors found: $($errorLines.Count)") | Out-Null
+            $report.AppendLine("") | Out-Null
+
+            if ($errorLines.Count -gt 0) {
+                $report.AppendLine("Recent Error Lines (last 80 matches):") | Out-Null
+                $report.AppendLine("") | Out-Null
+                $errorLines | Select-Object -Last 80 | ForEach-Object {
+                    $report.AppendLine($_) | Out-Null
+                }
+            } else {
+                $report.AppendLine("No error markers found in recent log window.") | Out-Null
+            }
+        } catch {
+            $report.AppendLine("[ERROR] Failed to read log: $_") | Out-Null
+        }
+
+        $report.AppendLine("") | Out-Null
+    }
+
+    $report.AppendLine("NEXT STEPS") | Out-Null
+    $report.AppendLine("- If errors reference missing INF files, export drivers from a working PC.") | Out-Null
+    $report.AppendLine("- If errors reference signature issues, load signed driver packages or use DISM with /ForceUnsigned if needed.") | Out-Null
+    $report.AppendLine("- If errors reference storage controllers, use the Missing Drive Helper for INF matching.") | Out-Null
+
+    return $report.ToString()
+}
+
+function Get-AdvancedStorageControllerInfo {
+    param([switch]$IncludeNonCritical)
+
+    $controllers = @()
+    if (-not (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue)) {
+        return $controllers
+    }
+
+    $devices = Get-PnpDevice | Where-Object {
+        $_.Class -match 'SCSIAdapter|Storage|System|Net|DiskDrive' -or
+        $_.FriendlyName -match 'VMD|RAID|NVMe|Storage|Controller|Network|Ethernet|Wi-Fi|Wireless'
+    }
+
+    foreach ($device in $devices) {
+        $errorCode = $device.ConfigManagerErrorCode
+        $hasDriver = ($errorCode -eq 0)
+        $needsDriver = ($errorCode -in 1,3,28)
+        if (-not $IncludeNonCritical -and -not $needsDriver) {
+            continue
+        }
+
+        $hardwareIds = @()
+        $compatibleIds = @()
+
+        try {
+            $hw = Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName "DEVPKEY_Device_HardwareIds" -ErrorAction SilentlyContinue
+            if ($hw -and $hw.Data) { $hardwareIds = @($hw.Data) }
+        } catch {}
+
+        try {
+            $compat = Get-PnpDeviceProperty -InstanceId $device.InstanceId -KeyName "DEVPKEY_Device_CompatibleIds" -ErrorAction SilentlyContinue
+            if ($compat -and $compat.Data) { $compatibleIds = @($compat.Data) }
+        } catch {}
+
+        if (-not $hardwareIds -and $device.HardwareID) {
+            $hardwareIds = @($device.HardwareID)
+        }
+
+        $isBootCritical = ($device.Class -match 'SCSIAdapter|Storage|System' -or $device.FriendlyName -match 'VMD|RAID|NVMe|Storage|Controller')
+
+        $controllers += [PSCustomObject]@{
+            Name = $device.FriendlyName
+            Class = $device.Class
+            DeviceID = $device.InstanceId
+            HardwareIDs = $hardwareIds
+            CompatibleIDs = $compatibleIds
+            Status = $device.Status
+            ErrorCode = $errorCode
+            HasDriver = $hasDriver
+            NeedsDriver = $needsDriver
+            IsBootCritical = $isBootCritical
+            Service = $device.Service
+            Manufacturer = $device.Manufacturer
+        }
+    }
+
+    return $controllers
+}
+
+function Test-DriverMatch {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string[]]$HardwareID,
+
+        [string[]]$CompatibleIDs = @(),
+
+        [Parameter(Mandatory=$true)]
+        [string]$DriverPath
+    )
+
+    $result = @{
+        Matched = $false
+        DriverName = ""
+        INFPath = ""
+        MatchType = "None"
+        MatchScore = 0
+        ServiceName = ""
+        DriverVersion = ""
+        IsSigned = $false
+        AllMatches = @()
+    }
+
+    if (-not (Test-Path $DriverPath)) {
+        return $result
+    }
+
+    $infFiles = @()
+    if ((Get-Item $DriverPath).PSIsContainer) {
+        $infFiles = Get-ChildItem -Path $DriverPath -Filter "*.inf" -Recurse -ErrorAction SilentlyContinue
+    } elseif ($DriverPath -match '\.inf$') {
+        $infFiles = @(Get-Item $DriverPath)
+    }
+
+    foreach ($infFile in $infFiles) {
+        try {
+            $infContent = Get-Content $infFile.FullName -Raw -ErrorAction Stop
+            $infHwids = @()
+            $infCompatIds = @()
+            $serviceName = ""
+            $driverVersion = ""
+
+            foreach ($line in ($infContent -split "`n")) {
+                if ($line -match 'PCI\\|USB\\|SCSI\\') {
+                    $matches = [regex]::Matches($line, '(PCI\\[^,\\s]+|USB\\[^,\\s]+|SCSI\\[^,\\s]+)')
+                    foreach ($m in $matches) {
+                        $infHwids += $m.Value.Trim()
+                    }
+                }
+            }
+
+            if ($infContent -match 'Service\s*=\s*([^\s,]+)') {
+                $serviceName = $matches[1]
+            }
+
+            if ($infContent -match 'DriverVer\s*=\s*([^,]+)') {
+                $driverVersion = $matches[1]
+            }
+
+            $matchScore = 0
+            $matchType = "None"
+
+            foreach ($hwid in $HardwareID) {
+                foreach ($infHwid in $infHwids) {
+                    if ($hwid -eq $infHwid) {
+                        $matchScore = 100
+                        $matchType = "Exact"
+                        break
+                    }
+
+                    $hwidMatch = [regex]::Match($hwid, 'VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})', 'IgnoreCase')
+                    $infMatch = [regex]::Match($infHwid, 'VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})', 'IgnoreCase')
+                    if ($hwidMatch.Success -and $infMatch.Success) {
+                        $hwidVen = $hwidMatch.Groups[1].Value
+                        $hwidDev = $hwidMatch.Groups[2].Value
+                        $infVen = $infMatch.Groups[1].Value
+                        $infDev = $infMatch.Groups[2].Value
+                        if ($hwidVen -eq $infVen -and $hwidDev -eq $infDev) {
+                            $matchScore = 80
+                            $matchType = "Compatible"
+                        }
+                    }
+                }
+            }
+
+            if ($matchScore -lt 80 -and $CompatibleIDs.Count -gt 0 -and $infCompatIds.Count -gt 0) {
+                foreach ($compatId in $CompatibleIDs) {
+                    if ($infCompatIds -contains $compatId) {
+                        $matchScore = 60
+                        $matchType = "Compatible"
+                        break
+                    }
+                }
+            }
+
+            $isSigned = $false
+            try {
+                $catFiles = Get-ChildItem -Path $infFile.DirectoryName -Filter "*.cat" -ErrorAction SilentlyContinue
+                if ($catFiles) {
+                    $isSigned = $true
+                }
+            } catch {}
+
+            if ($matchScore -gt 0) {
+                $match = [PSCustomObject]@{
+                    INFPath = $infFile.FullName
+                    DriverName = $infFile.Name
+                    MatchType = $matchType
+                    MatchScore = $matchScore
+                    ServiceName = $serviceName
+                    DriverVersion = $driverVersion
+                    IsSigned = $isSigned
+                }
+
+                $result.AllMatches += $match
+
+                if ($matchScore -gt $result.MatchScore) {
+                    $result.Matched = $true
+                    $result.DriverName = $infFile.Name
+                    $result.INFPath = $infFile.FullName
+                    $result.MatchType = $matchType
+                    $result.MatchScore = $matchScore
+                    $result.ServiceName = $serviceName
+                    $result.DriverVersion = $driverVersion
+                    $result.IsSigned = $isSigned
+                }
+            }
+        } catch {
+            Write-Warning "Error parsing INF file $($infFile.FullName): $_"
+        }
+    }
+
+    $result.AllMatches = $result.AllMatches | Sort-Object MatchScore -Descending
+    return $result
+}
+
+function Find-MatchingDrivers {
+    param(
+        [Parameter(Mandatory=$true)]
+        [object[]]$ControllerInfo,
+        [Parameter(Mandatory=$true)]
+        [string]$DriverPath
+    )
+
+    $result = @{
+        Matches = @()
+        Report = ""
+        Errors = @()
+    }
+
+    $report = New-Object System.Text.StringBuilder
+    $separator = "=" * 80
+    $report.AppendLine($separator) | Out-Null
+    $report.AppendLine("DRIVER MATCHING REPORT") | Out-Null
+    $report.AppendLine("Driver Source: $DriverPath") | Out-Null
+    $report.AppendLine("Generated: $([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))") | Out-Null
+    $report.AppendLine($separator) | Out-Null
+    $report.AppendLine("") | Out-Null
+
+    if (-not (Test-Path $DriverPath)) {
+        $result.Errors += "Driver path not found: $DriverPath"
+        $report.AppendLine("[ERROR] Driver path not found.") | Out-Null
+        $result.Report = $report.ToString()
+        return $result
+    }
+
+    foreach ($controller in $ControllerInfo) {
+        $hwids = if ($controller.HardwareIDs) { $controller.HardwareIDs } else { @() }
+        $compat = if ($controller.CompatibleIDs) { $controller.CompatibleIDs } else { @() }
+        $match = Test-DriverMatch -HardwareID $hwids -CompatibleIDs $compat -DriverPath $DriverPath
+
+        $result.Matches += [PSCustomObject]@{
+            Controller = $controller.Name
+            NeedsDriver = $controller.NeedsDriver
+            Match = $match
+        }
+
+        $report.AppendLine("DEVICE: $($controller.Name)") | Out-Null
+        $report.AppendLine("Class: $($controller.Class)") | Out-Null
+        $report.AppendLine("Needs Driver: $($controller.NeedsDriver)") | Out-Null
+        if ($match.Matched) {
+            $report.AppendLine("MATCH: $($match.DriverName)") | Out-Null
+            $report.AppendLine("INF: $($match.INFPath)") | Out-Null
+            $report.AppendLine("Type: $($match.MatchType) (Score: $($match.MatchScore))") | Out-Null
+            $report.AppendLine("Signed: $($match.IsSigned)") | Out-Null
+            $report.AppendLine("Suggested: drvload `"$($match.INFPath)`"") | Out-Null
+        } else {
+            $report.AppendLine("MATCH: None found") | Out-Null
+            $report.AppendLine("Suggested: Search vendor driver pack or export from working PC.") | Out-Null
+        }
+        $report.AppendLine("-" * 80) | Out-Null
+    }
+
+    $report.AppendLine("TIP: If a drive is still missing, load the INF for the storage controller using drvload or DISM.") | Out-Null
+    $result.Report = $report.ToString()
+    return $result
+}
+
+function Get-DriverUpdateResources {
+    $report = New-Object System.Text.StringBuilder
+    $separator = "=" * 80
+    $report.AppendLine($separator) | Out-Null
+    $report.AppendLine("DRIVER UPDATE RESOURCES") | Out-Null
+    $report.AppendLine("Generated: $([DateTime]::Now.ToString('yyyy-MM-dd HH:mm:ss'))") | Out-Null
+    $report.AppendLine($separator) | Out-Null
+    $report.AppendLine("") | Out-Null
+    $report.AppendLine("WINDOWS RECOMMENDED PATHS") | Out-Null
+    $report.AppendLine("- Windows Update: Settings -> Windows Update -> Check for updates") | Out-Null
+    $report.AppendLine("- Device Manager: Right-click device -> Update driver") | Out-Null
+    $report.AppendLine("- PnPUtil: pnputil /enum-drivers and pnputil /add-driver <path> /install") | Out-Null
+    $report.AppendLine("") | Out-Null
+    $report.AppendLine("VENDOR SOURCES") | Out-Null
+    $report.AppendLine("- Motherboard/Laptop OEM support page (chipset, storage, LAN/Wi-Fi)") | Out-Null
+    $report.AppendLine("- Intel RST/VMD, AMD RAID, Samsung NVMe drivers when applicable") | Out-Null
+    $report.AppendLine("") | Out-Null
+    $report.AppendLine("THIRD-PARTY TOOLS (OPTIONAL)") | Out-Null
+    $report.AppendLine("- Driver Booster (IObit)") | Out-Null
+    $report.AppendLine("- Snappy Driver Installer Origin") | Out-Null
+    $report.AppendLine("- Always verify driver source and signatures before installing") | Out-Null
+    $report.AppendLine("") | Out-Null
+    $report.AppendLine("TIP: Export drivers from a working PC to a folder or ZIP, then use drvload/DISM in recovery.") | Out-Null
+    return $report.ToString()
 }
 
 function Get-SetupLogAnalysis {

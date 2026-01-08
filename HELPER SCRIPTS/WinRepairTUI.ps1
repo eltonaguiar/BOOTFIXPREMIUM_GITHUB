@@ -113,7 +113,7 @@
                         
                         try {
                             if (Get-Command Invoke-RepairInstallReadinessCheck -ErrorAction SilentlyContinue) {
-                                $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair $false
+                                $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair:$false
                                 
                                 Write-Host "`n" -ForegroundColor Gray
                                 Write-Host "FINAL RECOMMENDATION: $($result.FinalRecommendation)" -ForegroundColor Cyan
@@ -138,7 +138,7 @@
                         if ($confirm -eq 'Y' -or $confirm -eq 'y') {
                             try {
                                 if (Get-Command Invoke-RepairInstallReadinessCheck -ErrorAction SilentlyContinue) {
-                                    $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair $true
+                                    $result = Invoke-RepairInstallReadinessCheck -TargetDrive "C" -AutoRepair:$true
                                     
                                     Write-Host "`n" -ForegroundColor Gray
                                     Write-Host "FINAL RECOMMENDATION: $($result.FinalRecommendation)" -ForegroundColor Cyan
@@ -720,7 +720,7 @@
                         Write-Host ""
                         Write-Host "Test 2: DNS Resolution (google.com)..." -ForegroundColor Cyan
                         try {
-                            $dnsResult = Resolve-DnsName "google.com" -ErrorAction Stop
+                            Resolve-DnsName "google.com" -ErrorAction Stop | Out-Null
                             Write-Host "  ✓ DNS resolution: OK" -ForegroundColor Green
                         } catch {
                             Write-Host "  ✗ DNS resolution failed" -ForegroundColor Red

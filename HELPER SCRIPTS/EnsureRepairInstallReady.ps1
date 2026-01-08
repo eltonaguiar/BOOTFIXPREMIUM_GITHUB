@@ -40,8 +40,7 @@ param(
     [string]$TargetDrive = "C",
     [string]$ImagePath = "",
     [switch]$Online,
-    [switch]$OfflineReg,
-    [switch]$Verbose = $false
+    [switch]$OfflineReg
 )
 
 # ============================================================================

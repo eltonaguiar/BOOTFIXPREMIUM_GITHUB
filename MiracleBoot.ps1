@@ -90,7 +90,7 @@ function Set-GuiHostForFullOS {
         try {
             Start-Process -FilePath "powershell.exe" `
                 -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Sta", "-File", "`"$scriptPath`"") `
-                -WorkingDirectory $PSScriptRoot | Out-Null
+                -WorkingDirectory $script:MiracleBootRoot | Out-Null
             exit 0
         } catch {
             Write-ErrorLog "Failed to relaunch in Windows PowerShell (STA)" -Exception $_
@@ -366,7 +366,7 @@ function Invoke-SelfTest {
     # GUI module sanity check (loadable + Start-GUI defined)
     if ($EnvironmentType -eq 'FullOS') {
         try {
-            $guiModule = Join-Path $PSScriptRoot "WinRepairGUI.ps1"
+            $guiModule = Join-Path $script:MiracleBootRoot "WinRepairGUI.ps1"
             if (Test-Path -LiteralPath $guiModule) {
                 . $guiModule
                 $hasStartGui = [bool](Get-Command Start-GUI -ErrorAction SilentlyContinue)
@@ -398,6 +398,7 @@ function Invoke-SelfTest {
     $recentLogs = @()
     if (Test-Path -LiteralPath $logDir) {
         $recentLogs = Get-ChildItem -LiteralPath $logDir -Filter "MiracleBoot_*.log" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch '^MiracleBoot_ErrorsWarnings_' } |
             Sort-Object LastWriteTime -Descending | Select-Object -First 3
     }
     $logScan = if ($recentLogs.Count -gt 0) {
@@ -670,7 +671,7 @@ function Test-ScriptFileExists {
     #>
     param([string]$FilePath)
     
-    $fullPath = Join-Path $PSScriptRoot $FilePath
+    $fullPath = Join-Path $script:MiracleBootRoot $FilePath
     
     $result = @{
         FileName = $FilePath
@@ -709,7 +710,7 @@ function Test-ScriptSyntax {
     #>
     param([string]$FilePath)
     
-    $fullPath = Join-Path $PSScriptRoot $FilePath
+    $fullPath = Join-Path $script:MiracleBootRoot $FilePath
     
     $result = @{
         FileName = $FilePath
@@ -1034,7 +1035,7 @@ function Invoke-LogScanning {
         if ([System.IO.Path]::IsPathRooted($logPath)) {
             $resolvedPath = $logPath
         } else {
-            $resolvedPath = Join-Path $PSScriptRoot $logPath
+            $resolvedPath = Join-Path $script:MiracleBootRoot $logPath
         }
         
         if (-not (Test-Path -LiteralPath $resolvedPath -ErrorAction SilentlyContinue)) {
@@ -1108,24 +1109,25 @@ function New-PreflightReport {
 # SECTION 2: INITIALIZATION & MAIN EXECUTION FLOW
 # ============================================================================
 
-# Initialize PSScriptRoot robustly (works in all contexts)
-if ([string]::IsNullOrEmpty($PSScriptRoot)) {
-    $PSScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
-    if ([string]::IsNullOrEmpty($PSScriptRoot)) {
-        $PSScriptRoot = Get-Location
+# Initialize script root robustly (works in all contexts)
+$script:MiracleBootRoot = if ($PSScriptRoot) { $PSScriptRoot } else { $null }
+if ([string]::IsNullOrEmpty($script:MiracleBootRoot)) {
+    $script:MiracleBootRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
+    if ([string]::IsNullOrEmpty($script:MiracleBootRoot)) {
+        $script:MiracleBootRoot = (Get-Location).Path
     }
 }
 
-if (-not (Test-Path -LiteralPath $PSScriptRoot)) {
+if (-not (Test-Path -LiteralPath $script:MiracleBootRoot)) {
     Write-Host "FATAL: Cannot determine script root directory" -ForegroundColor Red
-    Write-Host "PSScriptRoot: $PSScriptRoot" -ForegroundColor Yellow
+    Write-Host "ScriptRoot: $script:MiracleBootRoot" -ForegroundColor Yellow
     Write-Host "MyCommand: $($MyInvocation.MyCommand.Path)" -ForegroundColor Yellow
     exit 1
 }
 
 # Initialize logging system FIRST (before any other operations)
 try {
-    Initialize-LogSystem -ScriptRoot $PSScriptRoot
+    Initialize-LogSystem -ScriptRoot $script:MiracleBootRoot
     Write-ToLog "Logging system initialized successfully" "SUCCESS"
 } catch {
     Write-Host "WARNING: Could not initialize logging: $_" -ForegroundColor Yellow
@@ -1201,7 +1203,7 @@ if (-not $preflightResults.AllChecksPassed) {
 Write-ToLog "Loading WinRepairCore module..." "INFO"
 Write-Host "`n[LOADER] Loading WinRepairCore module..." -ForegroundColor Cyan
 try {
-    $coreModule = Join-Path $PSScriptRoot "WinRepairCore.ps1"
+    $coreModule = Join-Path $script:MiracleBootRoot "WinRepairCore.ps1"
     if (-not (Test-Path -LiteralPath $coreModule)) {
         throw "WinRepairCore.ps1 not found at $coreModule"
     }
@@ -1221,7 +1223,7 @@ try {
 Write-ToLog "Loading optional EnsureRepairInstallReady module..." "INFO"
 Write-Host "[LOADER] Loading optional EnsureRepairInstallReady module..." -ForegroundColor Cyan
 try {
-    $repairReadyModule = Join-Path $PSScriptRoot "EnsureRepairInstallReady.ps1"
+    $repairReadyModule = Join-Path $script:MiracleBootRoot "EnsureRepairInstallReady.ps1"
     if (Test-Path -LiteralPath $repairReadyModule) {
         . $repairReadyModule
         Write-ToLog "EnsureRepairInstallReady loaded successfully" "SUCCESS"
@@ -1255,11 +1257,18 @@ if ($envType -eq 'FullOS') {
     Write-ToLog "Loading GUI module..." "INFO"
     Write-Host "[LAUNCH] Loading GUI module..." -ForegroundColor Gray
     try {
-        $guiModule = Join-Path $PSScriptRoot "WinRepairGUI.ps1"
+        # Load network diagnostics module first (required by GUI)
+        $networkModule = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\NetworkDiagnostics.ps1"
+        if (Test-Path -LiteralPath $networkModule) {
+            . $networkModule
+            Write-ToLog "NetworkDiagnostics loaded for GUI" "DEBUG"
+        }
+
+        $guiModule = Join-Path $script:MiracleBootRoot "WinRepairGUI.ps1"
         if (-not (Test-Path -LiteralPath $guiModule)) {
             throw "WinRepairGUI.ps1 not found at $guiModule"
         }
-        
+
         Write-ToLog "GUI module file exists and is readable" "DEBUG"
         . $guiModule
         
@@ -1301,7 +1310,7 @@ if ($envType -eq 'FullOS') {
 Write-ToLog "Loading TUI module..." "INFO"
 Write-Host "[LAUNCH] Loading TUI module..." -ForegroundColor Gray
 try {
-    $tuiModule = Join-Path $PSScriptRoot "WinRepairTUI.ps1"
+    $tuiModule = Join-Path $script:MiracleBootRoot "WinRepairTUI.ps1"
     if (-not (Test-Path -LiteralPath $tuiModule)) {
         throw "WinRepairTUI.ps1 not found"
     }
