@@ -986,12 +986,14 @@ if ($MyInvocation.InvocationName -ne ".") {
 }
 
 # Export public functions for module sourcing
-Export-ModuleMember -Function @(
-    'Invoke-RepairInstallReadinessCheck',
-    'Test-SetupEligibility',
-    'Invoke-CBSCleanup',
-    'Repair-WinREMetadata',
-    'Test-SetupExeReadiness',
-    'Get-BootSnapshot',
-    'Export-RepairInstallEvidence'
-)
+if ($MyInvocation.MyCommand.Module) {
+    Export-ModuleMember -Function @(
+        'Invoke-RepairInstallReadinessCheck',
+        'Test-SetupEligibility',
+        'Invoke-CBSCleanup',
+        'Repair-WinREMetadata',
+        'Test-SetupExeReadiness',
+        'Get-BootSnapshot',
+        'Export-RepairInstallEvidence'
+    )
+}

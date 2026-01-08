@@ -33,6 +33,7 @@
         Write-Host "4) Quick View BCD" -ForegroundColor White
         Write-Host "5) Edit BCD Entry" -ForegroundColor White
         Write-Host "6) Repair-Install Readiness Check" -ForegroundColor Yellow
+        Write-Host "H) WinRE Health Check" -ForegroundColor Yellow
         Write-Host "7) Recommended Recovery Tools" -ForegroundColor Green
         Write-Host "8) Utilities & Tools" -ForegroundColor Magenta
         Write-Host "9) Network & Internet Help" -ForegroundColor Cyan
@@ -156,6 +157,54 @@
                         }
                     }
                 }
+            }
+            "H" {
+                Clear-Host
+                Write-Host "ЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭ" -ForegroundColor Yellow
+                Write-Host "  WINRE HEALTH CHECK" -ForegroundColor Yellow
+                Write-Host "ЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭ" -ForegroundColor Yellow
+                Write-Host ""
+                
+                $defaultDrive = $env:SystemDrive.TrimEnd(':')
+                $driveInput = Read-Host "Target Windows drive letter (e.g. C) [default: $defaultDrive]"
+                if ([string]::IsNullOrWhiteSpace($driveInput)) {
+                    $driveInput = $defaultDrive
+                }
+                
+                if (Get-Command Get-WinREHealth -ErrorAction SilentlyContinue) {
+                    $health = Get-WinREHealth -TargetDrive $driveInput
+                    Write-Host ""
+                    Write-Host $health.Report -ForegroundColor White
+                } else {
+                    Write-Host "ERROR: WinRE health check function not available." -ForegroundColor Red
+                }
+                
+                Write-Host "`nPress any key to continue..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            }
+            "h" {
+                Clear-Host
+                Write-Host "ЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭ" -ForegroundColor Yellow
+                Write-Host "  WINRE HEALTH CHECK" -ForegroundColor Yellow
+                Write-Host "ЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭ" -ForegroundColor Yellow
+                Write-Host ""
+                
+                $defaultDrive = $env:SystemDrive.TrimEnd(':')
+                $driveInput = Read-Host "Target Windows drive letter (e.g. C) [default: $defaultDrive]"
+                if ([string]::IsNullOrWhiteSpace($driveInput)) {
+                    $driveInput = $defaultDrive
+                }
+                
+                if (Get-Command Get-WinREHealth -ErrorAction SilentlyContinue) {
+                    $health = Get-WinREHealth -TargetDrive $driveInput
+                    Write-Host ""
+                    Write-Host $health.Report -ForegroundColor White
+                } else {
+                    Write-Host "ERROR: WinRE health check function not available." -ForegroundColor Red
+                }
+                
+                Write-Host "`nPress any key to continue..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
             }
             "8" {
                 Clear-Host

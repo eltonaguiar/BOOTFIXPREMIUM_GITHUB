@@ -424,6 +424,19 @@ For Executive Summary:
 For Navigation:
 → DOCUMENTATION_INDEX.txt
 
+RESOURCES
+----------------------------------------
+Local Remediation Guide:
+- DOCUMENTATION/LOCAL_REMOTE_REMEDIATION_GUIDE.md
+
+Boot Issue Mapping:
+- DOCUMENTATION/BOOT_ISSUE_MAPPING.md
+
+Virtual Agent:
+- https://chatgpt.com/s/t_695f6243fe9481919a76f51b7510aeb9
+  Purpose: It can help you quickly identify and fix common Windows boot issues.
+----------------------------------------
+อออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออออ
 ═════════════════════════════════════════════════════════════════════════════════
 
 ✨ FIX COMPLETE & VERIFIED ✨

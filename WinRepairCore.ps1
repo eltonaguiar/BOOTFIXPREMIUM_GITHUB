@@ -155,6 +155,20 @@ function Set-BCDProperty {
     }
 }
 
+function Disable-BCDRecoveryEnabledDefault {
+    if (-not (Test-AdminPrivileges)) {
+        throw "Administrator privileges required to modify BCD."
+    }
+    bcdedit /set {default} recoveryenabled no
+}
+
+function Set-BCDBootMenuPolicyLegacyDefault {
+    if (-not (Test-AdminPrivileges)) {
+        throw "Administrator privileges required to modify BCD."
+    }
+    bcdedit /set {default} bootmenupolicy legacy
+}
+
 function Export-BCDBackup {
     param($BackupPath = "$env:TEMP\BCD_Backup_$(Get-Date -Format 'yyyyMMdd_HHmmss').bcd")
     try {
@@ -268,6 +282,73 @@ function Get-DetailedCommandInfo {
     return $info[$CommandKey]
 }
 
+function Get-BootIssueMappings {
+    return @(
+        @{
+            Name = "Stop error 0x7B (INACCESSIBLE_BOOT_DEVICE)"
+            Keywords = @("0x7b", "inaccessible boot device", "storage driver", "stop code 0x7b")
+            Symptom = "BSoD during early boot; storage drivers fail to load."
+            Description = "Storage driver or disk controller mismatch; ensure correct drivers and healthy filesystem."
+            Commands = @(
+                "DISM /Online /Cleanup-Image /RestoreHealth",
+                "sfc /scannow",
+                "Check ntbtlog.txt for missing storage/volume drivers"
+            )
+            References = @("https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/stop-error-7b-or-inaccessible-boot-device-troubleshooting")
+        }
+        @{
+            Name = "Repeated Recovery Loop (Auto Repair)"
+            Keywords = @("recovery options", "recovery loop", "auto repair", "recoveryenabled", "repair loop")
+            Symptom = "System keeps booting back into Windows Recovery Environment."
+            Description = "RECOVERY_ENABLED may flip to true; disable it and break the loop."
+            Commands = @(
+                "bcdedit /set {default} recoveryenabled no",
+                "Collect logs: C:\\$WINDOWS.~BT\\Sources\\Panther\\setuperr.log"
+            )
+            References = @("https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/reagentc-command-line-options")
+        }
+        @{
+            Name = "F8 Advanced Menu Missing (Boot Menu Policy Legacy)"
+            Keywords = @("f8", "bootmenupolicy", "advanced boot options", "legacy boot menu")
+            Symptom = "F8 or Shift+F8 options do not appear during boot."
+            Description = "Windows 8+ disables legacy menu; re-enable it for troubleshooting."
+            Commands = @(
+                "bcdedit /set {default} bootmenupolicy legacy",
+                "reagentc /boottore" 
+            )
+            References = @("https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/reagentc-command-line-options")
+        }
+        @{
+            Name = "Missing Boot Manager / BCD Corruption"
+            Keywords = @("bootmgr is missing", "0xc000000e", "no bootable device", "bcd corrupt")
+            Symptom = "Boot menu empty, error referencing BCD."
+            Description = "Boot configuration data missing or references wrong path."
+            Commands = @(
+                "bcdboot C:\\Windows /s <EFI> /f UEFI",
+                "bootrec /rebuildbcd"
+            )
+            References = @("https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/reagentc-command-line-options")
+        }
+    )
+}
+
+function Suggest-BootIssueFromDescription {
+    param([string]$Description)
+    if (-not $Description) { return @() }
+    $text = $Description.ToLowerInvariant()
+    $matches = @()
+    foreach ($mapping in Get-BootIssueMappings) {
+        foreach ($keyword in $mapping.Keywords) {
+            $pattern = [regex]::Escape($keyword)
+            if ($text -match $pattern) {
+                $matches += $mapping
+                break
+            }
+        }
+    }
+    return $matches
+}
+
 function Get-BootLogAnalysis {
     param($TargetDrive = "C")
     
@@ -368,8 +449,41 @@ function Get-BootLogAnalysis {
     $missingDrivers = @()
     $failedDrivers = @()
     $failedNonCritical = @()
+    $loadedDrivers = @()
+    $loadedStorage = @()
+    $loadedNetwork = @()
+    $loadedVideo = @()
+    $loadedFileSystem = @()
+
+    $storageHints = @("stor", "nvme", "iastor", "vmd", "raid", "ahci", "scsi", "disk", "partmgr", "volmgr", "volsnap", "mountmgr")
+    $networkHints = @("ndis", "net", "tcpip", "wifi", "wlan", "e1", "rtw", "igb", "b57", "vmxnet")
+    $videoHints = @("nvld", "amdk", "igdk", "basicdisplay", "basicrender", "vga")
+    $fsHints = @("ntfs", "fastfat", "fltmgr", "luafv", "fileinfo")
     
     foreach ($line in $logContent) {
+        if ($line -match "Loaded driver\s+(.+)") {
+            $driverName = $matches[1].Trim()
+            $driverBaseName = Split-Path $driverName -Leaf
+            if ($driverBaseName) {
+                $driverBaseName = $driverBaseName.ToLowerInvariant()
+            } else {
+                $driverBaseName = $driverName.ToLowerInvariant()
+            }
+            $loadedDrivers += $driverName
+            
+            foreach ($hint in $storageHints) {
+                if ($driverBaseName -like "*$hint*") { $loadedStorage += $driverName; break }
+            }
+            foreach ($hint in $networkHints) {
+                if ($driverBaseName -like "*$hint*") { $loadedNetwork += $driverName; break }
+            }
+            foreach ($hint in $videoHints) {
+                if ($driverBaseName -like "*$hint*") { $loadedVideo += $driverName; break }
+            }
+            foreach ($hint in $fsHints) {
+                if ($driverBaseName -like "*$hint*") { $loadedFileSystem += $driverName; break }
+            }
+        }
         if ($line -match "Did not load driver\s+(.+)") {
             $driverName = $matches[1].Trim()
             $driverBaseName = Split-Path $driverName -Leaf
@@ -405,6 +519,11 @@ function Get-BootLogAnalysis {
     $report.MissingDrivers = $missingDrivers
     $report.FailedDrivers = $failedDrivers
     $report | Add-Member -NotePropertyName FailedNonCritical -NotePropertyValue $failedNonCritical
+    $report | Add-Member -NotePropertyName LoadedDrivers -NotePropertyValue $loadedDrivers
+    $report | Add-Member -NotePropertyName LoadedStorageDrivers -NotePropertyValue $loadedStorage
+    $report | Add-Member -NotePropertyName LoadedNetworkDrivers -NotePropertyValue $loadedNetwork
+    $report | Add-Member -NotePropertyName LoadedVideoDrivers -NotePropertyValue $loadedVideo
+    $report | Add-Member -NotePropertyName LoadedFileSystemDrivers -NotePropertyValue $loadedFileSystem
     
     # Generate human-readable analysis
     $analysis = "BOOT LOG ANALYSIS - $osContext`n"
@@ -415,6 +534,17 @@ function Get-BootLogAnalysis {
     $analysis += "Critical Missing Drivers: $($missingDrivers.Count)`n"
     $analysis += "Non-Critical Failed Drivers: $($failedNonCritical.Count)`n"
     $analysis += "Other Failed Drivers: $($failedDrivers.Count)`n`n"
+    $analysis += "Loaded Drivers: $($loadedDrivers.Count)`n"
+    $analysis += "Loaded Storage Drivers: $($loadedStorage.Count)`n"
+    $analysis += "Loaded Network Drivers: $($loadedNetwork.Count)`n"
+    $analysis += "Loaded Video Drivers: $($loadedVideo.Count)`n"
+    $analysis += "Loaded File System Drivers: $($loadedFileSystem.Count)`n`n"
+
+    if ($loadedDrivers.Count -gt 0) {
+        $analysis += "Sample Loaded Drivers:`n"
+        $analysis += ($loadedDrivers | Select-Object -First 10 | ForEach-Object { "  - $_" }) -join "`n"
+        $analysis += "`n`n"
+    }
     
     if ($missingDrivers.Count -gt 0) {
         $analysis += "[CRITICAL] BOOT FAILURE DETECTED`n"
@@ -2250,6 +2380,161 @@ function Get-ReagentcHealth {
     }
     
     return $health
+}
+
+function Get-WinREHealth {
+    param([string]$TargetDrive = $env:SystemDrive.TrimEnd(':'))
+    
+    if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
+        $TargetDrive = $env:SystemDrive.TrimEnd(':')
+    }
+    
+    if ($TargetDrive -match '^([A-Z]):?$') {
+        $TargetDrive = $matches[1]
+    }
+    
+    $result = [ordered]@{
+        TargetDrive = "$TargetDrive`:"
+        IsCurrentOS = $false
+        OverallStatus = "Unknown"
+        WinREStatus = "Unknown"
+        WinRELocation = ""
+        WinREImagePath = ""
+        WinREImagePresent = $false
+        ReAgentXmlPresent = $false
+        Issues = @()
+        Recommendations = @()
+        Report = ""
+    }
+    
+    if (-not (Test-Path "$TargetDrive`:\Windows")) {
+        $result.OverallStatus = "Unhealthy"
+        $result.Issues += "No Windows installation found on $TargetDrive`:"
+        $result.Report = "WINRE HEALTH CHECK`nTarget: $TargetDrive`:`n[FAIL] Windows folder not found."
+        return $result
+    }
+    
+    $currentDrive = $env:SystemDrive.TrimEnd(':')
+    $result.IsCurrentOS = ($currentDrive -eq $TargetDrive)
+    
+    if ($result.IsCurrentOS) {
+        if (Get-Command reagentc -ErrorAction SilentlyContinue) {
+            try {
+                $reagentcOutput = reagentc /info 2>&1 | Out-String
+                if ($reagentcOutput -match "Windows RE status:\s*(\w+)") {
+                    $result.WinREStatus = $matches[1]
+                }
+                if ($reagentcOutput -match "Windows RE location:\s*(.+)") {
+                    $result.WinRELocation = $matches[1].Trim()
+                }
+            } catch {
+                $result.Issues += "Failed to run reagentc /info: $_"
+            }
+        } else {
+            $result.Issues += "reagentc not available in this environment."
+        }
+    } else {
+        $reAgentXml = "$TargetDrive`:\Windows\System32\Recovery\ReAgent.xml"
+        if (Test-Path $reAgentXml) {
+            $result.ReAgentXmlPresent = $true
+            try {
+                [xml]$xml = Get-Content -LiteralPath $reAgentXml -ErrorAction Stop
+                $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+                $ns.AddNamespace("re", "http://schemas.microsoft.com/RecoveryEnvironment/1.0")
+                
+                $statusNode = $xml.SelectSingleNode("//re:WinREStatus", $ns)
+                if (-not $statusNode) { $statusNode = $xml.SelectSingleNode("//WinREStatus") }
+                
+                if ($statusNode -and $statusNode.InnerText) {
+                    $statusValue = $statusNode.InnerText.Trim()
+                    if ($statusValue -eq "1" -or $statusValue -match "Enabled") {
+                        $result.WinREStatus = "Enabled"
+                    } elseif ($statusValue -eq "0" -or $statusValue -match "Disabled") {
+                        $result.WinREStatus = "Disabled"
+                    } else {
+                        $result.WinREStatus = $statusValue
+                    }
+                }
+                
+                $pathNode = $xml.SelectSingleNode("//re:WinRELocation/re:Path", $ns)
+                if (-not $pathNode) { $pathNode = $xml.SelectSingleNode("//WinRELocation/Path") }
+                
+                if ($pathNode -and $pathNode.InnerText) {
+                    $result.WinRELocation = $pathNode.InnerText.Trim()
+                }
+            } catch {
+                $result.Issues += "Failed to parse ReAgent.xml: $_"
+            }
+        } else {
+            $result.Issues += "ReAgent.xml not found on $TargetDrive`:\Windows\System32\Recovery"
+        }
+    }
+    
+    $candidatePaths = @()
+    if ($result.WinRELocation) {
+        if ($result.WinRELocation -match '^[A-Z]:\\') {
+            if ($result.WinRELocation -match '\.wim$') {
+                $candidatePaths += $result.WinRELocation
+            } else {
+                $candidatePaths += Join-Path $result.WinRELocation "Winre.wim"
+            }
+        }
+    }
+    $candidatePaths += "$TargetDrive`:\Recovery\WindowsRE\Winre.wim"
+    $candidatePaths += "$TargetDrive`:\Windows\System32\Recovery\Winre.wim"
+    
+    foreach ($path in $candidatePaths | Select-Object -Unique) {
+        if (Test-Path $path) {
+            $result.WinREImagePresent = $true
+            $result.WinREImagePath = $path
+            break
+        }
+    }
+    
+    if ($result.WinREStatus -eq "Disabled") {
+        $result.Issues += "WinRE is disabled."
+        $result.Recommendations += "Run: reagentc /enable (from within the target OS)."
+    } elseif ($result.WinREStatus -eq "Unknown") {
+        $result.Issues += "WinRE status could not be determined."
+    }
+    
+    if (-not $result.WinREImagePresent) {
+        $result.Issues += "Winre.wim not found in expected locations."
+        $result.Recommendations += "Check $TargetDrive`:\Recovery\WindowsRE and re-register WinRE if missing."
+    }
+    
+    if ($result.Issues.Count -eq 0 -and $result.WinREStatus -eq "Enabled" -and $result.WinREImagePresent) {
+        $result.OverallStatus = "Healthy"
+    } elseif ($result.WinREStatus -eq "Enabled") {
+        $result.OverallStatus = "Degraded"
+    } else {
+        $result.OverallStatus = "Unhealthy"
+    }
+    
+    $reportLines = @()
+    $reportLines += "WINRE HEALTH CHECK"
+    $reportLines += "Target: $TargetDrive`:"
+    $reportLines += "Context: " + $(if ($result.IsCurrentOS) { "Current OS" } else { "Offline Windows" })
+    $reportLines += "Overall: $($result.OverallStatus)"
+    $reportLines += "WinRE Status: $($result.WinREStatus)"
+    $reportLines += "ReAgent.xml: " + $(if ($result.ReAgentXmlPresent) { "Present" } else { "Not found" })
+    $reportLines += "WinRE Location: " + $(if ($result.WinRELocation) { $result.WinRELocation } else { "Unknown" })
+    $reportLines += "WinRE Image: " + $(if ($result.WinREImagePresent) { $result.WinREImagePath } else { "Missing" })
+    
+    if ($result.Issues.Count -gt 0) {
+        $reportLines += ""
+        $reportLines += "Issues:"
+        foreach ($issue in $result.Issues) { $reportLines += " - $issue" }
+    }
+    
+    if ($result.Recommendations.Count -gt 0) {
+        $reportLines += ""
+        $reportLines += "Recommendations:"
+        foreach ($rec in $result.Recommendations) { $reportLines += " - $rec" }
+    }
+    
+    $result.Report = ($reportLines -join "`n")
+    return $result
 }
 
 function Get-OSInfo {
@@ -4929,3 +5214,98 @@ function Restart-WindowsExplorer {
     return $output
 }
 
+
+function Get-BootStageReport {
+    param(
+        [string]$TargetDrive = "C"
+    )
+
+    $drive = $TargetDrive.Trim().TrimEnd(":")
+    $report = "=== BOOT STAGE ANALYSIS ($drive`:) ===`r`n`r`n"
+    $stages = @()
+    $issues = @()
+
+    if (-not (Test-Path -LiteralPath "$drive`:\")) {
+        return "[ERROR] Drive $drive`: not found."
+    }
+
+    # Stage 1: PreBoot (Firmware / disk detection)
+    $diskDetected = $false
+    try {
+        $partition = Get-Partition -DriveLetter $drive -ErrorAction SilentlyContinue
+        if ($partition) {
+            $disk = Get-Disk -Number $partition.DiskNumber -ErrorAction SilentlyContinue
+            if ($disk -and $disk.OperationalStatus -notcontains "Offline") {
+                $diskDetected = $true
+            }
+        }
+    } catch {
+        $diskDetected = $false
+    }
+
+    if ($diskDetected) {
+        $stages += "[PASS] PreBoot: Disk detected and online."
+    } else {
+        $stages += "[WARN] PreBoot: Disk status unknown or offline."
+        $issues += "PreBoot"
+    }
+
+    # Stage 2: Windows Boot Manager / Boot Loader
+    $bootMgrPresent = (Test-Path -LiteralPath "$drive`:\bootmgr") -or (Test-Path -LiteralPath "$drive`:\EFI\Microsoft\Boot\bootmgfw.efi")
+    $bcdPresent = (Test-Path -LiteralPath "$drive`:\Boot\BCD") -or (Test-Path -LiteralPath "$drive`:\EFI\Microsoft\Boot\BCD")
+
+    if ($bootMgrPresent -and $bcdPresent) {
+        $stages += "[PASS] Boot Manager: boot files and BCD present."
+    } else {
+        $stages += "[FAIL] Boot Manager: missing boot files or BCD."
+        $issues += "BootManager"
+    }
+
+    # Stage 3: Windows OS Loader
+    $winloadPresent = (Test-Path -LiteralPath "$drive`:\Windows\System32\winload.exe") -or (Test-Path -LiteralPath "$drive`:\Windows\System32\winload.efi")
+    if ($winloadPresent) {
+        $stages += "[PASS] OS Loader: winload present."
+    } else {
+        $stages += "[FAIL] OS Loader: winload missing."
+        $issues += "OSLoader"
+    }
+
+    # Stage 4: Windows Kernel
+    $kernelPresent = Test-Path -LiteralPath "$drive`:\Windows\System32\ntoskrnl.exe"
+    if ($kernelPresent) {
+        $stages += "[PASS] Kernel: ntoskrnl present."
+    } else {
+        $stages += "[FAIL] Kernel: ntoskrnl missing."
+        $issues += "Kernel"
+    }
+
+    $report += ($stages -join "`r`n") + "`r`n`r`n"
+
+    if ($issues.Count -gt 0) {
+        $report += "Likely failing stage(s): $($issues -join ', ')`r`n`r`n"
+    } else {
+        $report += "No obvious missing files detected. Boot failure may be driver, registry, or hardware-related.`r`n`r`n"
+    }
+
+    $report += "Recommendations:`r`n"
+    if ($issues -contains "BootManager") {
+        $report += "- Run Startup Repair, or use: bootrec /fixmbr, /fixboot, /rebuildbcd`r`n"
+        $report += "- Consider: bcdboot $drive`:\Windows /s <EFI> /f UEFI`r`n"
+    }
+    if ($issues -contains "OSLoader") {
+        $report += "- Verify Windows folder and storage drivers`r`n"
+        $report += "- Consider offline SFC or driver injection`r`n"
+    }
+    if ($issues -contains "Kernel") {
+        $report += "- Run offline SFC: sfc /scannow /offbootdir=$drive`:\ /offwindir=$drive`:\Windows`r`n"
+        $report += "- Check disk: chkdsk $drive`: /f /r`r`n"
+    }
+    if ($issues -contains "PreBoot") {
+        $report += "- Check firmware/BIOS settings and disk detection`r`n"
+    }
+
+    $report += "`r`nReferences:`r`n"
+    $report += "- Windows startup architecture: https://learn.microsoft.com/en-us/training/modules/troubleshoot-windows-startup/2-explore-windows-client-startup-architecture`r`n"
+
+    return $report
+}

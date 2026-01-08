@@ -108,7 +108,9 @@ function Show-DriveSelectionDialog {
     param(
         [string]$Title = "Select Target Drive",
         [bool]$AllowCancel = $true,
-        [string]$PreselectedDrive = $null
+        [string]$PreselectedDrive = $null,
+        [bool]$AllowSetDefault = $true,
+        [bool]$ForceSetDefault = $false
     )
     
     try {
@@ -126,29 +128,109 @@ function Show-DriveSelectionDialog {
             return $null
         }
         
-        # Build drive list display
-        $driveList = @()
-        foreach ($drive in $drives) {
-            $display = "$($drive.Letter): - $($drive.Label) ($($drive.FileSystem)) [$($drive.SizeGB)GB Total, $($drive.FreeGB)GB Free]"
-            $driveList += $display
+        $xaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="$Title" Height="420" Width="720"
+        WindowStartupLocation="CenterScreen" Background="#F7F7F7">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <TextBlock Grid.Row="0" Text="Select a drive from the list below:" 
+                   FontWeight="Bold" Margin="0,0,0,8"/>
+        
+        <ListView Grid.Row="1" Name="DriveList" Margin="0,0,0,8" SelectionMode="Single">
+            <ListView.View>
+                <GridView>
+                    <GridViewColumn Header="Drive" DisplayMemberBinding="{Binding Letter}" Width="60"/>
+                    <GridViewColumn Header="Label" DisplayMemberBinding="{Binding Label}" Width="160"/>
+                    <GridViewColumn Header="FileSystem" DisplayMemberBinding="{Binding FileSystem}" Width="90"/>
+                    <GridViewColumn Header="Size (GB)" DisplayMemberBinding="{Binding SizeGB}" Width="90"/>
+                    <GridViewColumn Header="Free (GB)" DisplayMemberBinding="{Binding FreeGB}" Width="90"/>
+                    <GridViewColumn Header="Health" DisplayMemberBinding="{Binding Health}" Width="90"/>
+                </GridView>
+            </ListView.View>
+        </ListView>
+        
+        <CheckBox Grid.Row="2" Name="SetDefaultCheck" Content="Set as default drive for future operations"
+                  Margin="0,0,0,8"/>
+        
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="OkButton" Content="OK" Width="90" Height="30" Margin="0,0,8,0"/>
+            <Button Name="CancelButton" Content="Cancel" Width="90" Height="30"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+        
+        $window = [System.Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$xaml)))
+        $list = $window.FindName("DriveList")
+        $setDefaultCheck = $window.FindName("SetDefaultCheck")
+        $okButton = $window.FindName("OkButton")
+        $cancelButton = $window.FindName("CancelButton")
+        
+        $list.ItemsSource = $drives
+        
+        if ($PreselectedDrive) {
+            $target = $PreselectedDrive.TrimEnd(':').ToUpper()
+            foreach ($item in $list.Items) {
+                if ($item.Letter -eq $target) {
+                    $list.SelectedItem = $item
+                    $list.ScrollIntoView($item)
+                    break
+                }
+            }
         }
         
-        # Create simple selection window (using MessageBox as fallback)
-        $message = "Available Drives:`n`n"
-        for ($i = 0; $i -lt $driveList.Count; $i++) {
-            $message += "$($i+1). $($driveList[$i])`n"
+        if (-not $AllowSetDefault) {
+            $setDefaultCheck.Visibility = "Collapsed"
+        } elseif ($ForceSetDefault) {
+            $setDefaultCheck.IsChecked = $true
+            $setDefaultCheck.IsEnabled = $false
         }
-        $message += "`nSelect a drive by number (or press Cancel to exit):"
         
-        [System.Windows.MessageBox]::Show(
-            $message,
-            $Title,
-            "OKCancel",
-            "Information"
-        ) | Out-Null
+        if (-not $AllowCancel) {
+            $cancelButton.Visibility = "Collapsed"
+        }
         
-        # For now, return $null - will be enhanced with better selection dialog
-        return $null
+        $script:driveSelection = $null
+        $okButton.Add_Click({
+            if (-not $list.SelectedItem) {
+                [System.Windows.MessageBox]::Show(
+                    "Please select a drive to continue.",
+                    "No Drive Selected",
+                    "OK",
+                    "Warning"
+                ) | Out-Null
+                return
+            }
+            $script:driveSelection = $list.SelectedItem
+            $window.DialogResult = $true
+            $window.Close()
+        })
+        
+        $cancelButton.Add_Click({
+            $window.DialogResult = $false
+            $window.Close()
+        })
+        
+        $result = $window.ShowDialog()
+        if (-not $result -or -not $script:driveSelection) {
+            return $null
+        }
+        
+        $selectedDrive = $script:driveSelection.Letter
+        $setDefault = ($setDefaultCheck.IsChecked -eq $true)
+        if ($setDefault -and (Get-Command Set-DefaultDrive -ErrorAction SilentlyContinue)) {
+            Set-DefaultDrive $selectedDrive | Out-Null
+        }
+        
+        return $selectedDrive
         
     } catch {
         Write-Warning "Error showing drive selection dialog: $_"
@@ -187,7 +269,7 @@ function Show-DriveWarningDialog {
         if ($drive.Length -gt 1) { $drive = $drive[0] }
         
         $driveInfo = Get-Volume -DriveLetter $drive -ErrorAction SilentlyContinue
-        $label = $driveInfo.FileSystemLabel -replace '^\s+|\s+$'
+        $label = if ($driveInfo -and $driveInfo.FileSystemLabel) { $driveInfo.FileSystemLabel -replace '^\s+|\s+$' } else { "" }
         
         $message = "OPERATION TARGET CONFIRMATION`n`n"
         
@@ -215,6 +297,95 @@ function Show-DriveWarningDialog {
     } catch {
         Write-Warning "Error showing drive warning dialog: $_"
         return $false
+    }
+}
+
+function Show-DefaultDriveChoiceDialog {
+    <#
+    .SYNOPSIS
+    Presents a clear choice when a default drive is configured.
+    
+    .PARAMETER DefaultDrive
+    The default drive letter
+    
+    .PARAMETER Operation
+    Operation name for context
+    
+    .PARAMETER AllowOverride
+    Whether to allow choosing a different drive
+    
+    .OUTPUTS
+    String - UseDefault, ChooseDifferent, ChangeDefault, or Cancel
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$DefaultDrive,
+        [string]$Operation = "operation",
+        [bool]$AllowOverride = $true
+    )
+    
+    try {
+        Add-Type -AssemblyName PresentationFramework -ErrorAction SilentlyContinue
+        
+        $drive = $DefaultDrive.TrimEnd(':').ToUpper()
+        $driveInfo = Get-Volume -DriveLetter $drive -ErrorAction SilentlyContinue
+        $label = if ($driveInfo -and $driveInfo.FileSystemLabel) { $driveInfo.FileSystemLabel } else { "[Unlabeled]" }
+        $size = if ($driveInfo) { [math]::Round($driveInfo.Size / 1GB, 2) } else { "N/A" }
+        $free = if ($driveInfo) { [math]::Round($driveInfo.SizeRemaining / 1GB, 2) } else { "N/A" }
+        
+        $xaml = @"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Default Drive Confirmation" Height="240" Width="520"
+        WindowStartupLocation="CenterScreen" Background="#F7F7F7">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <TextBlock Grid.Row="0" Text="Default drive detected for this operation." 
+                   FontWeight="Bold" Margin="0,0,0,8"/>
+        
+        <StackPanel Grid.Row="1" Margin="0,0,0,10">
+            <TextBlock Text="Operation: $Operation" Margin="0,0,0,4"/>
+            <TextBlock Text="Default Drive: $drive:`nLabel: $label`nSize: $size GB  Free: $free GB" />
+        </StackPanel>
+        
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Name="UseDefaultBtn" Content="Use Default" Width="110" Height="30" Margin="0,0,8,0"/>
+            <Button Name="ChooseBtn" Content="Choose Different" Width="130" Height="30" Margin="0,0,8,0"/>
+            <Button Name="ChangeDefaultBtn" Content="Change Default" Width="130" Height="30" Margin="0,0,8,0"/>
+            <Button Name="CancelBtn" Content="Cancel" Width="90" Height="30"/>
+        </StackPanel>
+    </Grid>
+</Window>
+"@
+        
+        $window = [System.Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$xaml)))
+        $useDefaultBtn = $window.FindName("UseDefaultBtn")
+        $chooseBtn = $window.FindName("ChooseBtn")
+        $changeDefaultBtn = $window.FindName("ChangeDefaultBtn")
+        $cancelBtn = $window.FindName("CancelBtn")
+        
+        if (-not $AllowOverride) {
+            $chooseBtn.Visibility = "Collapsed"
+            $changeDefaultBtn.Visibility = "Collapsed"
+        }
+        
+        $script:choice = "Cancel"
+        $useDefaultBtn.Add_Click({ $script:choice = "UseDefault"; $window.Close() })
+        $chooseBtn.Add_Click({ $script:choice = "ChooseDifferent"; $window.Close() })
+        $changeDefaultBtn.Add_Click({ $script:choice = "ChangeDefault"; $window.Close() })
+        $cancelBtn.Add_Click({ $script:choice = "Cancel"; $window.Close() })
+        
+        $window.ShowDialog() | Out-Null
+        return $script:choice
+        
+    } catch {
+        Write-Warning "Error showing default drive choice dialog: $_"
+        return "Cancel"
     }
 }
 
@@ -258,26 +429,26 @@ function Select-OperationDrive {
             if (-not $proceed) {
                 return $null
             }
-            
-            # Ask if user wants to override
+        }
+        
+        if ($DefaultDrive) {
             if ($AllowOverride) {
-                $override = [System.Windows.MessageBox]::Show(
-                    "Do you want to select a different drive instead?",
-                    "Override Default Drive",
-                    "YesNo",
-                    "Question"
-                )
+                $choice = Show-DefaultDriveChoiceDialog -DefaultDrive $DefaultDrive `
+                    -Operation $OperationName -AllowOverride $AllowOverride
                 
-                if ($override -eq [System.Windows.MessageBoxResult]::Yes) {
-                    return Show-DriveSelectionDialog -Title "Select Alternative Drive"
+                switch ($choice) {
+                    "UseDefault" { return $DefaultDrive }
+                    "ChooseDifferent" { return Show-DriveSelectionDialog -Title "Select Drive for $OperationName" -PreselectedDrive $DefaultDrive -AllowSetDefault $false }
+                    "ChangeDefault" { return Show-DriveSelectionDialog -Title "Select New Default Drive" -PreselectedDrive $DefaultDrive -AllowSetDefault $true -ForceSetDefault $true }
+                    default { return $null }
                 }
             }
             
             return $DefaultDrive
         }
         
-        # No default or warnings suppressed - show selection dialog
-        return Show-DriveSelectionDialog -Title "Select Drive for $OperationName"
+        # No default - show selection dialog
+        return Show-DriveSelectionDialog -Title "Select Drive for $OperationName" -AllowSetDefault $true
         
     } catch {
         Write-Warning "Error in drive selection: $_"

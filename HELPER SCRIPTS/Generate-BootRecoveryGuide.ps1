@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
 MiracleBoot Boot Recovery FAQ Generator
 Creates a comprehensive SAVE_ME.txt guide with troubleshooting commands.
@@ -578,7 +578,72 @@ FIX STEPS:
 ═════════════════════════════════════════════════════════════════════════════════
 6. ADVANCED TECHNIQUES
 ═════════════════════════════════════════════════════════════════════════════════
+ADVANCED BOOT TROUBLESHOOTING (PHASED APPROACH)
 
+Use the boot phase to choose the right fix. Identify where the boot process
+stops, then apply the matching repair steps.
+
+BOOT PHASES (HIGH-LEVEL)
+  1) PreBoot (BIOS/UEFI firmware)
+  2) Windows Boot Manager (bootmgr / bootmgfw.efi)
+  3) Windows OS Loader (winload.exe / winload.efi)
+  4) Windows Kernel (ntoskrnl.exe)
+
+PHASE 1: PREBOOT (BIOS/UEFI)
+  Symptoms:
+    - No disk activity light, only BIOS logo, stuck at firmware screen
+    - NumLock light does not toggle
+  Actions:
+    - Disconnect external devices (USB, docks, storage)
+    - Check firmware diagnostics (if available)
+    - Suspect hardware failure if disk is not detected
+
+PHASE 2: BOOT MANAGER / BOOT LOADER
+  Symptoms:
+    - Black screen + blinking cursor
+    - "BOOTMGR is missing", "Operating System not found"
+    - BCD missing/corrupt, boot sector errors
+  Actions:
+    - Run Startup Repair (WinRE)
+    - Bootrec sequence:
+        bootrec /scanos
+        bootrec /fixmbr
+        bootrec /fixboot
+        bootrec /rebuildbcd
+    - If WinRE loops forever:
+        bcdedit /set {default} recoveryenabled no
+    - If F8 options do not appear:
+        bcdedit /set {default} bootmenupolicy legacy
+    - Startup Repair log:
+        %windir%\System32\LogFiles\Srt\Srttrail.txt
+
+PHASE 3: WINDOWS OS LOADER (WINLOAD)
+  Symptoms:
+    - Error mentioning winload.exe/winload.efi
+    - Boot Manager starts, then fails loading Windows
+  Actions:
+    - Verify Windows folder exists on target drive
+    - Inject missing storage drivers (offline DISM)
+    - Run Startup Repair again after driver injection
+
+PHASE 4: KERNEL (NTOSKRNL)
+  Symptoms:
+    - Stop error (blue screen) after Windows logo
+    - Spinning dots forever, black screen after logo
+  Actions:
+    - Try Safe Mode or Last Known Good Configuration
+    - Review Event Viewer (if Safe Mode works)
+    - Clean boot (disable third-party services)
+    - Offline SFC:
+        sfc /scannow /offbootdir=C:\ /offwindir=C:\Windows
+    - Check disk:
+        chkdsk C: /F /R
+    - Remove pending updates (WinRE):
+        dism /image:C:\ /get-packages
+        dism /image:C:\ /remove-package /packagename:NAME
+        dism /image:C:\ /cleanup-image /revertpendingactions
+      If pending.xml exists, rename it to pending.xml.old
+    - Restore registry hives (use System Restore if RegBack is empty)
 CHECKING DISK HEALTH
 
 See if your disk has physical errors:
@@ -741,3 +806,5 @@ function Open-BootRecoveryGuide {
         Write-Host "SAVE_ME.txt not found. Please generate it first." -ForegroundColor Red
     }
 }
+
+

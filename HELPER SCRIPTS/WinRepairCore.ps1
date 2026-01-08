@@ -2252,6 +2252,161 @@ function Get-ReagentcHealth {
     return $health
 }
 
+function Get-WinREHealth {
+    param([string]$TargetDrive = $env:SystemDrive.TrimEnd(':'))
+    
+    if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
+        $TargetDrive = $env:SystemDrive.TrimEnd(':')
+    }
+    
+    if ($TargetDrive -match '^([A-Z]):?$') {
+        $TargetDrive = $matches[1]
+    }
+    
+    $result = [ordered]@{
+        TargetDrive = "$TargetDrive`:"
+        IsCurrentOS = $false
+        OverallStatus = "Unknown"
+        WinREStatus = "Unknown"
+        WinRELocation = ""
+        WinREImagePath = ""
+        WinREImagePresent = $false
+        ReAgentXmlPresent = $false
+        Issues = @()
+        Recommendations = @()
+        Report = ""
+    }
+    
+    if (-not (Test-Path "$TargetDrive`:\Windows")) {
+        $result.OverallStatus = "Unhealthy"
+        $result.Issues += "No Windows installation found on $TargetDrive`:"
+        $result.Report = "WINRE HEALTH CHECK`nTarget: $TargetDrive`:`n[FAIL] Windows folder not found."
+        return $result
+    }
+    
+    $currentDrive = $env:SystemDrive.TrimEnd(':')
+    $result.IsCurrentOS = ($currentDrive -eq $TargetDrive)
+    
+    if ($result.IsCurrentOS) {
+        if (Get-Command reagentc -ErrorAction SilentlyContinue) {
+            try {
+                $reagentcOutput = reagentc /info 2>&1 | Out-String
+                if ($reagentcOutput -match "Windows RE status:\s*(\w+)") {
+                    $result.WinREStatus = $matches[1]
+                }
+                if ($reagentcOutput -match "Windows RE location:\s*(.+)") {
+                    $result.WinRELocation = $matches[1].Trim()
+                }
+            } catch {
+                $result.Issues += "Failed to run reagentc /info: $_"
+            }
+        } else {
+            $result.Issues += "reagentc not available in this environment."
+        }
+    } else {
+        $reAgentXml = "$TargetDrive`:\Windows\System32\Recovery\ReAgent.xml"
+        if (Test-Path $reAgentXml) {
+            $result.ReAgentXmlPresent = $true
+            try {
+                [xml]$xml = Get-Content -LiteralPath $reAgentXml -ErrorAction Stop
+                $ns = New-Object System.Xml.XmlNamespaceManager($xml.NameTable)
+                $ns.AddNamespace("re", "http://schemas.microsoft.com/RecoveryEnvironment/1.0")
+                
+                $statusNode = $xml.SelectSingleNode("//re:WinREStatus", $ns)
+                if (-not $statusNode) { $statusNode = $xml.SelectSingleNode("//WinREStatus") }
+                
+                if ($statusNode -and $statusNode.InnerText) {
+                    $statusValue = $statusNode.InnerText.Trim()
+                    if ($statusValue -eq "1" -or $statusValue -match "Enabled") {
+                        $result.WinREStatus = "Enabled"
+                    } elseif ($statusValue -eq "0" -or $statusValue -match "Disabled") {
+                        $result.WinREStatus = "Disabled"
+                    } else {
+                        $result.WinREStatus = $statusValue
+                    }
+                }
+                
+                $pathNode = $xml.SelectSingleNode("//re:WinRELocation/re:Path", $ns)
+                if (-not $pathNode) { $pathNode = $xml.SelectSingleNode("//WinRELocation/Path") }
+                
+                if ($pathNode -and $pathNode.InnerText) {
+                    $result.WinRELocation = $pathNode.InnerText.Trim()
+                }
+            } catch {
+                $result.Issues += "Failed to parse ReAgent.xml: $_"
+            }
+        } else {
+            $result.Issues += "ReAgent.xml not found on $TargetDrive`:\Windows\System32\Recovery"
+        }
+    }
+    
+    $candidatePaths = @()
+    if ($result.WinRELocation) {
+        if ($result.WinRELocation -match '^[A-Z]:\\') {
+            if ($result.WinRELocation -match '\.wim$') {
+                $candidatePaths += $result.WinRELocation
+            } else {
+                $candidatePaths += Join-Path $result.WinRELocation "Winre.wim"
+            }
+        }
+    }
+    $candidatePaths += "$TargetDrive`:\Recovery\WindowsRE\Winre.wim"
+    $candidatePaths += "$TargetDrive`:\Windows\System32\Recovery\Winre.wim"
+    
+    foreach ($path in $candidatePaths | Select-Object -Unique) {
+        if (Test-Path $path) {
+            $result.WinREImagePresent = $true
+            $result.WinREImagePath = $path
+            break
+        }
+    }
+    
+    if ($result.WinREStatus -eq "Disabled") {
+        $result.Issues += "WinRE is disabled."
+        $result.Recommendations += "Run: reagentc /enable (from within the target OS)."
+    } elseif ($result.WinREStatus -eq "Unknown") {
+        $result.Issues += "WinRE status could not be determined."
+    }
+    
+    if (-not $result.WinREImagePresent) {
+        $result.Issues += "Winre.wim not found in expected locations."
+        $result.Recommendations += "Check $TargetDrive`:\Recovery\WindowsRE and re-register WinRE if missing."
+    }
+    
+    if ($result.Issues.Count -eq 0 -and $result.WinREStatus -eq "Enabled" -and $result.WinREImagePresent) {
+        $result.OverallStatus = "Healthy"
+    } elseif ($result.WinREStatus -eq "Enabled") {
+        $result.OverallStatus = "Degraded"
+    } else {
+        $result.OverallStatus = "Unhealthy"
+    }
+    
+    $reportLines = @()
+    $reportLines += "WINRE HEALTH CHECK"
+    $reportLines += "Target: $TargetDrive`:"
+    $reportLines += "Context: " + $(if ($result.IsCurrentOS) { "Current OS" } else { "Offline Windows" })
+    $reportLines += "Overall: $($result.OverallStatus)"
+    $reportLines += "WinRE Status: $($result.WinREStatus)"
+    $reportLines += "ReAgent.xml: " + $(if ($result.ReAgentXmlPresent) { "Present" } else { "Not found" })
+    $reportLines += "WinRE Location: " + $(if ($result.WinRELocation) { $result.WinRELocation } else { "Unknown" })
+    $reportLines += "WinRE Image: " + $(if ($result.WinREImagePresent) { $result.WinREImagePath } else { "Missing" })
+    
+    if ($result.Issues.Count -gt 0) {
+        $reportLines += ""
+        $reportLines += "Issues:"
+        foreach ($issue in $result.Issues) { $reportLines += " - $issue" }
+    }
+    
+    if ($result.Recommendations.Count -gt 0) {
+        $reportLines += ""
+        $reportLines += "Recommendations:"
+        foreach ($rec in $result.Recommendations) { $reportLines += " - $rec" }
+    }
+    
+    $result.Report = ($reportLines -join "`n")
+    return $result
+}
+
 function Get-OSInfo {
     param($TargetDrive = $env:SystemDrive)
     $osInfo = @{

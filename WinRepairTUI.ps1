@@ -42,11 +42,13 @@
         Write-Host "2) Scan Storage Drivers (Detailed)" -ForegroundColor White
         Write-Host "3) Inject Drivers Offline (DISM)" -ForegroundColor White
         Write-Host "4) Quick View BCD" -ForegroundColor White
-        Write-Host "5) Edit BCD Entry" -ForegroundColor White
+        Write-Host "5) Edit BCD Entry / Quick Fixes" -ForegroundColor White
         Write-Host "6) Repair-Install Readiness Check" -ForegroundColor Yellow
+        Write-Host "H) WinRE Health Check" -ForegroundColor Yellow
         Write-Host "7) Recommended Recovery Tools" -ForegroundColor Green
         Write-Host "8) Utilities & Tools" -ForegroundColor Magenta
         Write-Host "9) Network & Internet Help" -ForegroundColor Cyan
+        Write-Host "B) Boot Issue Mapping" -ForegroundColor Cyan
         Write-Host "Q) Quit" -ForegroundColor Yellow
         Write-Host ""
 
@@ -99,16 +101,61 @@
                 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
             }
             "5" {
-                Write-Host "`nCurrent BCD Entries:" -ForegroundColor Cyan
-                bcdedit /enum | Select-String "identifier" | ForEach-Object { Write-Host $_.Line -ForegroundColor Gray }
+                Clear-Host
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+                Write-Host "  BCD EDIT + QUICK FIXES" -ForegroundColor Cyan
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
                 Write-Host ""
-                $id = Read-Host "Enter BCD Identifier (GUID)"
-                $name = Read-Host "Enter new description"
-                if ($id -and $name) {
-                    Set-BCDDescription $id $name
-                    Write-Host "BCD entry updated successfully!" -ForegroundColor Green
-                    Write-Host "Press any key to continue..." -ForegroundColor Gray
-                    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                Write-Host "1) Edit BCD Entry Description" -ForegroundColor White
+                Write-Host "2) Break Recovery Loop (recoveryenabled no)" -ForegroundColor Yellow
+                Write-Host "3) Enable Legacy F8 Menu (bootmenupolicy legacy)" -ForegroundColor Yellow
+                Write-Host "R) Return to Menu" -ForegroundColor Gray
+                Write-Host ""
+
+                $bcdChoice = Read-Host "Select"
+                switch ($bcdChoice.ToUpper()) {
+                    "1" {
+                        Write-Host "`nCurrent BCD Entries:" -ForegroundColor Cyan
+                        bcdedit /enum | Select-String "identifier" | ForEach-Object { Write-Host $_.Line -ForegroundColor Gray }
+                        Write-Host ""
+                        $id = Read-Host "Enter BCD Identifier (GUID)"
+                        $name = Read-Host "Enter new description"
+                        if ($id -and $name) {
+                            Set-BCDDescription $id $name
+                            Write-Host "BCD entry updated successfully!" -ForegroundColor Green
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "2" {
+                        try {
+                            if (Get-Command Disable-BCDRecoveryEnabledDefault -ErrorAction SilentlyContinue) {
+                                Disable-BCDRecoveryEnabledDefault
+                            } else {
+                                bcdedit /set {default} recoveryenabled no | Out-Null
+                            }
+                            Write-Host "Recovery loop disabled for default entry." -ForegroundColor Green
+                        } catch {
+                            Write-Host "Failed to disable recovery loop: $_" -ForegroundColor Red
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "3" {
+                        try {
+                            if (Get-Command Set-BCDBootMenuPolicyLegacyDefault -ErrorAction SilentlyContinue) {
+                                Set-BCDBootMenuPolicyLegacyDefault
+                            } else {
+                                bcdedit /set {default} bootmenupolicy legacy | Out-Null
+                            }
+                            Write-Host "Legacy F8 boot menu enabled for default entry." -ForegroundColor Green
+                        } catch {
+                            Write-Host "Failed to enable legacy boot menu: $_" -ForegroundColor Red
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    default { }
                 }
             }
             "6" {
@@ -173,6 +220,54 @@
                         }
                     }
                 }
+            }
+            "H" {
+                Clear-Host
+                Write-Host "ЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭ" -ForegroundColor Yellow
+                Write-Host "  WINRE HEALTH CHECK" -ForegroundColor Yellow
+                Write-Host "ЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭ" -ForegroundColor Yellow
+                Write-Host ""
+                
+                $defaultDrive = $env:SystemDrive.TrimEnd(':')
+                $driveInput = Read-Host "Target Windows drive letter (e.g. C) [default: $defaultDrive]"
+                if ([string]::IsNullOrWhiteSpace($driveInput)) {
+                    $driveInput = $defaultDrive
+                }
+                
+                if (Get-Command Get-WinREHealth -ErrorAction SilentlyContinue) {
+                    $health = Get-WinREHealth -TargetDrive $driveInput
+                    Write-Host ""
+                    Write-Host $health.Report -ForegroundColor White
+                } else {
+                    Write-Host "ERROR: WinRE health check function not available." -ForegroundColor Red
+                }
+                
+                Write-Host "`nPress any key to continue..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            }
+            "h" {
+                Clear-Host
+                Write-Host "ЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭ" -ForegroundColor Yellow
+                Write-Host "  WINRE HEALTH CHECK" -ForegroundColor Yellow
+                Write-Host "ЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭЭ" -ForegroundColor Yellow
+                Write-Host ""
+                
+                $defaultDrive = $env:SystemDrive.TrimEnd(':')
+                $driveInput = Read-Host "Target Windows drive letter (e.g. C) [default: $defaultDrive]"
+                if ([string]::IsNullOrWhiteSpace($driveInput)) {
+                    $driveInput = $defaultDrive
+                }
+                
+                if (Get-Command Get-WinREHealth -ErrorAction SilentlyContinue) {
+                    $health = Get-WinREHealth -TargetDrive $driveInput
+                    Write-Host ""
+                    Write-Host $health.Report -ForegroundColor White
+                } else {
+                    Write-Host "ERROR: WinRE health check function not available." -ForegroundColor Red
+                }
+                
+                Write-Host "`nPress any key to continue..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
             }
             "8" {
                 Clear-Host
@@ -883,7 +978,40 @@
                     }
                 }
             }
-            "Q" { 
+            "B" {
+                Clear-Host
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+                Write-Host "  BOOT ISSUE MAPPING" -ForegroundColor Cyan
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "Describe the boot symptoms (stop codes, recovery loop, missing Start menu, etc.):" -ForegroundColor Gray
+                $description = Read-Host ""
+                if (-not $description) {
+                    Write-Host "No description entered. Returning to menu." -ForegroundColor Yellow
+                } else {
+                    $suggestions = Suggest-BootIssueFromDescription $description
+                    if (-not $suggestions -or $suggestions.Count -eq 0) {
+                        Write-Host "`nNo direct mapping found. Consider reviewing the Boot Issue Mapping guide." -ForegroundColor Yellow
+                    } else {
+                        foreach ($suggestion in $suggestions) {
+                            Write-Host "`n$($suggestion.Name)" -ForegroundColor Green
+                            Write-Host "  Symptom: $($suggestion.Symptom)" -ForegroundColor Gray
+                            Write-Host "  Description: $($suggestion.Description)" -ForegroundColor Gray
+                            Write-Host "  Commands:" -ForegroundColor Gray
+                            foreach ($cmd in $suggestion.Commands) {
+                                Write-Host "    - $cmd" -ForegroundColor Gray
+                            }
+                            Write-Host "  Reference: $($suggestion.References -join ', ')" -ForegroundColor Cyan
+                        }
+                    }
+                    Write-Host "`nFull mapping guide: DOCUMENTATION/BOOT_ISSUE_MAPPING.md" -ForegroundColor Gray
+                    Write-Host "Official Microsoft troubleshooting reference (0x7B): https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/stop-error-7b-or-inaccessible-boot-device-troubleshooting" -ForegroundColor Gray
+                    Write-Host "Virtual agent reference: https://chatgpt.com/s/t_695f6243fe9481919a76f51b7510aeb9" -ForegroundColor Gray
+                }
+                Write-Host "`nPress any key to return..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            }
+            "Q" {
                 Write-Host "`nExiting..." -ForegroundColor Yellow
                 if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
                     Write-ToLog "TUI Mode: User pressed Q to quit" "INFO"

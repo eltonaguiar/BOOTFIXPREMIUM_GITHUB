@@ -521,6 +521,505 @@ Step 3 - Boot Configuration Data Fix
 
 ---
 
+## 5. Reliability, Safety, and QA Improvements
+
+### 5.1 Safe-Mode Execution & Rollback
+**Current State**: Logs changes, but limited rollback automation.
+
+**Proposed Enhancements**:
+- **Pre-Flight Snapshot**: Capture critical system state (BCD, registry keys, disk layout) before changes
+- **One-Command Rollback**: Generate a rollback script per session
+- **Change Ledger**: Human-readable list of every command run and file touched
+- **Protected Ops**: Guardrails for destructive commands (diskpart, bootrec) with extra confirmations
+- **Recovery Checkpoints**: Mark safe points in the workflow for fast restore
+
+**Business Value**: Reduces fear and liability; increases trust for non-technical users.
+
+---
+
+### 5.2 Test Harness Expansion
+**Current State**: Syntax checks and validation scripts exist.
+
+**Proposed Enhancements**:
+- **Offline Test Matrix**: Validate operations in WinPE, WinRE, and FullOS
+- **Golden Logs**: Capture known-good outputs for key commands for regression detection
+- **Mock Layer**: Fake disk/BCD outputs for deterministic tests in CI
+- **Failure Injection**: Simulate common errors (missing BCD, bad drivers, locked volumes)
+- **User Flow Tests**: Automated walkthroughs of TUI and GUI flows
+
+**Business Value**: Prevents regressions; supports faster releases.
+
+---
+
+### 5.3 Crash Resistance and User Messaging
+**Current State**: Defensive try/catch and logs.
+
+**Proposed Enhancements**:
+- **Unified Status Bus**: Single function for status messages (TUI/GUI/log)
+- **Timeout Messaging**: If a command exceeds a threshold, show "Still running" with elapsed time
+- **Watchdog**: Detect hung commands and offer safe abort with rollback guidance
+- **Error Glossary**: Map common error codes to friendly explanations
+- **Progress Profiles**: Each operation declares typical durations and impact
+
+**Business Value**: Improves user confidence and reduces abandoned sessions.
+
+---
+
+## 6. Packaging, Deployment, and Distribution
+
+### 6.1 Portable Distribution
+**Current State**: Scripts run from local folder.
+
+**Proposed Enhancements**:
+- **Single-Folder Bundle**: Self-contained ZIP with all required scripts and help files
+- **Checksum Verification**: Validate integrity before run
+- **Auto-Update Opt-In**: Optional update checker (offline-safe)
+- **Signed Scripts**: Authenticode signing for enterprise environments
+
+**Business Value**: Easier adoption for businesses and security-conscious users.
+
+---
+
+### 6.2 Bootable Media Builder
+**Current State**: Manual WinPE/WinRE media creation.
+
+**Proposed Enhancements**:
+- **ISO Builder**: One-click creation of bootable ISO with MiracleBoot preloaded
+- **USB Writer**: Simple tool to flash USB with verification
+- **Driver Pack Injection**: Include harvested drivers during build
+- **Localization Packs**: Optional language resource bundles
+
+**Business Value**: Reduces friction for first-time users; increases conversion.
+
+---
+
+## 7. Security & Compliance
+
+### 7.1 Hardening and Integrity
+**Current State**: Basic logging and admin checks.
+
+**Proposed Enhancements**:
+- **Tamper Detection**: Hash validation for critical scripts
+- **Least-Privilege Mode**: Read-only diagnostics without admin where possible
+- **Audit Mode**: Report-only mode for enterprise approvals
+- **Secure Log Redaction**: Mask usernames, serials, and sensitive paths
+
+**Business Value**: Enterprise-ready; reduces security review friction.
+
+---
+
+### 7.2 Compliance & Policy
+**Proposed Enhancements**:
+- **Policy Templates**: JSON/YAML policies to allow/deny operations
+- **Approval Gates**: Require explicit acknowledgements before risky operations
+- **Operation Whitelist**: Disable dangerous commands in locked-down environments
+
+**Business Value**: Fits regulated environments (healthcare, finance, education).
+
+---
+
+## 8. Roadmap Phasing and Milestones
+
+### 8.1 v7.3 (Boot Repair Wizard + Hardware Diagnostics)
+- CLI Wizard (step-by-step, confirmation-first)
+- Disk health and S.M.A.R.T. checks
+- Repair-install readiness improvements
+- Status bar elapsed time and delay messaging
+
+### 8.2 v7.4 (Partition Recovery + Driver Systems)
+- Partition recovery engine (scan, recover, verify)
+- Driver harvesting/injection polish
+- Diskpart-Interactive integration
+
+### 8.3 v7.5 (Automation + Packaging)
+- CLI automation mode
+- Bootable media builder
+- Signed releases
+
+### 8.4 v8.0 (UI Modernization)
+- New GUI framework with dashboard
+- Wizard-driven workflows
+- Accessibility and UX refresh
+
+---
+
+## 9. Research Backlog (Industry Watch)
+
+### 9.1 Tools and Techniques to Evaluate
+- Windows 11 recovery changes (new boot UI behaviors)
+- Advanced file system repair tools (ReFS considerations)
+- SMART/NVMe vendor-specific health metrics
+- BitLocker recovery automation best practices
+- Driver ranking algorithms for storage controllers
+
+### 9.2 Competitor Feature Tracking
+- Acronis/Macrium recovery automation updates
+- Microsoft WinRE improvements
+- OEM recovery tool UX patterns
+
+---
+
+## 10. Open Questions to Resolve
+
+1. Which diagnostics must run in WinPE vs FullOS only?
+2. What operations are safe for non-admin mode?
+3. Should driver harvesting be default or opt-in?
+4. How aggressive should auto-repair be by default?
+5. What telemetry (if any) is acceptable for privacy-first users?
+
+---
+
+## 11. Implementation Checklists (Module-Level)
+
+### 11.1 Boot Repair Wizard (CLI) - Task Breakdown
+- Define user flow screens and confirmation prompts
+- Implement command preview with explicit safety warnings
+- Add duration estimates per step (static map + dynamic disk size heuristics)
+- Log command output to a session report
+- Write rollback guidance per step
+- Add detection for WinPE vs FullOS pathing and drive letter mapping
+- Add "dry run" mode for training and support
+
+### 11.2 One-Click Repair Tool (GUI) - Task Breakdown
+- Create a dedicated "Repair My PC" landing screen
+- Implement step pipeline: diagnostics -> decision -> repair -> validate
+- Add progress timeline UI with elapsed time and stage text
+- Log every decision and action with rationale
+- Add "stop/abort" safe exit with rollback guidance
+- Include final summary report with actionable next steps
+
+### 11.3 Hardware Diagnostics Module - Task Breakdown
+- SMART probe for SATA and NVMe (fallback when WMI not available)
+- Temperature probes with per-sensor failure tolerance
+- Memory diagnostics integration (launch + result retrieval)
+- Event log parsing for critical boot/storage errors
+- Disk health score synthesis (explainable)
+- Output report to logs and optional JSON
+
+### 11.4 Partition Recovery Module - Task Breakdown
+- Disk scan for lost partitions (GPT + MBR)
+- Volume candidate list with size, filesystem, and signatures
+- Selection workflow with safety confirmations
+- Restore partition table entries
+- Run filesystem repair on recovered volumes
+- Post-restore integrity verification and report
+
+---
+
+## 12. Development Tasks (Per Feature)
+
+### 12.1 Driver Harvesting System (Harvest-DriverPackage.ps1)
+- Enumerate DriverStore entries with metadata extraction
+- Group drivers by category and vendor
+- Copy driver folders with manifest generation
+- Build CSV inventory and README guide
+- Add compression option for distribution
+- Add verification step for missing files
+
+### 12.2 Diskpart-Interactive Wrapper
+- Disk and volume inventory with labels and sizes
+- Windows volume auto-detection
+- Safety prompts for destructive actions
+- Provide "safe mode" read-only operations
+- Add help screen explaining common diskpart commands
+
+### 12.3 Boot Recovery Guide Generator (SAVE_ME.txt)
+- Template structure for FAQ content
+- Fill-in placeholders based on detected environment
+- Add short decision trees for common boot errors
+- Add safe command examples with warnings
+- Export to text with clear headings and navigation
+
+---
+
+## 13. Integration Tasks (Core Product)
+
+### 13.1 GUI Integration
+- Add a new "Recovery" tab with one-click repair CTA
+- Add a "Diagnostics" tab with live hardware status
+- Add "Reports" screen with history of session outputs
+- Add status bar updates with elapsed time and delay messaging
+
+### 13.2 TUI Integration
+- Add menu entries for new modules
+- Add consistent prompts and status messaging
+- Provide "return to menu" flow after each operation
+- Add optional "export report" action
+
+### 13.3 Logging and Reporting
+- Unify logs: console + file + JSON
+- Tag all operations with an OperationId
+- Provide summary footer with warnings and errors count
+- Add support bundle generation (logs + reports)
+
+---
+
+## 14. Risk Register and Mitigations
+
+### 14.1 Technical Risks
+- Disk operations fail due to locked volumes
+- WinPE missing required cmdlets or assemblies
+- Driver injection fails due to mismatched OS versions
+- SMART data unavailable on certain controllers
+
+### 14.2 Mitigations
+- Provide clear fallback paths and instructions
+- Use defensive detection and feature toggles
+- Use pre-checks for OS version compatibility
+- Provide safe abort and rollback guidance
+
+---
+
+## 15. Dependency and Compatibility Matrix
+
+### 15.1 Platform Support
+- FullOS: GUI + full diagnostics
+- WinPE: TUI + core repairs
+- WinRE: TUI + limited diagnostics
+
+### 15.2 Module Dependencies
+- WinRepairCore.ps1 as base for all operations
+- EnsureRepairInstallReady.ps1 for readiness workflows
+- Optional tools (diskpart, bcdedit, dism, sfc, chkdsk)
+
+---
+
+## 16. Release Engineering Plan
+
+### 16.1 Pre-Release Gate
+- Run QA_SYNTAX_CHECKER.ps1
+- Verify startup in FullOS + WinPE + WinRE
+- Verify logs and report generation
+- Verify all GUI buttons have handlers and status updates
+
+### 16.2 Packaging Tasks
+- Build ZIP bundle with versioned naming
+- Generate checksums
+- Embed README and QUICK_START
+- Update changelog and release notes
+
+---
+
+## 17. Acceptance Criteria (Per Release)
+
+### 17.1 v7.3
+- Boot Repair Wizard works end-to-end
+- Hardware diagnostics generate report
+- Status messages show elapsed time for long actions
+
+### 17.2 v7.4
+- Partition recovery scan finds candidates
+- Driver harvesting + injection workflow validated
+
+### 17.3 v7.5
+- CLI automation mode works with config files
+- Bootable media builder generates ISO
+
+---
+
+## 18. Detailed Task Backlog (Next 30)
+
+1. Add unified status function for GUI/TUI/log
+2. Add elapsed-time tracking for all long operations
+3. Add report file generator helper
+4. Add "Repair My PC" GUI landing screen
+5. Add CLI Boot Repair Wizard skeleton
+6. Add disk health probe with SMART fallback
+7. Add temp monitoring with tolerance checks
+8. Add event log parsing for storage errors
+9. Add partition scan (GPT + MBR)
+10. Add recoverable volume list UI
+11. Add driver package manifest export
+12. Add driver category mapping table
+13. Add diskpart interactive menu (read-only)
+14. Add SAVE_ME.txt generator template
+15. Add "export support bundle" button
+16. Add logging OperationId tags
+17. Add JSON report output toggle
+18. Add WinPE compatibility checks
+19. Add BCD repair pre-checks
+20. Add CHKDSK scheduling detection
+21. Add SFC/DISM status messaging
+22. Add clean shutdown on abort
+23. Add error glossary lookup
+24. Add progress profile estimates
+25. Add test harness mock layer
+26. Add regression "golden logs"
+27. Add QA checklist automation
+28. Add packaging checksum step
+29. Add versioned release notes template
+30. Add public roadmap index update
+
+---
+
+## 19. Detailed Implementation Specs (Pseudo-Workflow)
+
+### 19.1 CLI Boot Repair Wizard - Flow Spec
+```
+Boot Repair Wizard
+  1) Detect environment (WinPE/WinRE/FullOS)
+  2) Detect Windows volumes and suggest target
+  3) Confirm backup acknowledgment
+  4) For each step:
+     - Show command
+     - Show duration estimate
+     - Ask (Run / Skip / Quit)
+     - Execute and capture output
+     - Log results and timing
+  5) Final summary with success/failure per step
+```
+
+### 19.2 One-Click Repair (GUI) - Pipeline Spec
+```
+Diagnostics -> Decision -> Repair -> Validate -> Report
+  - Diagnostics: SMART, disk health, missing drivers, BCD
+  - Decision: Choose smallest effective repair set
+  - Repair: CHKDSK schedule, BCD rebuild, driver inject
+  - Validate: Re-check critical items
+  - Report: Save to logs + show summary
+```
+
+### 19.3 Partition Recovery - Scan Spec
+```
+Scan Disk
+  - Enumerate disks
+  - Read GPT/MBR headers
+  - Search for partition signatures
+  - Rank candidates by integrity
+  - Preview volume info (label, FS, size)
+```
+
+---
+
+## 20. Data Formats and Artifacts
+
+### 20.1 Report File Layout (Text)
+- Header: tool, timestamp, environment, target drive
+- Section: diagnostics summary
+- Section: command outputs
+- Section: warnings/errors
+- Footer: recommendations
+
+### 20.2 JSON Report Schema (Draft)
+```
+{
+  "SessionId": "YYYYMMDD_HHMMSS",
+  "Environment": "FullOS|WinPE|WinRE",
+  "Operations": [
+    {
+      "Name": "RunSFC",
+      "StartTime": "...",
+      "EndTime": "...",
+      "Status": "Success|Warning|Failed",
+      "OutputPath": "..."
+    }
+  ],
+  "Summary": {
+    "Warnings": 0,
+    "Errors": 0
+  }
+}
+```
+
+---
+
+## 21. UI/UX Design Notes (GUI + TUI)
+
+### 21.1 GUI Visual Language
+- Primary action button (Repair My PC) should stand alone
+- Use linear progress indicator with stage labels
+- Keep status bar visible on all tabs
+- Show elapsed time and "still running" message
+- Always show "View Report" after completion
+
+### 21.2 TUI Messaging Style
+- Use consistent banners for warning/critical
+- Show command previews with a one-line explanation
+- Show elapsed time during long operations
+- End every action with "next steps" guidance
+
+---
+
+## 22. Operations Safety Matrix
+
+| Operation | Risk Level | Requires Admin | Safe Abort | Rollback Guidance |
+|----------|------------|----------------|------------|-------------------|
+| CHKDSK /F /R | High | Yes | Partial | Yes |
+| bootrec /fixmbr | High | Yes | No | Yes |
+| bootrec /fixboot | High | Yes | No | Yes |
+| bootrec /rebuildbcd | High | Yes | No | Yes |
+| Driver Inject | Medium | Yes | Yes | Yes |
+| BCD Edit | Medium | Yes | Yes | Yes |
+| SMART Read | Low | No | Yes | N/A |
+
+---
+
+## 23. Versioning and Compatibility Policy
+
+### 23.1 Versioning
+- Major: UI framework or core flow changes
+- Minor: new modules or workflow improvements
+- Patch: bug fixes and stability
+
+### 23.2 Compatibility Targets
+- PowerShell 2.0+ for WinPE
+- PowerShell 5.x+ for FullOS GUI
+- Avoid external dependencies unless bundled
+
+---
+
+## 24. Documentation Deliverables Checklist
+
+### 24.1 Per-Feature Docs
+- Feature overview
+- Step-by-step instructions
+- Safety notes and warnings
+- FAQ/troubleshooting
+- Example outputs
+
+### 24.2 Release Docs
+- Changelog
+- Known issues
+- Upgrade notes
+- Regression test summary
+
+---
+
+## 25. Quality Gates (Pre-Merge)
+
+1. All new commands have status messaging and elapsed time
+2. All GUI buttons have handlers with logs
+3. All CLI flows require explicit confirmation for destructive steps
+4. All reports include summary + next steps
+5. All modules run in WinPE without missing cmdlets
+
+---
+
+## 26. Backlog (Extended 50)
+
+31. Add GUI report viewer panel
+32. Add per-step duration estimation table
+33. Add "dry run" CLI mode
+34. Add BCD backup before edit
+35. Add partition scan results export
+36. Add auto-validate after repairs
+37. Add support bundle ZIP creation
+38. Add structured error codes for operations
+39. Add interactive "what changed" summary
+40. Add optional recovery "playbook" config
+41. Add repair wizard localization template
+42. Add WinPE driver fallback pack
+43. Add telemetry opt-in switch
+44. Add secure log redaction
+45. Add UI tooltip glossary
+46. Add "safe mode" diagnostics only
+47. Add unit test harness for parser functions
+48. Add virtual disk test fixtures
+49. Add automation CLI documentation
+50. Add release candidate checklist
+
+---
+
 ## 5. Data Protection & Security
 
 ### 5.1 Enhanced Backup & Recovery

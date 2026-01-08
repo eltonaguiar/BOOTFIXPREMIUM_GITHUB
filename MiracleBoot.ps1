@@ -25,6 +25,10 @@ Version: 7.2.0 (Hardened)
 Last Updated: January 2026
 #>
 
+param(
+    [switch]$SelfTest
+)
+
 Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -34,9 +38,65 @@ $ProgressPreference = 'SilentlyContinue'
 # ============================================================================
 
 $global:LogPath = $null
+$global:ErrorWarningLogPath = $null
 $global:LogBuffer = New-Object System.Collections.ArrayList
 $global:ErrorCount = 0
 $global:WarningCount = 0
+
+function Wait-ForUserContinue {
+    <#
+    .SYNOPSIS
+    Pauses execution so the user can review the console before continuing.
+    #>
+    param([string]$Message = "Press any key to continue...")
+
+    try {
+        Write-Host ""
+        Write-Host $Message -ForegroundColor Yellow
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    } catch {
+        # If ReadKey is unavailable, fall back to a minimal delay.
+        Start-Sleep -Seconds 2
+    }
+}
+
+function Set-GuiHostForFullOS {
+    <#
+    .SYNOPSIS
+    Ensures the script is running in a GUI-capable host (STA, Windows PowerShell).
+    #>
+    param([string]$EnvironmentType)
+
+    if ($EnvironmentType -ne 'FullOS') { return }
+    if ($env:MIRACLEBOOT_GUI_RELAUNCH -eq '1') { return }
+
+    $isCore = ($PSVersionTable.PSEdition -eq 'Core')
+    $isSta = $true
+    try { $isSta = ([Threading.Thread]::CurrentThread.ApartmentState -eq 'STA') } catch {}
+
+    if ($isCore -or -not $isSta) {
+        Write-WarningLog "GUI host is not STA/Windows PowerShell (PSEdition=$($PSVersionTable.PSEdition), ApartmentState=$([Threading.Thread]::CurrentThread.ApartmentState))"
+        Write-Host "[LAUNCH] GUI requires Windows PowerShell (STA). Relaunching with powershell.exe -Sta..." -ForegroundColor Yellow
+        Wait-ForUserContinue -Message "Press any key to relaunch in Windows PowerShell (STA) for GUI support..."
+
+        $scriptPath = $PSCommandPath
+        if ([string]::IsNullOrEmpty($scriptPath)) { $scriptPath = $MyInvocation.MyCommand.Path }
+        if ([string]::IsNullOrEmpty($scriptPath)) {
+            Write-ErrorLog "Cannot determine script path for relaunch"
+            return
+        }
+
+        $env:MIRACLEBOOT_GUI_RELAUNCH = '1'
+        try {
+            Start-Process -FilePath "powershell.exe" `
+                -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Sta", "-File", "`"$scriptPath`"") `
+                -WorkingDirectory $PSScriptRoot | Out-Null
+            exit 0
+        } catch {
+            Write-ErrorLog "Failed to relaunch in Windows PowerShell (STA)" -Exception $_
+        }
+    }
+}
 
 function Initialize-LogSystem {
     <#
@@ -60,6 +120,7 @@ function Initialize-LogSystem {
     # Create timestamped log file
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $global:LogPath = Join-Path $logsDir "MiracleBoot_$timestamp.log"
+    $global:ErrorWarningLogPath = Join-Path $logsDir "MiracleBoot_ErrorsWarnings_$timestamp.log"
     
     # Clean old log files (older than 7 days)
     try {
@@ -80,6 +141,28 @@ function Initialize-LogSystem {
     Write-ToLog "Administrator: $(if (Test-AdminPrivileges) { 'Yes' } else { 'No' })" "INFO"
     Write-ToLog "PowerShell: $($PSVersionTable.PSVersion)" "INFO"
     Write-ToLog "════════════════════════════════════════════════════════════════" "INFO"
+}
+
+function Get-LogOrigin {
+    <#
+    .SYNOPSIS
+    Attempts to capture the caller origin for error/warning logs.
+    #>
+    try {
+        if (Get-Command Get-PSCallStack -ErrorAction SilentlyContinue) {
+            $stack = Get-PSCallStack
+            if ($stack.Count -gt 1) {
+                $caller = $stack[1]
+                if ($caller.ScriptName) {
+                    return "$($caller.FunctionName) @ $($caller.ScriptName):$($caller.ScriptLineNumber)"
+                }
+                return $caller.FunctionName
+            }
+        }
+    } catch {
+        # Best-effort only
+    }
+    return ''
 }
 
 function Write-ToLog {
@@ -137,15 +220,52 @@ function Write-ErrorLog {
     #>
     param(
         [string]$Message,
-        [Exception]$Exception = $null,
+        [object]$Exception = $null,
         [string]$Details = $null
     )
     
     Write-ToLog "ERROR: $Message" "ERROR"
+    $origin = Get-LogOrigin
+    if ($origin) {
+        Write-ToLog "  Origin: $origin" "ERROR"
+        if ($global:ErrorWarningLogPath) {
+            try { Add-Content -LiteralPath $global:ErrorWarningLogPath -Value "ERROR: $Message | Origin: $origin" -ErrorAction SilentlyContinue } catch {}
+        }
+    } else {
+        if ($global:ErrorWarningLogPath) {
+            try { Add-Content -LiteralPath $global:ErrorWarningLogPath -Value "ERROR: $Message" -ErrorAction SilentlyContinue } catch {}
+        }
+    }
     
     if ($Exception) {
-        Write-ToLog "  Exception: $($Exception.Message)" "ERROR"
-        Write-ToLog "  Category: $($Exception.GetType().Name)" "ERROR"
+        $exceptionObj = $null
+        $errorRecord = $null
+
+        if ($Exception -is [System.Management.Automation.ErrorRecord]) {
+            $errorRecord = $Exception
+            $exceptionObj = $Exception.Exception
+        } elseif ($Exception -is [Exception]) {
+            $exceptionObj = $Exception
+        } else {
+            $exceptionObj = New-Object System.Exception ([string]$Exception)
+        }
+
+        if ($exceptionObj) {
+            Write-ToLog "  Exception: $($exceptionObj.Message)" "ERROR"
+            Write-ToLog "  Category: $($exceptionObj.GetType().Name)" "ERROR"
+        }
+
+        if ($errorRecord) {
+            if ($errorRecord.FullyQualifiedErrorId) {
+                Write-ToLog "  ErrorId: $($errorRecord.FullyQualifiedErrorId)" "ERROR"
+            }
+            if ($errorRecord.CategoryInfo) {
+                Write-ToLog "  CategoryInfo: $($errorRecord.CategoryInfo)" "ERROR"
+            }
+            if ($errorRecord.InvocationInfo -and $errorRecord.InvocationInfo.PositionMessage) {
+                Write-ToLog "  Position: $($errorRecord.InvocationInfo.PositionMessage)" "ERROR"
+            }
+        }
     }
     
     if ($Details) {
@@ -161,6 +281,17 @@ function Write-WarningLog {
     param([string]$Message)
     
     Write-ToLog "WARNING: $Message" "WARNING"
+    $origin = Get-LogOrigin
+    if ($origin) {
+        Write-ToLog "  Origin: $origin" "WARNING"
+        if ($global:ErrorWarningLogPath) {
+            try { Add-Content -LiteralPath $global:ErrorWarningLogPath -Value "WARNING: $Message | Origin: $origin" -ErrorAction SilentlyContinue } catch {}
+        }
+    } else {
+        if ($global:ErrorWarningLogPath) {
+            try { Add-Content -LiteralPath $global:ErrorWarningLogPath -Value "WARNING: $Message" -ErrorAction SilentlyContinue } catch {}
+        }
+    }
 }
 
 function Export-LogFile {
@@ -192,6 +323,155 @@ function Get-LogSummary {
     }
 }
 
+function Invoke-SelfTest {
+    <#
+    .SYNOPSIS
+    Runs a non-destructive self-test to validate script health and logging.
+    #>
+    param([string]$EnvironmentType)
+
+    Write-Host "`n[SELFTEST] Running MiracleBoot self-test..." -ForegroundColor Cyan
+
+    $checks = New-Object System.Collections.ArrayList
+    function Add-Check {
+        param([string]$Name, [bool]$Passed, [string]$Message, [object]$Details = $null)
+        $null = $checks.Add(@{
+            Name = $Name
+            Passed = $Passed
+            Message = $Message
+            Details = $Details
+        })
+    }
+
+    $isAdmin = Test-AdminPrivileges
+    Add-Check -Name "Administrator Privileges" -Passed $isAdmin -Message $(if ($isAdmin) { "Running as administrator" } else { "Not running as administrator" })
+
+    $apartmentState = $null
+    try { $apartmentState = [Threading.Thread]::CurrentThread.ApartmentState } catch {}
+    Add-Check -Name "PowerShell Host" -Passed $true -Message "PSEdition=$($PSVersionTable.PSEdition), ApartmentState=$apartmentState"
+
+    # Required files and syntax checks
+    $requiredFiles = @('WinRepairCore.ps1', 'WinRepairTUI.ps1')
+    if ($EnvironmentType -eq 'FullOS') {
+        $requiredFiles += 'WinRepairGUI.ps1'
+    }
+    foreach ($file in $requiredFiles) {
+        $fileCheck = Test-ScriptFileExists $file
+        Add-Check -Name "File exists: $file" -Passed ($fileCheck.Exists -and $fileCheck.Readable) -Message $fileCheck.Error -Details $fileCheck
+
+        $syntaxCheck = Test-ScriptSyntax $file
+        Add-Check -Name "Syntax: $file" -Passed $syntaxCheck.Valid -Message $syntaxCheck.Error -Details $syntaxCheck
+    }
+
+    # GUI module sanity check (loadable + Start-GUI defined)
+    if ($EnvironmentType -eq 'FullOS') {
+        try {
+            $guiModule = Join-Path $PSScriptRoot "WinRepairGUI.ps1"
+            if (Test-Path -LiteralPath $guiModule) {
+                . $guiModule
+                $hasStartGui = [bool](Get-Command Start-GUI -ErrorAction SilentlyContinue)
+                Add-Check -Name "GUI module load" -Passed $hasStartGui -Message $(if ($hasStartGui) { "Start-GUI found" } else { "Start-GUI not found after load" })
+            } else {
+                Add-Check -Name "GUI module load" -Passed $false -Message "WinRepairGUI.ps1 not found"
+            }
+        } catch {
+            Add-Check -Name "GUI module load" -Passed $false -Message $_.Exception.Message
+        }
+    }
+
+    # WPF and WinForms availability
+    try {
+        Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+        Add-Check -Name "WPF available" -Passed $true -Message "PresentationFramework loaded"
+    } catch {
+        Add-Check -Name "WPF available" -Passed $false -Message $_.Exception.Message
+    }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        Add-Check -Name "WinForms available" -Passed $true -Message "System.Windows.Forms loaded"
+    } catch {
+        Add-Check -Name "WinForms available" -Passed $false -Message $_.Exception.Message
+    }
+
+    # Recent log scan
+    $logDir = if ($global:LogPath) { Split-Path $global:LogPath } else { Join-Path $env:TEMP "LOGS_MIRACLEBOOT" }
+    $recentLogs = @()
+    if (Test-Path -LiteralPath $logDir) {
+        $recentLogs = Get-ChildItem -LiteralPath $logDir -Filter "MiracleBoot_*.log" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 3
+    }
+    $logScan = if ($recentLogs.Count -gt 0) {
+        Invoke-LogScanning -LogPaths ($recentLogs | ForEach-Object { $_.FullName })
+    } else {
+        @{
+            LogsScanned = 0
+            FindingsCount = 0
+            Findings = @()
+            Summary = 'No recent log files to scan'
+        }
+    }
+
+    # Error/Warning log check
+    $recentErrorWarning = $null
+    if (Test-Path -LiteralPath $logDir) {
+        $recentErrorWarning = Get-ChildItem -LiteralPath $logDir -Filter "MiracleBoot_ErrorsWarnings_*.log" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    }
+    $errorWarningInfo = @{
+        Path = if ($recentErrorWarning) { $recentErrorWarning.FullName } else { '' }
+        Exists = [bool]$recentErrorWarning
+        Entries = 0
+        RecentEntries = @()
+    }
+    if ($recentErrorWarning) {
+        try {
+            $lines = Get-Content -LiteralPath $recentErrorWarning.FullName -ErrorAction Stop
+            $errorWarningInfo.Entries = $lines.Count
+            $errorWarningInfo.RecentEntries = @($lines | Select-Object -Last 15)
+        } catch {
+            $errorWarningInfo.RecentEntries = @("Failed to read error/warning log: $($_.Exception.Message)")
+        }
+    }
+
+    $summary = @{
+        Total = $checks.Count
+        Passed = ($checks | Where-Object { $_.Passed }).Count
+        Failed = ($checks | Where-Object { -not $_.Passed }).Count
+    }
+
+    $report = @{
+        Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+        EnvironmentType = $EnvironmentType
+        SystemDrive = $env:SystemDrive
+        PowerShellVersion = $PSVersionTable.PSVersion.ToString()
+        PSEdition = $PSVersionTable.PSEdition
+        ApartmentState = $apartmentState
+        Checks = $checks
+        Summary = $summary
+        LogScan = $logScan
+        ErrorWarningLog = $errorWarningInfo
+    }
+
+    $reportDir = if ($global:LogPath) { Split-Path $global:LogPath } else { Join-Path $env:TEMP "LOGS_MIRACLEBOOT" }
+    if (-not (Test-Path -LiteralPath $reportDir)) {
+        $null = New-Item -ItemType Directory -Path $reportDir -Force -ErrorAction SilentlyContinue
+    }
+    $reportPath = Join-Path $reportDir ("MiracleBoot_SelfTest_{0}.json" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
+    $json = ConvertTo-SafeJson -InputObject $report -Depth 6
+    $json | Out-File -LiteralPath $reportPath -Encoding ASCII
+
+    Write-Host "[SELFTEST] Complete. Passed $($summary.Passed)/$($summary.Total) checks." -ForegroundColor Green
+    Write-Host "[SELFTEST] Report: $reportPath" -ForegroundColor Gray
+    if ($logScan.FindingsCount -gt 0) {
+        Write-Host "[SELFTEST] Log scan found $($logScan.FindingsCount) issue(s)." -ForegroundColor Yellow
+    }
+    if (-not $errorWarningInfo.Exists) {
+        Write-Host "[SELFTEST] Error/Warning log not found. This run will create it as needed." -ForegroundColor Yellow
+    }
+
+    return $report
+}
+
 # ============================================================================
 # SECTION 1: CORE DIAGNOSTICS & VALIDATION FUNCTIONS
 # ============================================================================
@@ -205,7 +485,7 @@ function ConvertTo-SafeJson {
     
     function ConvertToJsonInternal($obj, [int]$d) {
         if ($d -le 0) { return '{}' }
-        if ($obj -eq $null) { return 'null' }
+        if ($null -eq $obj) { return 'null' }
         
         $type = $obj.GetType().Name
         
@@ -411,6 +691,49 @@ function Test-ScriptFileExists {
         } catch {
             $result.Error = $_.Exception.Message
         }
+    }
+    
+    return $result
+}
+
+function Test-ScriptSyntax {
+    <#
+    .SYNOPSIS
+    Validates that a script file parses without syntax errors.
+    
+    .PARAMETER FilePath
+    Path relative to $PSScriptRoot
+    
+    .OUTPUTS
+    Hashtable with Valid, Error properties
+    #>
+    param([string]$FilePath)
+    
+    $fullPath = Join-Path $PSScriptRoot $FilePath
+    
+    $result = @{
+        FileName = $FilePath
+        FullPath = $fullPath
+        Valid = $false
+        Error = ''
+    }
+    
+    if (-not (Test-Path -LiteralPath $fullPath -ErrorAction SilentlyContinue)) {
+        $result.Error = 'File not found'
+        return $result
+    }
+    
+    try {
+        $content = Get-Content -LiteralPath $fullPath -Raw -ErrorAction Stop
+        $parseErrors = $null
+        [System.Management.Automation.PSParser]::Tokenize($content, [ref]$parseErrors) | Out-Null
+        if ($parseErrors -and $parseErrors.Count -gt 0) {
+            $result.Error = $parseErrors[0].Message
+        } else {
+            $result.Valid = $true
+        }
+    } catch {
+        $result.Error = $_.Exception.Message
     }
     
     return $result
@@ -723,8 +1046,8 @@ function Invoke-LogScanning {
         $logsScanned++
         
         try {
-            $matches = Select-String -LiteralPath $resolvedPath -Pattern $regexPattern -AllMatches -ErrorAction Stop
-            foreach ($match in $matches) {
+            $scanMatches = Select-String -LiteralPath $resolvedPath -Pattern $regexPattern -AllMatches -ErrorAction Stop
+            foreach ($match in $scanMatches) {
                 foreach ($m in $match.Matches) {
                     $findings += @{
                         File = $resolvedPath
@@ -738,7 +1061,7 @@ function Invoke-LogScanning {
             Write-Host "  [ERROR] Failed to read: $resolvedPath - $_" -ForegroundColor Red
         }
     }
-    
+
     Write-Host "  [COMPLETE] Scanned $logsScanned logs, found $($findings.Count) error(s)" -ForegroundColor Cyan
     
     return @{
@@ -813,6 +1136,16 @@ $envType = Get-EnvironmentType
 Write-ToLog "Environment detected: $envType" "INFO"
 $isAdmin = Test-AdminPrivileges
 
+if ($SelfTest) {
+    $null = Invoke-SelfTest -EnvironmentType $envType
+    Write-Host "Press any key to exit self-test..." -ForegroundColor Yellow
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    exit 0
+}
+
+# Ensure GUI-compatible host when running in FullOS
+Set-GuiHostForFullOS -EnvironmentType $envType
+
 # Banner
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
@@ -821,6 +1154,7 @@ Write-Host "╚═════════════════════�
 Write-Host ""
 Write-Host "Environment: $envType | SystemDrive: $env:SystemDrive | Admin: $(if ($isAdmin) { 'YES' } else { 'NO' })" -ForegroundColor Gray
 Write-Host "Log File: $global:LogPath" -ForegroundColor Gray
+Write-Host "Error/Warning Log: $global:ErrorWarningLogPath" -ForegroundColor Gray
 Write-Host ""
 
 # CRITICAL: Block if not admin
@@ -955,10 +1289,12 @@ if ($envType -eq 'FullOS') {
         Write-Host "[LAUNCH] GUI failed, falling back to TUI..." -ForegroundColor Yellow
         Write-Host "        Error Details: $_" -ForegroundColor DarkYellow
         Write-ToLog "GUI fallback reason: $($_.Exception.Message)" "WARNING"
+        Wait-ForUserContinue -Message "GUI failed. Review the error details above, then press any key to continue to TUI..."
     }
 } else {
     Write-ToLog "Non-FullOS environment detected ($envType), skipping GUI" "WARNING"
     Write-Host "[LAUNCH] Non-FullOS environment ($envType), using TUI only..." -ForegroundColor Yellow
+    Wait-ForUserContinue -Message "GUI is unavailable in this environment. Review the message above, then press any key to continue to TUI..."
 }
 
 # Fallback: TUI mode
