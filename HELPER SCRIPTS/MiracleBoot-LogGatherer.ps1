@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    MiracleBoot Log Gatherer & Analyzer
+    Write-Host "MiracleBoot Log Gatherer and Analyzer v$ScriptVersion" -ForegroundColor Cyan
     
     Systematically collects and analyzes diagnostic logs following the TIER-based 
     priority system for root cause analysis of boot failures and system issues.
@@ -111,13 +111,13 @@ function Gather-BootCriticalDumps {
     $MemoryDmp = Join-Path $OfflineSystemDrive "\Windows\MEMORY.DMP"
     if (Test-Path $MemoryDmp) {
         $Size = (Get-Item $MemoryDmp).Length / 1GB
-        Write-Log "  ✓ MEMORY.DMP found (${Size:F2} GB)" "SUCCESS"
+        Write-Log "  - MEMORY.DMP found (${Size:F2} GB)" "SUCCESS"
         Add-Finding "TIER_1_CriticalDumps" "Kernel Dump" "MEMORY.DMP exists - indicates kernel crash" "CRITICAL" "Analyze with WinDbg or Crash Dump Analyzer"
         
         # Copy for analysis
         Copy-Item $MemoryDmp "$OutputDirectory\MEMORY.DMP" -Force -ErrorAction SilentlyContinue
     } else {
-        Write-Log "  ✗ MEMORY.DMP not found" "WARNING"
+        Write-Log "  - MEMORY.DMP not found" "WARNING"
     }
     
     # LiveKernelReports
@@ -125,7 +125,7 @@ function Gather-BootCriticalDumps {
     if (Test-Path $LiveKernelPath) {
         $Reports = Get-ChildItem $LiveKernelPath -Recurse -Filter "*.dmp" | Measure-Object
         if ($Reports.Count -gt 0) {
-            Write-Log "  ✓ LiveKernelReports found ($($Reports.Count) dumps)" "SUCCESS"
+            Write-Log "  - LiveKernelReports found ($($Reports.Count) dumps)" "SUCCESS"
             Add-Finding "TIER_1_CriticalDumps" "LiveKernelReports" "Found $($Reports.Count) kernel reports" "WARNING" "Check STORAGE, WATCHDOG, NDIS, USB subfolders"
             
             # Copy reports
@@ -144,7 +144,7 @@ function Gather-BootCriticalDumps {
             }
         }
     } else {
-        Write-Log "  ✗ LiveKernelReports not found" "INFO"
+        Write-Log "  - LiveKernelReports not found" "INFO"
     }
     
     # Minidumps (lower priority)
@@ -152,7 +152,7 @@ function Gather-BootCriticalDumps {
     if (Test-Path $MinidumpPath) {
         $Minidumps = Get-ChildItem $MinidumpPath -Filter "*.dmp" | Measure-Object
         if ($Minidumps.Count -gt 0) {
-            Write-Log "  ✓ Minidumps found ($($Minidumps.Count))" "INFO"
+            Write-Log "  - Minidumps found ($($Minidumps.Count))" "INFO"
             Add-Finding "TIER_1_CriticalDumps" "Minidumps" "Found $($Minidumps.Count) minidumps (lower priority)" "INFO" "Analyze if MEMORY.DMP and LiveKernelReports empty"
             Copy-Item $MinidumpPath "$OutputDirectory\Minidump\" -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -175,13 +175,13 @@ function Gather-BootPipelineLogs {
     foreach ($PantherPath in $PantherPaths) {
         if (Test-Path $PantherPath) {
             $PantherFound = $true
-            Write-Log "  ✓ Panther logs found at $PantherPath" "SUCCESS"
+            Write-Log "  - Panther logs found at $PantherPath" "SUCCESS"
             Add-Finding "TIER_2_BootLogs" "Setup Logs" "Panther logs located" "CRITICAL" "Parse setupact.log and setuperr.log"
             
             foreach ($LogFile in @("setupact.log", "setuperr.log")) {
                 $FullPath = Join-Path $PantherPath $LogFile
                 if (Test-Path $FullPath) {
-                    Write-Log "    ✓ Found $LogFile" "SUCCESS"
+                    Write-Log "    - Found $LogFile" "SUCCESS"
                     Copy-Item $FullPath "$OutputDirectory\$LogFile" -Force -ErrorAction SilentlyContinue
                     
                     # Parse for critical errors
@@ -194,19 +194,19 @@ function Gather-BootPipelineLogs {
     }
     
     if (-not $PantherFound) {
-        Write-Log "  ✗ Panther logs not found" "WARNING"
+        Write-Log "  - Panther logs not found" "WARNING"
     }
     
     # Boot logging (ntbtlog.txt)
     $NbtLog = Join-Path $OfflineSystemDrive "\Windows\ntbtlog.txt"
     if (Test-Path $NbtLog) {
-        Write-Log "  ✓ ntbtlog.txt found" "SUCCESS"
+        Write-Log "  - ntbtlog.txt found" "SUCCESS"
         Add-Finding "TIER_2_BootLogs" "Boot Trace Log" "ntbtlog.txt exists - boot logging was enabled" "WARNING" "Check for failed driver loads"
         
         Copy-Item $NbtLog "$OutputDirectory\ntbtlog.txt" -Force -ErrorAction SilentlyContinue
         Analyze-BootTraceLog $NbtLog
     } else {
-        Write-Log "  ✗ ntbtlog.txt not found" "INFO"
+        Write-Log "  - ntbtlog.txt not found" "INFO"
     }
     
     # Boot event logs from LogFiles
@@ -215,7 +215,7 @@ function Gather-BootPipelineLogs {
         foreach ($LogName in @("SrtTrail.txt", "BootCKCL.etl")) {
             $FullPath = Join-Path $LogFilesPath $LogName
             if (Test-Path $FullPath) {
-                Write-Log "  ✓ Found $LogName" "SUCCESS"
+                Write-Log "  - Found $LogName" "SUCCESS"
                 Add-Finding "TIER_2_BootLogs" "Diagnostics" "Found $LogName" "WARNING" "Check for BCD and boot environment issues"
                 Copy-Item $FullPath "$OutputDirectory\$LogName" -Force -ErrorAction SilentlyContinue
             }
@@ -231,13 +231,13 @@ function Gather-EventLogs {
     
     $EventLogPath = Join-Path $OfflineSystemDrive "\Windows\System32\winevt\Logs\System.evtx"
     if (Test-Path $EventLogPath) {
-        Write-Log "  ✓ System.evtx found" "SUCCESS"
+        Write-Log "  - System.evtx found" "SUCCESS"
         Add-Finding "TIER_3_EventLogs" "System Event Log" "System.evtx located" "CRITICAL" "Look for Event 1001 (BugCheck), Event 41 (Kernel-Power)"
         
         Copy-Item $EventLogPath "$OutputDirectory\System.evtx" -Force -ErrorAction SilentlyContinue
         Analyze-EventLog $EventLogPath
     } else {
-        Write-Log "  ✗ System.evtx not found (offline system)" "INFO"
+        Write-Log "  - System.evtx not found (offline system)" "INFO"
     }
 }
 
@@ -253,7 +253,7 @@ function Gather-BootStructure {
     # Registry: boot-critical services
     $RegistryPath = Join-Path $OfflineSystemDrive "\Windows\System32\config\SYSTEM"
     if (Test-Path $RegistryPath) {
-        Write-Log "  ✓ SYSTEM registry hive found" "SUCCESS"
+        Write-Log "  - SYSTEM registry hive found" "SUCCESS"
         Add-Finding "TIER_4_BootStructure" "Registry" "SYSTEM hive accessible for offline analysis" "WARNING" "Check HKLM\SYSTEM\ControlSet001\Services for storage drivers"
         
         Copy-Item $RegistryPath "$OutputDirectory\SYSTEM_hive" -Force -ErrorAction SilentlyContinue
@@ -276,11 +276,11 @@ function Gather-ImageContext {
     # Check EFI structure
     $EFIPath = Join-Path $OfflineSystemDrive "\EFI\Microsoft\Boot\"
     if (Test-Path $EFIPath) {
-        Write-Log "  ✓ UEFI boot structure detected" "INFO"
+        Write-Log "  - UEFI boot structure detected" "INFO"
         Add-Finding "TIER_5_Context" "Boot Mode" "UEFI boot detected" "INFO" ""
     }
     
-    Add-Finding "TIER_5_Context" "Image Context" "⚠️  Manual check required: Was image restored from SATA→NVMe? RAID↔AHCI? VMD toggled?" "WARNING" "INACCESSIBLE_BOOT_DEVICE is 80% storage context mismatch"
+    Add-Finding "TIER_5_Context" "Image Context" "-  Manual check required: Was image restored from SATA-NVMe? RAID-AHCI? VMD toggled?" "WARNING" "INACCESSIBLE_BOOT_DEVICE is 80% storage context mismatch"
 }
 
 #endregion
@@ -355,43 +355,43 @@ function Build-RootCauseAnalysis {
     Write-Log "`n=== ROOT CAUSE ANALYSIS ===" "INFO"
     
     $Analysis = @"
-╔════════════════════════════════════════════════════════════════════╗
-║                     ROOT CAUSE ANALYSIS REPORT                     ║
-║                        $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')                          ║
-╚════════════════════════════════════════════════════════════════════╝
+----------------------------------------------------------------------
+-                     ROOT CAUSE ANALYSIS REPORT                     -
+-                        $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')                          -
+----------------------------------------------------------------------
 
 DECISION TREE FOR INACCESSIBLE_BOOT_DEVICE / WON'T BOOT:
-─────────────────────────────────────────────────────────
+------------------------------------------------------------------------------------------------------------------
 
 1. MEMORY.DMP exists?
-   → YES: Analyze with WinDbg or Crash Dump Analyzer (highest priority)
-   → NO: Continue to step 2
+   - YES: Analyze with WinDbg or Crash Dump Analyzer (highest priority)
+   - NO: Continue to step 2
 
 2. LiveKernelReports\STORAGE exists?
-   → YES: Storage/controller hang detected → Inject correct driver
-   → NO: Continue to step 3
+   - YES: Storage/controller hang detected - Inject correct driver
+   - NO: Continue to step 3
 
 3. setupact.log / setuperr.log exist?
-   → YES: Parse for boot environment mismatch or CBS corruption
-   → NO: Continue to step 4
+   - YES: Parse for boot environment mismatch or CBS corruption
+   - NO: Continue to step 4
 
 4. System.evtx shows crashes?
-   → YES: Review Event 1001 (BugCheck), Event 41 (Kernel-Power)
-   → NO: Continue to step 5
+   - YES: Review Event 1001 (BugCheck), Event 41 (Kernel-Power)
+   - NO: Continue to step 5
 
 5. ntbtlog.txt shows storage driver failed?
-   → YES: Enable driver in registry or inject in WinPE
-   → NO: Continue to step 6
+   - YES: Enable driver in registry or inject in WinPE
+   - NO: Continue to step 6
 
 6. BCD missing / corrupt?
-   → YES: Rebuild: bcdboot C:\Windows /s S: /f UEFI
-   → NO: Check context (step 7)
+   - YES: Rebuild: bcdboot C:\Windows /s S: /f UEFI
+   - NO: Check context (step 7)
 
-7. Image context (SATA→NVMe, RAID↔AHCI, VMD toggle)?
-   → YES: Inject correct driver for new hardware
-   → NO: Escalate - needs deeper analysis
+7. Image context (SATA-NVMe, RAID-AHCI, VMD toggle)?
+   - YES: Inject correct driver for new hardware
+   - NO: Escalate - needs deeper analysis
 
-─────────────────────────────────────────────────────────
+------------------------------------------------------------------------------------------------------------------
 
 FINDINGS SUMMARY:
 "@
@@ -404,7 +404,7 @@ FINDINGS SUMMARY:
             foreach ($Finding in $TierFindings) {
                 $Analysis += "`n  [$($Finding.Severity)] $($Finding.Finding)`n"
                 if ($Finding.Recommendation) {
-                    $Analysis += "      → $($Finding.Recommendation)`n"
+                    $Analysis += "      - $($Finding.Recommendation)`n"
                 }
             }
         }
@@ -484,9 +484,9 @@ function Export-AnalysisResults {
 
 #region Main Execution
 function Main {
-    Write-Host "╔═══════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║       MiracleBoot Log Gatherer & Analyzer v$ScriptVersion        ║" -ForegroundColor Cyan
-    Write-Host "╚═══════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "-------------------------------------------------------------" -ForegroundColor Cyan
+    Write-Host "MiracleBoot Log Gatherer and Analyzer v$ScriptVersion" -ForegroundColor Cyan
+    Write-Host "-------------------------------------------------------------" -ForegroundColor Cyan
     
     Write-Log "Script started" "INFO"
     Write-Log "Output Directory: $OutputDirectory" "INFO"
@@ -520,7 +520,7 @@ function Main {
     }
     
     Write-Log "`nScript completed" "INFO"
-    Write-Host "`n✓ Analysis complete. Check $OutputDirectory for results." -ForegroundColor Green
+    Write-Host "`n- Analysis complete. Check $OutputDirectory for results." -ForegroundColor Green
 }
 
 Main

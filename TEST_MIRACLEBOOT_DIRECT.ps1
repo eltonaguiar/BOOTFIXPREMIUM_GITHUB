@@ -11,9 +11,9 @@
 Set-Location 'c:\Users\zerou\Downloads\MiracleBoot_v7_1_1 - Github code'
 
 Write-Host ""
-Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║      MiracleBoot v7.2 - Admin Test Sequence                ║" -ForegroundColor Cyan
-Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host  ================================================================== -ForegroundColor Cyan
+Write-Host  MiracleBoot v7.2 - Admin Test Sequence  -ForegroundColor Cyan
+Write-Host  ================================================================== -ForegroundColor Cyan
 Write-Host ""
 
 Write-Host "STEP 1: Pre-Flight Verification" -ForegroundColor Yellow

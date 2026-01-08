@@ -102,7 +102,7 @@ try {
         Sort-Object TimeCreated -Descending
     
     $criticalEvents | Export-Csv -Path "$logPath\EventViewer_Critical_All.csv" -NoTypeInformation -Encoding UTF8
-    Write-Status "✓ Exported $(($criticalEvents | Measure-Object).Count) Critical events" "Success"
+    Write-Status "V Exported $(($criticalEvents | Measure-Object).Count) Critical events" "Success"
     
 } catch {
     Write-Status "Failed to collect Event Viewer logs: $_" "Error"
@@ -116,7 +116,7 @@ Write-Status "COLLECTING BOOT LOG..." "Info"
 try {
     if (Test-Path "C:\Windows\ntbtlog.txt") {
         Copy-Item "C:\Windows\ntbtlog.txt" -Destination "$logPath\ntbtlog.txt" -Force
-        Write-Status "✓ Boot log copied" "Success"
+        Write-Status "V Boot log copied" "Success"
         
         # Parse boot log for analysis
         $bootLog = Get-Content "C:\Windows\ntbtlog.txt"
@@ -146,7 +146,7 @@ try {
     $osInfo = Get-WmiObject Win32_OperatingSystem | 
         Select-Object Caption, BuildNumber, OSArchitecture, LastBootUpTime
     $osInfo | Out-File "$logPath\SystemInfo_OS.txt"
-    Write-Status "✓ OS information collected" "Success"
+    Write-Status "V OS information collected" "Success"
     
     # Computer info
     $computerInfo = Get-WmiObject Win32_ComputerSystem |
@@ -193,7 +193,7 @@ try {
     $autoServices = $services | Where-Object {$_.StartType -eq 'Automatic'} | Measure-Object
     $stoppedServices = $services | Where-Object {$_.Status -eq 'Stopped' -and $_.StartType -eq 'Automatic'} | Measure-Object
     
-    Write-Status "✓ Services: $($services | Measure-Object | Select-Object -ExpandProperty Count) total" "Success"
+    Write-Status "V Services: $($services | Measure-Object | Select-Object -ExpandProperty Count) total" "Success"
     Write-Status "  - Automatic: $($autoServices.Count)" "Info"
     Write-Status "  - Stopped (should be running): $($stoppedServices.Count)" "Warning"
     
@@ -214,7 +214,7 @@ try {
     
     if ($reliabilityEvents) {
         $reliabilityEvents | Export-Csv -Path "$logPath\ReliabilityMonitor_Events.csv" -NoTypeInformation
-        Write-Status "✓ Exported $(($reliabilityEvents | Measure-Object).Count) reliability events" "Success"
+        Write-Status "V Exported $(($reliabilityEvents | Measure-Object).Count) reliability events" "Success"
     }
 } catch {
     Write-Status "Failed to collect reliability monitor data: $_" "Error"
@@ -238,7 +238,7 @@ try {
     
     $disk | Out-File "$logPath\PerformanceCounters_Disk.txt"
     
-    Write-Status "✓ Performance counters collected" "Success"
+    Write-Status "V Performance counters collected" "Success"
 } catch {
     Write-Status "Failed to collect performance counters: $_" "Error"
 }
@@ -252,7 +252,7 @@ if ($IncludeProcmon) {
     try {
         if (Test-Path "C:\Windows\Temp\ProcmonBoot.pml") {
             Copy-Item "C:\Windows\Temp\ProcmonBoot.pml" -Destination "$logPath\ProcmonBoot.pml" -Force
-            Write-Status "✓ Procmon boot log found and copied" "Success"
+            Write-Status "V Procmon boot log found and copied" "Success"
         } else {
             Write-Status "Procmon boot log not found. Enable boot logging in Procmon and restart." "Warning"
         }
@@ -288,7 +288,7 @@ if ($IncludeAutoruns) {
         if ($autorunsPath) {
             # Run Autoruns and export
             & $autorunsPath -accepteula -a * -s "$logPath\Autoruns_All.csv" -z "$logPath\Autoruns_All.arn" 2>&1 | Out-Null
-            Write-Status "✓ Autoruns data exported" "Success"
+            Write-Status "V Autoruns data exported" "Success"
         } else {
             Write-Status "Autoruns not found. Download from Microsoft Sysinternals." "Warning"
         }
@@ -306,10 +306,10 @@ try {
     $reportPath = "$logPath\COLLECTION_SUMMARY.txt"
     
     $report = @"
-================================================================================
+===============================================================================
 WINDOWS LOG COLLECTION SUMMARY
 Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-================================================================================
+===============================================================================
 
 COLLECTION PARAMETERS
 ---------------------
@@ -339,9 +339,9 @@ FILES COLLECTED
     }
     
     $report += @"
-`n
+
 ANALYSIS RECOMMENDATIONS
------------`-----------
+-----------------------
 1. Review Event Viewer logs for critical errors:
    - EventViewer_System_7Days.csv
    - EventViewer_Critical_All.csv
@@ -369,11 +369,11 @@ NEXT STEPS
 4. Investigate failed driver loads
 5. Review startup items for unnecessary programs
 
-================================================================================
+===============================================================================
 "@
     
     $report | Out-File -FilePath $reportPath -Encoding UTF8
-    Write-Status "✓ Summary report generated" "Success"
+    Write-Status "V Summary report generated" "Success"
     
 } catch {
     Write-Status "Failed to generate summary: $_" "Error"
@@ -395,3 +395,6 @@ Write-Host "4. Review WINDOWS_LOG_ANALYSIS_GUIDE.md for detailed interpretation`
 
 Write-Host "You can now analyze these logs with:" -ForegroundColor Yellow
 Write-Host ".\Windows_Log_Analyzer_Interactive.ps1 -LogPath `"$logPath`""
+
+
+

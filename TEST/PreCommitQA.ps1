@@ -34,9 +34,9 @@ $ColorInfo = "Cyan"
 function Write-TestHeader {
     param([string]$Title, [int]$Number)
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor $ColorInfo
-    Write-Host "║ TEST $Number: $Title" -ForegroundColor $ColorInfo
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor $ColorInfo
+    Write-Host "" -ForegroundColor $ColorInfo
+    Write-Host ("TEST {0}: {1}" -f $Number, $Title) -ForegroundColor $ColorInfo
+    Write-Host "" -ForegroundColor $ColorInfo
 }
 
 function Test-Result {
@@ -47,14 +47,14 @@ function Test-Result {
     )
     
     if ($Passed) {
-        Write-Host "  ✓ PASS: $Message" -ForegroundColor $ColorPass
+        Write-Host "   PASS: $Message" -ForegroundColor $ColorPass
         $script:testsPassed++
     } else {
         if ($Critical) {
-            Write-Host "  ✗ CRITICAL FAIL: $Message" -ForegroundColor $ColorFail
+            Write-Host "   CRITICAL FAIL: $Message" -ForegroundColor $ColorFail
             $script:criticalFailures++
         } else {
-            Write-Host "  ✗ FAIL: $Message" -ForegroundColor $ColorFail
+            Write-Host "   FAIL: $Message" -ForegroundColor $ColorFail
         }
         $script:testsFailed++
     }
@@ -62,7 +62,7 @@ function Test-Result {
 
 function Write-SubTest {
     param([string]$Text)
-    Write-Host "    → $Text" -ForegroundColor $ColorInfo
+    Write-Host "     $Text" -ForegroundColor $ColorInfo
 }
 
 # ============================================================================
@@ -70,12 +70,12 @@ function Write-SubTest {
 # ============================================================================
 
 Write-Host ""
-Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor $ColorInfo
-Write-Host "║     MiracleBoot v7.2.0 - Pre-Commit Quality Assurance         ║" -ForegroundColor $ColorInfo
-Write-Host "║                                                                ║" -ForegroundColor $ColorInfo
-Write-Host "║  This script validates that the application is production-    ║" -ForegroundColor $ColorInfo
-Write-Host "║  ready and safe to release. ALL TESTS MUST PASS.              ║" -ForegroundColor $ColorInfo
-Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor $ColorInfo
+Write-Host "" -ForegroundColor $ColorInfo
+Write-Host "     MiracleBoot v7.2.0 - Pre-Commit Quality Assurance         " -ForegroundColor $ColorInfo
+Write-Host "                                                                " -ForegroundColor $ColorInfo
+Write-Host "  This script validates that the application is production-    " -ForegroundColor $ColorInfo
+Write-Host "  ready and safe to release. ALL TESTS MUST PASS.              " -ForegroundColor $ColorInfo
+Write-Host "" -ForegroundColor $ColorInfo
 Write-Host ""
 
 # ============================================================================
@@ -165,7 +165,7 @@ foreach ($file in $psFiles) {
 
 if (-not $syntaxOK) {
     Write-Host ""
-    Write-Host "❌ SYNTAX ERRORS DETECTED - CANNOT CONTINUE" -ForegroundColor $ColorFail
+    Write-Host " SYNTAX ERRORS DETECTED - CANNOT CONTINUE" -ForegroundColor $ColorFail
     Write-Host ""
     exit 1
 }
@@ -205,7 +205,7 @@ Write-TestHeader "Error Handling Validation" 7
 
 Test-Result ($guiContent -match "try\s*\{") "Try-catch blocks present" $false
 Test-Result ($guiContent -match "catch\s*.*\{") "Catch handlers present" $false
-Test-Result ($guiContent -match "\\\$ErrorActionPreference\s*=\s*['\"]") "Error handling configured" $false
+Test-Result ($guiContent -match '\\$ErrorActionPreference\s*=\s*["'']') "Error handling configured" $false
 Test-Result ($guiContent -match "Write-Error") "Error reporting present" $false
 
 # ============================================================================
@@ -358,9 +358,9 @@ foreach ($tool in $toolsToCheck.Keys) {
 # ============================================================================
 
 Write-Host ""
-Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor $ColorInfo
-Write-Host "║ QA TEST SUMMARY" -ForegroundColor $ColorInfo
-Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor $ColorInfo
+Write-Host "" -ForegroundColor $ColorInfo
+Write-Host " QA TEST SUMMARY" -ForegroundColor $ColorInfo
+Write-Host "" -ForegroundColor $ColorInfo
 Write-Host ""
 
 Write-Host "  Tests Passed:         $testsPassed" -ForegroundColor $ColorPass
@@ -369,7 +369,7 @@ Write-Host "  Critical Failures:    $criticalFailures" -ForegroundColor $(if ($c
 Write-Host ""
 
 if ($criticalFailures -gt 0) {
-    Write-Host "❌ CRITICAL FAILURES DETECTED" -ForegroundColor $ColorFail
+    Write-Host " CRITICAL FAILURES DETECTED" -ForegroundColor $ColorFail
     Write-Host ""
     Write-Host "DO NOT COMMIT - Fix critical failures first" -ForegroundColor $ColorFail
     Write-Host ""
@@ -377,17 +377,17 @@ if ($criticalFailures -gt 0) {
 }
 
 if ($testsFailed -eq 0) {
-    Write-Host "✅ ALL QA TESTS PASSED - SAFE TO COMMIT" -ForegroundColor $ColorPass
+    Write-Host " ALL QA TESTS PASSED - SAFE TO COMMIT" -ForegroundColor $ColorPass
     Write-Host ""
     Write-Host "Status: Ready for Production Release" -ForegroundColor $ColorPass
     Write-Host ""
     exit 0
 } elseif ($Force) {
-    Write-Host "⚠️  TESTS FAILED BUT FORCE FLAG SET - PROCEEDING" -ForegroundColor $ColorWarn
+    Write-Host "  TESTS FAILED BUT FORCE FLAG SET - PROCEEDING" -ForegroundColor $ColorWarn
     Write-Host ""
     exit 0
 } else {
-    Write-Host "❌ TESTS FAILED - REVIEW AND FIX" -ForegroundColor $ColorFail
+    Write-Host " TESTS FAILED - REVIEW AND FIX" -ForegroundColor $ColorFail
     Write-Host ""
     Write-Host "Review the failures above and fix before committing." -ForegroundColor $ColorFail
     Write-Host ""

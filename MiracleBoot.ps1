@@ -76,6 +76,7 @@ function Initialize-LogSystem {
     Write-ToLog "MiracleBoot v7.2.0 - Session Started" "INFO"
     Write-ToLog "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" "INFO"
     Write-ToLog "Environment: $(Get-EnvironmentType)" "INFO"
+    Write-ToLog "Firmware: $(Get-FirmwareType)" "INFO"
     Write-ToLog "Administrator: $(if (Test-AdminPrivileges) { 'Yes' } else { 'No' })" "INFO"
     Write-ToLog "PowerShell: $($PSVersionTable.PSVersion)" "INFO"
     Write-ToLog "════════════════════════════════════════════════════════════════" "INFO"
@@ -325,6 +326,57 @@ function Get-EnvironmentType {
     return 'FullOS'
 }
 
+function Get-FirmwareType {
+    <#
+    .SYNOPSIS
+    Detects firmware type using Windows registry (UEFI vs BIOS).
+    #>
+    try {
+        $fw = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name 'PEFirmwareType' -ErrorAction Stop).PEFirmwareType
+        switch ($fw) {
+            2 { return 'UEFI' }
+            1 { return 'BIOS' }
+            default { return 'Unknown' }
+        }
+    } catch {
+        return 'Unknown'
+    }
+}
+
+function Get-EfiSystemPartitionInfo {
+    <#
+    .SYNOPSIS
+    Attempts to locate EFI System Partitions (ESP) on GPT disks.
+    #>
+    $result = @{
+        Available = $false
+        Count = 0
+        Partitions = @()
+        Message = ''
+    }
+
+    $cmd = Test-CommandExists 'Get-Partition'
+    if (-not $cmd.Available) {
+        $result.Message = 'Get-Partition not available'
+        return $result
+    }
+
+    try {
+        $espGuid = '{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}'
+        $parts = Get-Partition -ErrorAction Stop | Where-Object {
+            $_.GptType -eq $espGuid -or $_.Type -eq 'System'
+        }
+        $result.Available = $true
+        $result.Count = $parts.Count
+        $result.Partitions = $parts | Select-Object DiskNumber, PartitionNumber, Size, GptType, Type
+        $result.Message = if ($result.Count -gt 0) { 'ESP detected' } else { 'ESP not found' }
+        return $result
+    } catch {
+        $result.Message = $_.Exception.Message
+        return $result
+    }
+}
+
 function Test-ScriptFileExists {
     <#
     .SYNOPSIS
@@ -394,6 +446,64 @@ function Test-CommandExists {
     return $result
 }
 
+function Get-BitLockerStatus {
+    <#
+    .SYNOPSIS
+    Retrieves BitLocker status for a drive when tools are available.
+    #>
+    param([string]$DriveLetter = $env:SystemDrive)
+
+    $result = @{
+        Available = $false
+        Drive = $DriveLetter
+        ProtectionStatus = 'Unknown'
+        LockStatus = 'Unknown'
+        Message = ''
+    }
+
+    if (-not $DriveLetter) {
+        $result.Message = 'No drive letter provided'
+        return $result
+    }
+
+    $bitlockerCmd = Test-CommandExists 'Get-BitLockerVolume'
+    if ($bitlockerCmd.Available) {
+        try {
+            $info = Get-BitLockerVolume -MountPoint $DriveLetter -ErrorAction Stop
+            $result.Available = $true
+            $result.ProtectionStatus = if ($info.ProtectionStatus -eq 'On') { 'On' } else { 'Off' }
+            $result.LockStatus = if ($info.LockStatus -eq 'Locked') { 'Locked' } else { 'Unlocked' }
+            $result.Message = 'Queried via Get-BitLockerVolume'
+            return $result
+        } catch {
+            $result.Message = $_.Exception.Message
+            return $result
+        }
+    }
+
+    $manageBdeCmd = Test-CommandExists 'manage-bde.exe'
+    if ($manageBdeCmd.Available) {
+        try {
+            $output = & manage-bde.exe -status $DriveLetter 2>$null
+            $result.Available = $true
+            if ($output -match 'Protection Status:\s+(\w+)') {
+                $result.ProtectionStatus = $matches[1]
+            }
+            if ($output -match 'Lock Status:\s+(\w+)') {
+                $result.LockStatus = $matches[1]
+            }
+            $result.Message = 'Queried via manage-bde'
+            return $result
+        } catch {
+            $result.Message = $_.Exception.Message
+            return $result
+        }
+    }
+
+    $result.Message = 'BitLocker tools not available'
+    return $result
+}
+
 function Invoke-PreflightCheck {
     <#
     .SYNOPSIS
@@ -454,7 +564,7 @@ function Invoke-PreflightCheck {
     }
     
     # Check 3: Core Commands
-    $requiredCommands = @('Get-Volume', 'Get-NetAdapter', 'bcdedit')
+    $requiredCommands = @('Get-Volume', 'Get-NetAdapter', 'bcdedit', 'bcdboot', 'dism')
     if ($EnvironmentType -eq 'FullOS') {
         $requiredCommands += @('Add-Type')
     }
@@ -492,6 +602,52 @@ function Invoke-PreflightCheck {
     if (-not $systemDriveValid) {
         Write-Host " FAIL" -ForegroundColor Red
         $allPassed = $false
+    } else {
+        Write-Host " OK" -ForegroundColor Green
+    }
+
+    # Check 5: Firmware Type (informational)
+    Write-Host "[CHECK] Firmware type..." -ForegroundColor Gray -NoNewline
+    $firmwareType = Get-FirmwareType
+    $firmwareCheck = @{
+        Name = 'Firmware Type'
+        Category = 'Environment'
+        Required = $false
+        Passed = $true
+        Message = $firmwareType
+    }
+    $checks += $firmwareCheck
+    Write-Host " OK" -ForegroundColor Green
+
+    # Check 6: EFI System Partition presence (informational for UEFI)
+    Write-Host "[CHECK] EFI System Partition..." -ForegroundColor Gray -NoNewline
+    $espInfo = Get-EfiSystemPartitionInfo
+    $espCheck = @{
+        Name = 'EFI System Partition'
+        Category = 'Boot'
+        Required = $false
+        Passed = $true
+        Message = $espInfo.Message
+        Details = $espInfo
+    }
+    $checks += $espCheck
+    Write-Host " OK" -ForegroundColor Green
+
+    # Check 7: BitLocker status (informational)
+    Write-Host "[CHECK] BitLocker status..." -ForegroundColor Gray -NoNewline
+    $bitlockerInfo = Get-BitLockerStatus -DriveLetter $env:SystemDrive
+    $isLocked = ($bitlockerInfo.ProtectionStatus -eq 'On' -and $bitlockerInfo.LockStatus -eq 'Locked')
+    $bitlockerCheck = @{
+        Name = 'BitLocker Status'
+        Category = 'Security'
+        Required = $false
+        Passed = -not $isLocked
+        Message = "$($bitlockerInfo.ProtectionStatus)/$($bitlockerInfo.LockStatus)"
+        Details = $bitlockerInfo
+    }
+    $checks += $bitlockerCheck
+    if ($isLocked) {
+        Write-Host " WARN" -ForegroundColor Yellow
     } else {
         Write-Host " OK" -ForegroundColor Green
     }

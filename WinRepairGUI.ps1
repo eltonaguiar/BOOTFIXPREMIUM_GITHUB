@@ -189,7 +189,7 @@ function Start-GUI {
 <Window x:Class="MiracleBoot.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="MiracleBoot v7.2.0 - Windows Recovery Toolkit"
+        Title="MiracleBoot v7.2.0 - Windows Recovery Toolkit - VisualStudio - github"
         Height="650"
         Width="900"
         WindowStartupLocation="CenterScreen"
@@ -199,7 +199,7 @@ function Start-GUI {
     <Grid>
         <StackPanel Margin="20">
             <!-- Header -->
-            <TextBlock Text="MiracleBoot v7.2.0 - Windows Recovery Toolkit" 
+            <TextBlock Text="MiracleBoot v7.2.0 - Windows Recovery Toolkit - VisualStudio - github" 
                        FontSize="24" 
                        FontWeight="Bold" 
                        Foreground="#0078D4" 
@@ -348,6 +348,38 @@ function Start-GUI {
         $switchToTUIButton = $window.FindName("SwitchToTUIButton")
         $repairWindowsButton = $window.FindName("RepairWindowsButton")
         $viewLogButton = $window.FindName("ViewLogButton")
+
+        # Heartbeat status updates for long-running operations
+        $heartbeatTimer = New-Object System.Windows.Threading.DispatcherTimer
+        $heartbeatTimer.Interval = [TimeSpan]::FromSeconds(5)
+        $heartbeatMessage = $null
+        $heartbeatStart = $null
+        $heartbeatTimer.Add_Tick({
+            if ($statusText -and $heartbeatStart -and $heartbeatMessage) {
+                $elapsed = New-TimeSpan -Start $heartbeatStart -End (Get-Date)
+                $statusText.Text = "$heartbeatMessage (elapsed: $($elapsed.ToString('hh\:mm\:ss')))"
+            }
+        })
+
+        function Start-Heartbeat {
+            param([string]$Message)
+            $script:heartbeatMessage = $Message
+            $script:heartbeatStart = Get-Date
+            if ($statusText) {
+                $statusText.Text = "$Message (elapsed: 00:00:00)"
+            }
+            if (-not $heartbeatTimer.IsEnabled) {
+                $heartbeatTimer.Start()
+            }
+        }
+
+        function Stop-Heartbeat {
+            if ($heartbeatTimer.IsEnabled) {
+                $heartbeatTimer.Stop()
+            }
+            $script:heartbeatMessage = $null
+            $script:heartbeatStart = $null
+        }
         
         Log-GUIEvent "WINDOW" "Attaching event handlers..."
         
@@ -418,7 +450,7 @@ Computer: $env:COMPUTERNAME
         if ($repairWindowsButton) {
             $repairWindowsButton.Add_Click({
                 Log-GUIEvent "ACTION" "Repair Windows button clicked"
-                $statusText.Text = "Launching Repair-Install tool..."
+                Start-Heartbeat "Running Repair-Install readiness check"
                 Write-Host "`nLaunching Repair-Install Readiness Check from GUI..." -ForegroundColor Cyan
                 
                 if (Get-Command Invoke-RepairInstallReadinessCheck -ErrorAction SilentlyContinue) {
@@ -429,10 +461,13 @@ Computer: $env:COMPUTERNAME
                     } catch {
                         $statusText.Text = "Error during repair check: $_"
                         Log-GUIEvent "ACTION" "ERROR - Repair check failed" $_.Exception.Message
+                    } finally {
+                        Stop-Heartbeat
                     }
                 } else {
                     $statusText.Text = "Repair-Install module not available"
                     Log-GUIEvent "ACTION" "ERROR - Repair-Install module not found"
+                    Stop-Heartbeat
                 }
             })
         }

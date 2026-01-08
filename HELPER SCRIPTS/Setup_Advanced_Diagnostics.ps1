@@ -47,7 +47,11 @@ function Write-Header {
 
 function Write-Status {
     param([string]$Message, [string]$Type = "Info")
-    $color = $colors[$Type] ?? $colors.Info
+    if ($colors.ContainsKey($Type)) {
+        $color = $colors[$Type]
+    } else {
+        $color = $colors.Info
+    }
     Write-Host "  [$(Get-Date -Format 'HH:mm:ss')] $Message" -ForegroundColor $color
 }
 

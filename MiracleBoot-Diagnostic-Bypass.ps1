@@ -35,9 +35,9 @@ Log-Event "Loading core modules..." "INFO"
 try {
     Log-Event "Dot-sourcing WinRepairCore.ps1..." "DEBUG"
     . ".\Helper\WinRepairCore.ps1" -ErrorAction Stop
-    Log-Event "✓ Core module loaded" "SUCCESS"
+    Log-Event  V Core module loaded SUCCESS
 } catch {
-    Log-Event "✗ Failed to load core module: $_" "ERROR"
+    Log-Event ? Failed to load core module:  ERROR
     $script:logBuffer | Out-File $logFile -Encoding UTF8
     exit 1
 }

@@ -22,22 +22,22 @@ param(
 $ErrorActionPreference = "Continue"
 
 function Setup-CrashAnalyzer {
-    Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║    CrashAnalyzer Environment Setup         ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "    CrashAnalyzer Environment Setup         " -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
     
     # Check source
     if (-not (Test-Path $SourcePath)) {
-        Write-Host "✗ Source path not found: $SourcePath" -ForegroundColor Red
+        Write-Host " Source path not found: $SourcePath" -ForegroundColor Red
         Write-Host "  Please ensure I:\Dart Crash analyzer\v10 is accessible" -ForegroundColor Yellow
         return $false
     }
     
-    Write-Host "✓ Source path found: $SourcePath" -ForegroundColor Green
+    Write-Host " Source path found: $SourcePath" -ForegroundColor Green
     
     # Create destination
     if (Test-Path $DestinationPath -and -not $Force) {
-        Write-Host "⚠ Destination exists. Use -Force to overwrite" -ForegroundColor Yellow
+        Write-Host " Destination exists. Use -Force to overwrite" -ForegroundColor Yellow
         return $false
     }
     
@@ -48,9 +48,9 @@ function Setup-CrashAnalyzer {
     $ExePath = Join-Path $SourcePath "crashanalyze.exe"
     if (Test-Path $ExePath) {
         Copy-Item $ExePath $DestinationPath -Force
-        Write-Host "✓ Copied crashanalyze.exe" -ForegroundColor Green
+        Write-Host " Copied crashanalyze.exe" -ForegroundColor Green
     } else {
-        Write-Host "✗ crashanalyze.exe not found" -ForegroundColor Red
+        Write-Host " crashanalyze.exe not found" -ForegroundColor Red
         return $false
     }
     
@@ -63,7 +63,7 @@ function Setup-CrashAnalyzer {
     }
     
     $DLLCount = (Get-ChildItem $DepsPath -Filter "*.dll").Count
-    Write-Host "✓ Copied $DLLCount DLL files" -ForegroundColor Green
+    Write-Host " Copied $DLLCount DLL files" -ForegroundColor Green
     
     # Copy other support files
     Get-ChildItem $SourcePath -Filter "*.txt" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -73,7 +73,7 @@ function Setup-CrashAnalyzer {
     # Create launcher wrapper
     Create-LauncherScript $DestinationPath
     
-    Write-Host "`n✓ CrashAnalyzer setup complete!" -ForegroundColor Green
+    Write-Host "`n CrashAnalyzer setup complete!" -ForegroundColor Green
     Write-Host "  Location: $DestinationPath" -ForegroundColor Cyan
     
     return $true
@@ -82,23 +82,24 @@ function Setup-CrashAnalyzer {
 function Create-LauncherScript {
     param([String]$DestPath)
     
-    $LauncherScript = @"
+    $LauncherScript = @'
 @echo off
 REM CrashAnalyzer Launcher
 REM Ensures DLL dependencies are in path
 
 set ORIGINAL_PATH=%PATH%
-set PATH=$DestPath\Dependencies;%PATH%
+set PATH={0}\Dependencies;%PATH%
 
-"$DestPath\crashanalyze.exe" %*
+"{0}\crashanalyze.exe" %*
 
 set PATH=%ORIGINAL_PATH%
-"@
+'@
+    $LauncherScript = $LauncherScript -f $DestPath
     
     $LauncherPath = Join-Path $DestPath "CrashAnalyzer-Launcher.cmd"
     $LauncherScript | Out-File $LauncherPath -Encoding ASCII -Force
     
-    Write-Host "✓ Created launcher: CrashAnalyzer-Launcher.cmd" -ForegroundColor Green
+    Write-Host " Created launcher: CrashAnalyzer-Launcher.cmd" -ForegroundColor Green
 }
 
 # Main

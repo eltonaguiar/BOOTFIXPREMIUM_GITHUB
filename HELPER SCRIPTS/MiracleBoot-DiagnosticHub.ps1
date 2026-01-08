@@ -89,7 +89,7 @@ function Create-DiagnosticGUI {
     $TitlePanel.BackColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
     
     $TitleLabel = New-Object System.Windows.Forms.Label
-    $TitleLabel.Text = "🔧 MiracleBoot Diagnostic Hub"
+    $TitleLabel.Text = "MiracleBoot Diagnostic Hub"
     $TitleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 18, [System.Drawing.FontStyle]::Bold)
     $TitleLabel.ForeColor = [System.Drawing.Color]::White
     $TitleLabel.Location = New-Object System.Drawing.Point(20, 15)
@@ -97,7 +97,7 @@ function Create-DiagnosticGUI {
     $TitlePanel.Controls.Add($TitleLabel)
     
     $SubtitleLabel = New-Object System.Windows.Forms.Label
-    $SubtitleLabel.Text = "Centralized Diagnostics, Log Analysis & Remediation"
+    $TitleLabel.Text = "MiracleBoot Diagnostic Hub"
     $SubtitleLabel.Font = New-Object System.Drawing.Font("Segoe UI", 10)
     $SubtitleLabel.ForeColor = [System.Drawing.Color]::White
     $SubtitleLabel.Location = New-Object System.Drawing.Point(20, 50)
@@ -115,7 +115,7 @@ function Create-DiagnosticGUI {
     
     #region Tab 1: Log Gathering
     $Tab1 = New-Object System.Windows.Forms.TabPage
-    $Tab1.Text = "📊 Log Gathering"
+    $Tab1.Text = "Log Gathering"
     $Tab1.BackColor = [System.Drawing.Color]::White
     
     $GroupBox1 = New-Object System.Windows.Forms.GroupBox
@@ -134,18 +134,18 @@ function Create-DiagnosticGUI {
 This tool gathers critical logs from multiple sources:
 
 TIER 1: Boot-Critical Crash Dumps
-  • C:\Windows\MEMORY.DMP
-  • C:\Windows\LiveKernelReports\
+  --- C:\Windows\MEMORY.DMP
+  --- C:\Windows\LiveKernelReports\
 
 TIER 2: Boot Pipeline Logs
-  • C:\Windows\Panther\setupact.log & setuperr.log
-  • C:\Windows\ntbtlog.txt
+  --- C:\Windows\Panther\setupact.log & setuperr.log
+  --- C:\Windows\ntbtlog.txt
 
 TIER 3: Event Logs
-  • C:\Windows\System32\winevt\Logs\System.evtx
+  --- C:\Windows\System32\winevt\Logs\System.evtx
 
 TIER 4: Boot Structure
-  • BCD Store, Registry hives
+  --- BCD Store, Registry hives
 
 TIER 5: Image/Hardware Context
 
@@ -154,7 +154,7 @@ Logs will be organized and analyzed systematically.
     $GroupBox1.Controls.Add($TextBox1)
     
     $GatherButton = New-Object System.Windows.Forms.Button
-    $GatherButton.Text = "▶ Gather Logs Now"
+    $GatherButton.Text = "Gather Logs Now"
     $GatherButton.Location = New-Object System.Drawing.Point(15, 240)
     $GatherButton.Size = New-Object System.Drawing.Size(150, 40)
     $GatherButton.BackColor = [System.Drawing.Color]::FromArgb(0, 150, 0)
@@ -166,7 +166,7 @@ Logs will be organized and analyzed systematically.
     $GroupBox1.Controls.Add($GatherButton)
     
     $AnalyzeButton = New-Object System.Windows.Forms.Button
-    $AnalyzeButton.Text = "📈 Analyze Logs"
+    $AnalyzeButton.Text = "Analyze Logs"
     $AnalyzeButton.Location = New-Object System.Drawing.Point(175, 240)
     $AnalyzeButton.Size = New-Object System.Drawing.Size(150, 40)
     $AnalyzeButton.BackColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
@@ -178,7 +178,7 @@ Logs will be organized and analyzed systematically.
     $GroupBox1.Controls.Add($AnalyzeButton)
     
     $OpenLogsButton = New-Object System.Windows.Forms.Button
-    $OpenLogsButton.Text = "📁 Open Logs Folder"
+    $OpenLogsButton.Text = "Open Logs Folder"
     $OpenLogsButton.Location = New-Object System.Drawing.Point(335, 240)
     $AnalyzeButton.Size = New-Object System.Drawing.Size(150, 40)
     $OpenLogsButton.BackColor = [System.Drawing.Color]::FromArgb(200, 100, 0)
@@ -201,7 +201,7 @@ Logs will be organized and analyzed systematically.
     
     #region Tab 2: Analysis Tools
     $Tab2 = New-Object System.Windows.Forms.TabPage
-    $Tab2.Text = "🔍 Analysis Tools"
+    $Tab2.Text = "Analysis Tools"
     $Tab2.BackColor = [System.Drawing.Color]::White
     
     $GroupBox2a = New-Object System.Windows.Forms.GroupBox
@@ -210,7 +210,7 @@ Logs will be organized and analyzed systematically.
     $GroupBox2a.Size = New-Object System.Drawing.Size(740, 150)
     
     $EventViewerButton = New-Object System.Windows.Forms.Button
-    $EventViewerButton.Text = "📋 Open Event Viewer"
+    $EventViewerButton.Text = "Open Event Viewer"
     $EventViewerButton.Location = New-Object System.Drawing.Point(15, 30)
     $EventViewerButton.Size = New-Object System.Drawing.Size(200, 40)
     $EventViewerButton.BackColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
@@ -223,7 +223,7 @@ Logs will be organized and analyzed systematically.
     $GroupBox2a.Controls.Add($EventViewerButton)
     
     $CrashAnalyzerButton = New-Object System.Windows.Forms.Button
-    $CrashAnalyzerButton.Text = "💥 Crash Dump Analyzer"
+    $CrashAnalyzerButton.Text = "Crash Dump Analyzer"
     $CrashAnalyzerButton.Location = New-Object System.Drawing.Point(225, 30)
     $CrashAnalyzerButton.Size = New-Object System.Drawing.Size(200, 40)
     $CrashAnalyzerButton.BackColor = [System.Drawing.Color]::FromArgb(150, 0, 0)
@@ -239,7 +239,7 @@ Logs will be organized and analyzed systematically.
     $GroupBox2a.Controls.Add($CrashAnalyzerButton)
     
     $DeviceManagerButton = New-Object System.Windows.Forms.Button
-    $DeviceManagerButton.Text = "⚙️ Device Manager"
+    $DeviceManagerButton.Text = "Device Manager"
     $DeviceManagerButton.Location = New-Object System.Drawing.Point(435, 30)
     $DeviceManagerButton.Size = New-Object System.Drawing.Size(200, 40)
     $DeviceManagerButton.BackColor = [System.Drawing.Color]::FromArgb(200, 100, 0)
@@ -251,7 +251,7 @@ Logs will be organized and analyzed systematically.
     $GroupBox2a.Controls.Add($DeviceManagerButton)
     
     $DiskMgmtButton = New-Object System.Windows.Forms.Button
-    $DiskMgmtButton.Text = "💾 Disk Management"
+    $DiskMgmtButton.Text = "Disk Management"
     $DiskMgmtButton.Location = New-Object System.Drawing.Point(15, 80)
     $DiskMgmtButton.Size = New-Object System.Drawing.Size(200, 40)
     $DiskMgmtButton.BackColor = [System.Drawing.Color]::FromArgb(0, 102, 204)
@@ -279,29 +279,29 @@ Logs will be organized and analyzed systematically.
 QUICK DIAGNOSTIC CHECKLIST:
 
 1. STORAGE DRIVERS
-   □ Check if storage drivers are loaded (Device Manager)
-   □ Verify no yellow exclamation marks on storage devices
-   □ Check driver version against hardware manufacturer
+   --- Check if storage drivers are loaded (Device Manager)
+   --- Verify no yellow exclamation marks on storage devices
+   --- Check driver version against hardware manufacturer
 
 2. INACCESSIBLE_BOOT_DEVICE Root Causes
-   □ NVMe/SATA compatibility (check BIOS RAID/AHCI mode)
-   □ VMD (Virtual Machine Device) toggle
-   □ Image restored to new hardware
-   □ Missing or corrupted BCD
-   □ Disabled storage driver in Registry
+   --- NVMe/SATA compatibility (check BIOS RAID/AHCI mode)
+   --- VMD (Virtual Machine Device) toggle
+   --- Image restored to new hardware
+   --- Missing or corrupted BCD
+   --- Disabled storage driver in Registry
 
 3. BOOT CONFIGURATION
-   □ Review MEMORY.DMP if present
-   □ Check LiveKernelReports\STORAGE for hangs
-   □ Verify setupact.log for environment mismatches
-   □ Check System event log for crash codes
+   --- Review MEMORY.DMP if present
+   --- Check LiveKernelReports\STORAGE for hangs
+   --- Verify setupact.log for environment mismatches
+   --- Check System event log for crash codes
 
 4. REMEDIATION STEPS
-   □ Boot into WinPE
-   □ Inject correct storage driver (DISM)
-   □ Enable driver in offline registry
-   □ Rebuild BCD with bcdboot
-   □ Verify boot configuration
+   --- Boot into WinPE
+   --- Inject correct storage driver (DISM)
+   --- Enable driver in offline registry
+   --- Rebuild BCD with bcdboot
+   --- Verify boot configuration
 "@
     $GroupBox2b.Controls.Add($TextBox2)
     
@@ -311,7 +311,7 @@ QUICK DIAGNOSTIC CHECKLIST:
     
     #region Tab 3: Quick Actions
     $Tab3 = New-Object System.Windows.Forms.TabPage
-    $Tab3.Text = "⚡ Quick Actions"
+    $Tab3.Text = "Quick Actions"
     $Tab3.BackColor = [System.Drawing.Color]::White
     
     $GroupBox3 = New-Object System.Windows.Forms.GroupBox

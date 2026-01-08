@@ -1,7 +1,7 @@
 <#
-.SYNOPSIS
-    MiracleBoot Advanced Log Analyzer
-    
+Write-Host "==================================================================" -ForegroundColor Cyan
+Write-Host "     MiracleBoot Advanced Log Analyzer                      " -ForegroundColor Cyan
+Write-Host "==================================================================" -ForegroundColor Cyan
     Provides deep analysis of gathered logs with pattern matching, 
     signature detection, and actionable remediation steps.
 
@@ -147,10 +147,10 @@ function Analyze-MemoryDump {
     # Check for signature
     $Header = Get-Content $DumpPath -Encoding Byte -TotalCount 4 -ErrorAction SilentlyContinue
     if ($Header -join "," -eq "80,77,68,80") {
-        Write-Host "✓ Valid dump signature (PMDP)" -ForegroundColor Green
+        Write-Host "Valid dump signature (PMDP)" -ForegroundColor Green
     }
     
-    Write-Host "`n⚠️  RECOMMENDED: Analyze with WinDbg or Crash Analyzer" -ForegroundColor Yellow
+    Write-Host "`nRECOMMENDED: Analyze with WinDbg or Crash Analyzer" -ForegroundColor Yellow
     Write-Host "Steps:" -ForegroundColor Yellow
     Write-Host "  1. Open crashanalyze.exe or WinDbg"
     Write-Host "  2. Load: $DumpPath"
@@ -170,7 +170,7 @@ function Analyze-SetupLogs {
         if (-not (Test-Path $LogPath)) { continue }
         
         $LogName = Split-Path $LogPath -Leaf
-        Write-Host "`n$LogName:" -ForegroundColor Yellow
+        Write-Host ("`n{0}:" -f $LogName) -ForegroundColor Yellow
         
         $Content = Get-Content $LogPath -ErrorAction SilentlyContinue
         
@@ -219,7 +219,7 @@ function Analyze-BootTraceLog {
     $FailedLines = $Content | Select-String "Did not load|Load failed|ERROR|FAILED"
     
     if ($FailedLines) {
-        Write-Host "✗ Failed driver loads detected:" -ForegroundColor Red
+        Write-Host "Failed driver loads detected:" -ForegroundColor Red
         foreach ($Line in $FailedLines | Select-Object -First 10) {
             Write-Host "  $($Line.Line)" -ForegroundColor Yellow
         }
@@ -227,11 +227,11 @@ function Analyze-BootTraceLog {
         # Highlight storage drivers
         $StorageFailures = $FailedLines | Where-Object { $_ -match ($StorageDrivers -join "|") }
         if ($StorageFailures) {
-            Write-Host "`n⚠️  CRITICAL: Storage driver failed to load" -ForegroundColor Red
+            Write-Host "`nCRITICAL: Storage driver failed to load" -ForegroundColor Red
             Write-Host "This is likely the root cause of boot failure" -ForegroundColor Red
         }
     } else {
-        Write-Host "✓ No failed driver loads detected" -ForegroundColor Green
+        Write-Host "No failed driver loads detected" -ForegroundColor Green
     }
 }
 
@@ -246,10 +246,10 @@ function Analyze-EventLog {
         return
     }
     
-    Write-Host "ℹ️  To analyze System.evtx:" -ForegroundColor Cyan
+    Write-Host "??????  To analyze System.evtx:" -ForegroundColor Cyan
     Write-Host "  1. Copy to a Windows system with Event Viewer"
     Write-Host "  2. Open Event Viewer"
-    Write-Host "  3. File → Open Saved Log"
+    Write-Host "  3. File -> Open Saved Log"
     Write-Host "  4. Look for:"
     Write-Host "     - Event ID 1001 (BugCheck/Crash)"
     Write-Host "     - Event ID 41 (Kernel-Power)"
@@ -276,12 +276,12 @@ function Analyze-LiveKernelReports {
             $Dumps = Get-ChildItem $SubPath -Filter "*.dmp" -Recurse
             if ($Dumps) {
                 $Severity = if ($Subfolder -eq "STORAGE") { "CRITICAL" } else { "WARNING" }
-                Write-Host "  [$Severity] $Subfolder: $($Dumps.Count) report(s)" -ForegroundColor $(if ($Severity -eq "CRITICAL") { "Red" } else { "Yellow" })
+                Write-Host "  [$Severity] ${Subfolder}: $($Dumps.Count) report(s)" -ForegroundColor $(if ($Severity -eq "CRITICAL") { "Red" } else { "Yellow" })
             }
         }
     }
     
-    Write-Host "`n⚠️  STORAGE reports indicate silent driver/controller hang" -ForegroundColor Red
+    Write-Host "`nCRITICAL: STORAGE reports indicate silent driver/controller hang" -ForegroundColor Red
     Write-Host "Recommendation: Inject correct storage driver for hardware" -ForegroundColor Yellow
 }
 
@@ -327,43 +327,43 @@ function Determine-RootCause {
     
     Write-Host "`nEvidence collected:"
     $Evidence.GetEnumerator() | ForEach-Object {
-        $Status = if ($_.Value) { "✓" } else { "✗" }
+        $Status = if ($_.Value) { "V" } else { "-" }
         Write-Host "  $Status $($_.Key)" -ForegroundColor $(if ($_.Value) { "Green" } else { "Gray" })
     }
     
     # Decision logic
     if ($Evidence.HasMemoryDump) {
         Write-Host "`n[1] MEMORY.DMP EXISTS" -ForegroundColor Red
-        Write-Host "    → This is the smoking gun. Kernel crashed and created full dump." -ForegroundColor Yellow
-        Write-Host "    → USE: Crash Dump Analyzer or WinDbg" -ForegroundColor Cyan
+        Write-Host "    ??? This is the smoking gun. Kernel crashed and created full dump." -ForegroundColor Yellow
+        Write-Host "    ??? USE: Crash Dump Analyzer or WinDbg" -ForegroundColor Cyan
         return
     }
     
     if ($Evidence.HasLiveKernelReports) {
         Write-Host "`n[2] LiveKernelReports FOUND" -ForegroundColor Red
-        Write-Host "    → System hard-reset or driver timeout (before full dump)" -ForegroundColor Yellow
-        Write-Host "    → Likely: Storage driver/controller hang" -ForegroundColor Cyan
+        Write-Host "    ??? System hard-reset or driver timeout (before full dump)" -ForegroundColor Yellow
+        Write-Host "    ??? Likely: Storage driver/controller hang" -ForegroundColor Cyan
         return
     }
     
     if ($Evidence.HasSetupLogs) {
         Write-Host "`n[3] SETUP LOGS FOUND" -ForegroundColor Red
-        Write-Host "    → Windows rejected boot or upgrade environment mismatch" -ForegroundColor Yellow
-        Write-Host "    → Check: setupact.log for explicit error messages" -ForegroundColor Cyan
+        Write-Host "    -> Windows rejected boot or upgrade environment mismatch" -ForegroundColor Yellow
+        Write-Host "    -> Check: setupact.log for explicit error messages" -ForegroundColor Cyan
         return
     }
     
     if ($Evidence.HasBootTrace) {
         Write-Host "`n[4] BOOT TRACE LOG EXISTS" -ForegroundColor Red
-        Write-Host "    → Boot logging was enabled (check for failed drivers)" -ForegroundColor Yellow
+        Write-Host "    -> Boot logging was enabled (check for failed drivers)" -ForegroundColor Yellow
         return
     }
     
-    Write-Host "`n⚠️  INSUFFICIENT DATA" -ForegroundColor Yellow
+    Write-Host "`nINSUFFICIENT DATA" -ForegroundColor Yellow
     Write-Host "No crash dumps or boot logs found. This may indicate:" -ForegroundColor Yellow
     Write-Host "  - Hardware issue (check physical connections)" -ForegroundColor Yellow
     Write-Host "  - BIOS/Firmware issue" -ForegroundColor Yellow
-    Write-Host "  - System won't POST (dead)" -ForegroundColor Yellow
+    Write-Host "  - System will not POST (dead)" -ForegroundColor Yellow
 }
 
 #endregion
@@ -384,45 +384,44 @@ function Generate-RemediationScript {
         $Content = Get-Content $SetupActPath -ErrorAction SilentlyContinue
         
         if ($Content -match "storage driver|nvme|storahci") {
-            $RemediationSteps += @"
-# STEP 1: Boot into WinPE and inject storage driver
-# Command to inject driver:
-Dism /Image:C: /Add-Driver /Driver:"<path-to-driver>" /ForceUnsigned
-
-# Example for NVMe:
-Dism /Image:C: /Add-Driver /Driver:"E:\Drivers\nvme_driver.inf" /ForceUnsigned
-"@
+            $RemediationSteps += @(
+                "# STEP 1: Boot into WinPE and inject storage driver",
+                "# Command to inject driver:",
+                'Dism /Image:C: /Add-Driver /Driver:"<path-to-driver>" /ForceUnsigned',
+                "",
+                "# Example for NVMe:",
+                'Dism /Image:C: /Add-Driver /Driver:"E:\Drivers\nvme_driver.inf" /ForceUnsigned'
+            )
         }
     }
     
     if (Test-Path (Join-Path $LogDirectory "ntbtlog.txt")) {
-        $RemediationSteps += @"
-# STEP 2: Enable storage driver in offline registry (WinPE)
-# Command:
-reg load HKLM\OfflineSystem C:\Windows\System32\config\SYSTEM
-reg add HKLM\OfflineSystem\ControlSet001\Services\stornvme /v Start /t REG_DWORD /d 0
-reg unload HKLM\OfflineSystem
-"@
+        $RemediationSteps += @(
+            "# STEP 2: Enable storage driver in offline registry (WinPE)",
+            "# Command:",
+            "reg load HKLM\\OfflineSystem C:\\Windows\\System32\\config\\SYSTEM",
+            "reg add HKLM\\OfflineSystem\\ControlSet001\\Services\\stornvme /v Start /t REG_DWORD /d 0",
+            "reg unload HKLM\\OfflineSystem"
+        )
     }
     
-    $RemediationSteps += @"
-# STEP 3: Rebuild BCD
-bcdboot C:\Windows /s S: /f UEFI
-
-# STEP 4: Verify boot configuration
-bcdedit /store S:\EFI\Microsoft\Boot\BCD /enum all
-
-# STEP 5: Test boot
-# Reboot system and monitor for INACCESSIBLE_BOOT_DEVICE
-"@
+    $RemediationSteps += @(
+        "# STEP 3: Rebuild BCD",
+        "bcdboot C:\\Windows /s S: /f UEFI",
+        "",
+        "# STEP 4: Verify boot configuration",
+        "bcdedit /store S:\\EFI\\Microsoft\\Boot\\BCD /enum all",
+        "",
+        "# STEP 5: Test boot",
+        "# Reboot system and monitor for INACCESSIBLE_BOOT_DEVICE"
+    )
     
     $ScriptPath = Join-Path $LogDirectory "Remediation-Steps.ps1"
-    $RemediationSteps -join "`n`n" | Out-File $ScriptPath -Force
+    $RemediationSteps -join "`n" | Out-File $ScriptPath -Force
     
     Write-Host "`nRemediation script created: $ScriptPath" -ForegroundColor Green
-    Write-Host "⚠️  Review and modify before executing" -ForegroundColor Yellow
+    Write-Host "Review and modify before executing" -ForegroundColor Yellow
 }
-
 #endregion
 
 #region Interactive Menu
@@ -466,9 +465,9 @@ function Show-InteractiveMenu {
 #endregion
 
 #region Main
-Write-Host "╔════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║     MiracleBoot Advanced Log Analyzer                      ║" -ForegroundColor Cyan
-Write-Host "╚════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "==================================================================" -ForegroundColor Cyan
+Write-Host "     MiracleBoot Advanced Log Analyzer                      " -ForegroundColor Cyan
+Write-Host "==================================================================" -ForegroundColor Cyan
 
 if (-not (Test-Path $LogDirectory)) {
     Write-Host "Log directory not found: $LogDirectory" -ForegroundColor Red
@@ -493,4 +492,19 @@ if ($Interactive) {
     Show-InteractiveMenu $LogDirectory
 }
 
-Write-Host "`n✓ Analysis complete" -ForegroundColor Green
+Write-Host "`nAnalysis complete" -ForegroundColor Green
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

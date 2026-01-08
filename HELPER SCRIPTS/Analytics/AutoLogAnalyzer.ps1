@@ -45,9 +45,9 @@ $timestamp = Get-Date -Format "yyyy-MM-dd_HHmmss"
 $reportPath = Join-Path $OutputPath "LogAnalysis_$timestamp"
 New-Item -ItemType Directory -Path $reportPath -Force | Out-Null
 
-Write-Host "`n╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║        AutoLogAnalyzer - System Log Analysis Tool v1.0         ║" -ForegroundColor Cyan
-Write-Host "╚════════════════════════════════════════════════════════════════╝`n" -ForegroundColor Cyan
+Write-Host "`n" -ForegroundColor Cyan
+Write-Host "        AutoLogAnalyzer - System Log Analysis Tool v1.0         " -ForegroundColor Cyan
+Write-Host "`n" -ForegroundColor Cyan
 
 Write-Host "Configuration:" -ForegroundColor Yellow
 Write-Host "  Hours Back: $HoursBack hours"
@@ -364,7 +364,7 @@ function New-ChatGPTPrompt {
         $prompt += "[$($typeGroup.Name) Errors - $($typeGroup.Group.Count) total occurrences]"
         
         foreach ($error in $typeGroup.Group | Select-Object -First 5) {
-            $prompt += "  • $($error.ErrorCode) (appeared $($error.Count) times)"
+            $prompt += "   $($error.ErrorCode) (appeared $($error.Count) times)"
             $prompt += "    Sources: $($error.Sources)"
             $prompt += "    Details: $($error.SampleContext)"
         }
@@ -398,9 +398,9 @@ function New-DetailedReport {
     Write-Host "Creating detailed report..." -ForegroundColor Green
     
     $report = @()
-    $report += "╔════════════════════════════════════════════════════════════════╗"
-    $report += "║          COMPREHENSIVE SYSTEM LOG ANALYSIS REPORT             ║"
-    $report += "╚════════════════════════════════════════════════════════════════╝"
+    $report += ""
+    $report += "          COMPREHENSIVE SYSTEM LOG ANALYSIS REPORT             "
+    $report += ""
     $report += ""
     $report += "Report Generated: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")"
     $report += "Analysis Scope: Last $HoursBack hours"
@@ -408,17 +408,17 @@ function New-DetailedReport {
     $report += "OS: $([System.Environment]::OSVersion.VersionString)"
     $report += ""
     
-    $report += "───────────────────────────────────────────────────────────────"
+    $report += ""
     $report += "SUMMARY STATISTICS"
-    $report += "───────────────────────────────────────────────────────────────"
+    $report += ""
     $report += "Total Unique Error Codes: $($ErrorSummary.Count)"
     $report += "Total Error Occurrences: $($AllErrors.Count)"
     $report += "Most Frequent Error: $($ErrorSummary[0].ErrorCode) ($($ErrorSummary[0].Count) times)"
     $report += ""
     
-    $report += "───────────────────────────────────────────────────────────────"
+    $report += ""
     $report += "TOP 20 ERROR CODES"
-    $report += "───────────────────────────────────────────────────────────────"
+    $report += ""
     
     $topErrors = $ErrorSummary | Select-Object -First 20
     $rankNum = 1
@@ -439,9 +439,9 @@ function New-DetailedReport {
     
     $report += ""
     $report += ""
-    $report += "───────────────────────────────────────────────────────────────"
+    $report += ""
     $report += "ERROR DISTRIBUTION BY TYPE"
-    $report += "───────────────────────────────────────────────────────────────"
+    $report += ""
     
     $byType = $ErrorSummary | Group-Object -Property Type | Sort-Object -Property Count -Descending
     
@@ -451,9 +451,9 @@ function New-DetailedReport {
     
     $report += ""
     $report += ""
-    $report += "───────────────────────────────────────────────────────────────"
+    $report += ""
     $report += "ERROR DISTRIBUTION BY SEVERITY"
-    $report += "───────────────────────────────────────────────────────────────"
+    $report += ""
     
     $bySeverity = $ErrorSummary | Group-Object -Property Severity | Sort-Object -Property Count -Descending
     
@@ -463,9 +463,9 @@ function New-DetailedReport {
     
     $report += ""
     $report += ""
-    $report += "═════════════════════════════════════════════════════════════════"
+    $report += ""
     $report += "End of Report"
-    $report += "═════════════════════════════════════════════════════════════════"
+    $report += ""
     
     $reportContent = $report -join "`r`n"
     Set-Content -Path $OutputFile -Value $reportContent -Force
@@ -481,47 +481,47 @@ try {
     # Step 1: Collect Event Viewer Logs
     Write-Host "`n[1/5] Collecting Event Viewer Logs..." -ForegroundColor Cyan
     $eventLogs = Get-EventViewerLogs -HoursBack $HoursBack
-    Write-Host "      ✓ Collected $($eventLogs.Count) events" -ForegroundColor Green
+    Write-Host "       Collected $($eventLogs.Count) events" -ForegroundColor Green
     
     # Step 2: Collect Local Application Logs
     Write-Host "`n[2/5] Collecting Local Application Logs..." -ForegroundColor Cyan
     $appLogs = Get-LocalApplicationLogs -HoursBack $HoursBack
-    Write-Host "      ✓ Collected $($appLogs.Count) log files" -ForegroundColor Green
+    Write-Host "       Collected $($appLogs.Count) log files" -ForegroundColor Green
     
     # Step 3: Extract Error Codes
     Write-Host "`n[3/5] Extracting Error Codes and Patterns..." -ForegroundColor Cyan
     $allErrors = Extract-ErrorCodes -EventLogs $eventLogs -FileLogs $appLogs
-    Write-Host "      ✓ Extracted $($allErrors.Count) error instances" -ForegroundColor Green
+    Write-Host "       Extracted $($allErrors.Count) error instances" -ForegroundColor Green
     
     # Step 4: Summarize and Deduplicate
     Write-Host "`n[4/5] Summarizing Errors..." -ForegroundColor Cyan
     $errorSummary = Get-ErrorSummary -Errors $allErrors
-    Write-Host "      ✓ Found $($errorSummary.Count) unique error codes" -ForegroundColor Green
+    Write-Host "       Found $($errorSummary.Count) unique error codes" -ForegroundColor Green
     
     # Step 5: Generate Reports
     Write-Host "`n[5/5] Generating Reports..." -ForegroundColor Cyan
     
     $detailedReportPath = Join-Path $reportPath "DETAILED_REPORT.txt"
     New-DetailedReport -ErrorSummary $errorSummary -AllErrors $allErrors -OutputFile $detailedReportPath
-    Write-Host "      ✓ Detailed report: $detailedReportPath" -ForegroundColor Green
+    Write-Host "       Detailed report: $detailedReportPath" -ForegroundColor Green
     
     $chatgptPromptPath = Join-Path $reportPath "CHATGPT_PROMPT.txt"
     $promptContent = New-ChatGPTPrompt -ErrorSummary $errorSummary -OutputFile $chatgptPromptPath
-    Write-Host "      ✓ ChatGPT prompt: $chatgptPromptPath" -ForegroundColor Green
+    Write-Host "       ChatGPT prompt: $chatgptPromptPath" -ForegroundColor Green
     
     # Export raw data as CSV
     $csvPath = Join-Path $reportPath "ERROR_CODES.csv"
     $errorSummary | Export-Csv -Path $csvPath -NoTypeInformation
-    Write-Host "      ✓ CSV export: $csvPath" -ForegroundColor Green
+    Write-Host "       CSV export: $csvPath" -ForegroundColor Green
     
     $rawCsvPath = Join-Path $reportPath "ALL_ERRORS_RAW.csv"
     $allErrors | Export-Csv -Path $rawCsvPath -NoTypeInformation
-    Write-Host "      ✓ Raw errors CSV: $rawCsvPath" -ForegroundColor Green
+    Write-Host "       Raw errors CSV: $rawCsvPath" -ForegroundColor Green
     
     # Generate summary for console output
-    Write-Host "`n╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║                    ANALYSIS COMPLETE                          ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Green
+    Write-Host "`n" -ForegroundColor Cyan
+    Write-Host "                    ANALYSIS COMPLETE                          " -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Green
     
     Write-Host "`nKEY FINDINGS:" -ForegroundColor Yellow
     Write-Host "  Total Error Codes Found: $($errorSummary.Count)" -ForegroundColor White
@@ -537,10 +537,10 @@ try {
     }
     
     Write-Host "`n  OUTPUT FILES:" -ForegroundColor Yellow
-    Write-Host "    • Detailed Report: $detailedReportPath" -ForegroundColor Gray
-    Write-Host "    • ChatGPT Prompt: $chatgptPromptPath" -ForegroundColor Gray
-    Write-Host "    • CSV Data: $csvPath" -ForegroundColor Gray
-    Write-Host "    • Raw Errors: $rawCsvPath" -ForegroundColor Gray
+    Write-Host "     Detailed Report: $detailedReportPath" -ForegroundColor Gray
+    Write-Host "     ChatGPT Prompt: $chatgptPromptPath" -ForegroundColor Gray
+    Write-Host "     CSV Data: $csvPath" -ForegroundColor Gray
+    Write-Host "     Raw Errors: $rawCsvPath" -ForegroundColor Gray
     
     Write-Host "`n  NEXT STEPS:" -ForegroundColor Yellow
     Write-Host "    1. Review the detailed report for context" -ForegroundColor Gray
@@ -556,7 +556,7 @@ try {
     Start-Process -FilePath explorer.exe -ArgumentList $reportPath
     
 } catch {
-    Write-Host "`n✗ ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "`n ERROR: $($_.Exception.Message)" -ForegroundColor Red
     Write-Host "Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor Red
 }
 

@@ -354,35 +354,35 @@ This report summarizes the system diagnostic logs collected and analyzed on this
     # Recommendations
     $report += @"
 `n7. RECOMMENDATIONS
-`n-----------`-----------`n
+-------------------
 1. IMMEDIATE ACTIONS:
-   ✓ Review critical events in Event Viewer
-   ✓ Investigate any failed driver loads
-   ✓ Check for stopped automatic services
+   - Review critical events in Event Viewer
+   - Investigate any failed driver loads
+   - Check for stopped automatic services
    
 2. PERFORMANCE OPTIMIZATION:
-   ✓ Disable unnecessary startup programs
-   ✓ Review services running at startup
-   ✓ Check for malware using Autoruns
+   - Disable unnecessary startup programs
+   - Review services running at startup
+   - Check for malware using Autoruns
    
 3. FOLLOW-UP DIAGNOSTICS:
-   ✓ Use Procmon to trace slow operations
-   ✓ Use Windows Performance Analyzer for deep analysis
-   ✓ Consider using BootRacer for boot time measurement
+   - Use Procmon to trace slow operations
+   - Use Windows Performance Analyzer for deep analysis
+   - Consider using BootRacer for boot time measurement
    
 4. ONGOING MONITORING:
-   ✓ Schedule periodic log collection
-   ✓ Trend analysis over time
-   ✓ Monitor for recurring issues
+   - Schedule periodic log collection
+   - Trend analysis over time
+   - Monitor for recurring issues
 
-================================================================================
+===============================================================================
 Report End
 Detailed CSV files available in: $LogPath
-================================================================================
+===============================================================================
 "@
     
     $report | Out-File -FilePath $reportPath -Encoding UTF8
-    Write-Host "✓ Full report generated: $reportPath" -ForegroundColor $colors.Success
+    Write-Host "Full report generated: $reportPath" -ForegroundColor $colors.Success
     
     # Also display key findings
     Write-Host "`n" + $report | Out-Host
@@ -441,3 +441,4 @@ do {
 } while ($true)
 
 Write-Host "`nExiting analyzer. Thank you!" -ForegroundColor $colors.Success
+

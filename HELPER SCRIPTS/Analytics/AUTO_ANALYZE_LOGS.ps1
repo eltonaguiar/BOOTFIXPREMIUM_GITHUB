@@ -36,34 +36,34 @@ if (-not (Test-Path ".\AutoLogAnalyzer.ps1")) {
 function Show-MainMenu {
     Clear-Host
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║     MiracleBoot - AutoLogAnalyzer Integration Menu            ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "     MiracleBoot - AutoLogAnalyzer Integration Menu            " -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "What would you like to do?" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "  [1] Quick Log Analysis (Current Issues)" -ForegroundColor Cyan
-    Write-Host "       • Analyzes last 48 hours" -ForegroundColor Gray
-    Write-Host "       • Shows top errors immediately" -ForegroundColor Gray
+    Write-Host "        Analyzes last 48 hours" -ForegroundColor Gray
+    Write-Host "        Shows top errors immediately" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  [2] Pre-Repair Analysis" -ForegroundColor Cyan
-    Write-Host "       • Baseline analysis before MiracleBoot repairs" -ForegroundColor Gray
-    Write-Host "       • Saves 'Before' snapshot" -ForegroundColor Gray
+    Write-Host "        Baseline analysis before MiracleBoot repairs" -ForegroundColor Gray
+    Write-Host "        Saves 'Before' snapshot" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  [3] Post-Repair Analysis" -ForegroundColor Cyan
-    Write-Host "       • Analysis after repairs" -ForegroundColor Gray
-    Write-Host "       • Compares with pre-repair baseline" -ForegroundColor Gray
+    Write-Host "        Analysis after repairs" -ForegroundColor Gray
+    Write-Host "        Compares with pre-repair baseline" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  [4] Compare Before/After Reports" -ForegroundColor Cyan
-    Write-Host "       • Side-by-side error code comparison" -ForegroundColor Gray
-    Write-Host "       • Shows improvement metrics" -ForegroundColor Gray
+    Write-Host "        Side-by-side error code comparison" -ForegroundColor Gray
+    Write-Host "        Shows improvement metrics" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  [5] Custom Analysis" -ForegroundColor Cyan
-    Write-Host "       • Specify custom time range" -ForegroundColor Gray
-    Write-Host "       • Choose output location" -ForegroundColor Gray
+    Write-Host "        Specify custom time range" -ForegroundColor Gray
+    Write-Host "        Choose output location" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  [6] View Previous Reports" -ForegroundColor Cyan
-    Write-Host "       • Browse existing analysis reports" -ForegroundColor Gray
+    Write-Host "        Browse existing analysis reports" -ForegroundColor Gray
     Write-Host ""
     Write-Host "  [Q] Quit" -ForegroundColor Cyan
     Write-Host ""
@@ -100,9 +100,9 @@ function Invoke-LogAnalysis {
 
 function Show-QuickAnalysis {
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║                    QUICK LOG ANALYSIS                          ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "                    QUICK LOG ANALYSIS                          " -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
     
     Invoke-LogAnalysis -Hours 48
     
@@ -117,9 +117,9 @@ function Show-QuickAnalysis {
 
 function Invoke-PreRepairAnalysis {
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║                  PRE-REPAIR BASELINE ANALYSIS                  ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "                  PRE-REPAIR BASELINE ANALYSIS                  " -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
     
     $timestamp = Get-Date -Format "PRE_REPAIR_yyyy-MM-dd_HHmmss"
     
@@ -144,9 +144,9 @@ function Invoke-PreRepairAnalysis {
 
 function Invoke-PostRepairAnalysis {
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║                   POST-REPAIR ANALYSIS                          ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "                   POST-REPAIR ANALYSIS                          " -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
     
     $timestamp = Get-Date -Format "POST_REPAIR_yyyy-MM-dd_HHmmss"
     
@@ -169,9 +169,9 @@ function Invoke-PostRepairAnalysis {
 
 function Invoke-CompareReports {
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║               BEFORE/AFTER COMPARISON                          ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "               BEFORE/AFTER COMPARISON                          " -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
     
     $logDir = ".\LOG_ANALYSIS"
     
@@ -214,7 +214,7 @@ function Invoke-CompareReports {
         $postErrors = Import-Csv -Path $postCsv
         
         Write-Host "COMPARISON RESULTS:" -ForegroundColor Cyan
-        Write-Host "═════════════════════════════════════════════════════════════" -ForegroundColor Gray
+        Write-Host "" -ForegroundColor Gray
         Write-Host ""
         Write-Host "Pre-Repair Summary:" -ForegroundColor Yellow
         Write-Host "  Unique Error Codes: $($preErrors.Count)" -ForegroundColor White
@@ -245,7 +245,7 @@ function Invoke-CompareReports {
             Write-Host ""
             Write-Host "Errors Fixed: $($fixed.Count)" -ForegroundColor Green
             $fixed | Select-Object -First 5 | ForEach-Object {
-                Write-Host "  • $_" -ForegroundColor Green
+                Write-Host "   $_" -ForegroundColor Green
             }
             if ($fixed.Count -gt 5) {
                 Write-Host "  ... and $($fixed.Count - 5) more" -ForegroundColor Gray
@@ -256,7 +256,7 @@ function Invoke-CompareReports {
             Write-Host ""
             Write-Host "New Issues: $($newIssues.Count)" -ForegroundColor Yellow
             $newIssues | Select-Object -First 5 | ForEach-Object {
-                Write-Host "  • $_" -ForegroundColor Yellow
+                Write-Host "   $_" -ForegroundColor Yellow
             }
             if ($newIssues.Count -gt 5) {
                 Write-Host "  ... and $($newIssues.Count - 5) more" -ForegroundColor Gray
@@ -264,7 +264,7 @@ function Invoke-CompareReports {
         }
         
         Write-Host ""
-        Write-Host "═════════════════════════════════════════════════════════════" -ForegroundColor Gray
+        Write-Host "" -ForegroundColor Gray
         Write-Host "Full reports available at:" -ForegroundColor Cyan
         Write-Host "  Pre-Report:  $($latestPre.FullName)" -ForegroundColor Gray
         Write-Host "  Post-Report: $($latestPost.FullName)" -ForegroundColor Gray
@@ -280,9 +280,9 @@ function Invoke-CompareReports {
 
 function Invoke-CustomAnalysis {
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║                    CUSTOM ANALYSIS                             ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "                    CUSTOM ANALYSIS                             " -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
     
     Write-Host ""
     Write-Host "Time Range Options:" -ForegroundColor Yellow
@@ -314,9 +314,9 @@ function Invoke-CustomAnalysis {
 
 function Show-PreviousReports {
     Write-Host ""
-    Write-Host "╔════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║                   PREVIOUS REPORTS                             ║" -ForegroundColor Cyan
-    Write-Host "╚════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
+    Write-Host "                   PREVIOUS REPORTS                             " -ForegroundColor Cyan
+    Write-Host "" -ForegroundColor Cyan
     
     $logDir = ".\LOG_ANALYSIS"
     

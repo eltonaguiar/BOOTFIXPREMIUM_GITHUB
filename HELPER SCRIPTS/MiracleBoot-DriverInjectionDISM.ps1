@@ -429,7 +429,7 @@ function Invoke-BatchDriverInjection {
     $successCount = 0
     $failureCount = 0
     
-    foreach ($i = 0; $i -lt $Targets.Count; $i++) {
+    for ($i = 0; $i -lt $Targets.Count; $i++) {
         $target = $Targets[$i]
         $progressPercent = (($i + 1) / $Targets.Count) * 100
         
@@ -444,7 +444,7 @@ function Invoke-BatchDriverInjection {
             }
             'WIM' {
                 $result = Invoke-DISMWIMDriverInjection -WIMPath $target.Path `
-                    -ImageIndex ($target.Index ?? 1) `
+                    -ImageIndex $(if ($null -ne $target.Index) { $target.Index } else { 1 }) `
                     -DriverPath $DriverPath
             }
             default {
