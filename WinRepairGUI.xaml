@@ -1,0 +1,605 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ Title="Miracle Boot v7.2.0 - Advanced Recovery (GitHub + Cursor) - Tip: Maximize window (F11) to see all options"
+ Width="1200" Height="850" WindowStartupLocation="CenterScreen" Background="#F0F0F0" Focusable="True">
+<Grid>
+    <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+        <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    
+    <!-- Maximize Suggestion Banner -->
+    <Border Grid.Row="0" Name="MaximizeBanner" Background="#FFF3CD" BorderBrush="#FFC107" BorderThickness="0,0,0,2" Padding="10,5" Visibility="Collapsed">
+        <StackPanel Orientation="Horizontal">
+            <TextBlock Text="[TIP]" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold" Foreground="#856404"/>
+            <TextBlock Text="Tip: Maximize this window (press F11 or click the maximize button) to see all options and prevent button overlap." 
+                       VerticalAlignment="Center" TextWrapping="Wrap" Foreground="#856404" FontSize="11"/>
+            <Button Name="BtnDismissMaximizeTip" Content="X" Width="25" Height="25" Margin="10,0,0,0" 
+                    Background="Transparent" BorderThickness="0" Foreground="#856404" 
+                    ToolTip="Dismiss this tip" Padding="0" FontSize="12" VerticalAlignment="Center" FontWeight="Bold"/>
+        </StackPanel>
+    </Border>
+    
+    <!-- Utility Toolbar -->
+    <StackPanel Grid.Row="1" Orientation="Horizontal" Background="#E5E5E5" Margin="10,5">
+        <Menu VerticalAlignment="Center" Margin="5,0,10,0">
+            <MenuItem Header="File" FontWeight="Bold">
+                <MenuItem Header="View Cached Locations" Name="BtnViewCache" ToolTip="View cached export locations and saved paths"/>
+                <MenuItem Header="Clear Cache" Name="BtnClearCache" ToolTip="Clear all cached locations"/>
+                <Separator/>
+                <MenuItem Header="Export Logs Location..." Name="BtnSetLogLocation" ToolTip="Set default location for exported logs"/>
+                <MenuItem Header="BCD Backup Location..." Name="BtnSetBCDLocation" ToolTip="Set default location for BCD backups"/>
+                <MenuItem Header="Driver Export Location..." Name="BtnSetDriverLocation" ToolTip="Set default location for driver exports"/>
+            </MenuItem>
+            <MenuItem Header="Utilities" FontWeight="Bold">
+                <MenuItem Header="Notepad" Name="BtnNotepad" ToolTip="Open Notepad"/>
+                <MenuItem Header="Registry Editor" Name="BtnRegistry" ToolTip="Open Registry Editor"/>
+                <MenuItem Header="PowerShell" Name="BtnPowerShell" ToolTip="Open PowerShell"/>
+                <Separator/>
+                <MenuItem Header="System Restore" Name="BtnRestore" ToolTip="Open System Restore Points"/>
+                <MenuItem Header="Disk Management" Name="BtnDiskManagement" ToolTip="Open Disk Management"/>
+                <MenuItem Header="Restart Explorer" Name="BtnRestartExplorer" ToolTip="Restart Windows Explorer if it crashed"/>
+                <Separator/>
+                <MenuItem Header="Enable Network" Name="BtnEnableNetwork" ToolTip="Enable network adapters and test internet"/>
+                <MenuItem Header="Network Diagnostics" Name="BtnNetworkDiagnostics" ToolTip="Comprehensive network diagnostics and driver management"/>
+                <MenuItem Header="Keyboard Symbols" Name="BtnKeyboardSymbols" ToolTip="Keyboard symbol helper and ALT code reference"/>
+            </MenuItem>
+            <MenuItem Header="Resources" FontWeight="Bold">
+                <MenuItem Header="ChatGPT Help" Name="BtnChatGPT" ToolTip="Open ChatGPT for boot assistance help"/>
+                <Separator/>
+                <MenuItem Header="Recommended Recovery Tools" Name="BtnRecommendedRecoveryTools" ToolTip="Must-have recovery tools: Hiren BootCD PE, Macrium Reflect, etc."/>
+                <MenuItem Header="Backup Software Guide" Name="BtnBackupGuide" ToolTip="Guide to backup software and best practices"/>
+                <MenuItem Header="Recovery Tools (Free)" Name="BtnRecoveryToolsFree" ToolTip="Free recovery tools like Hiren BootCD, Ventoy, etc."/>
+                <MenuItem Header="Recovery Tools (Paid)" Name="BtnRecoveryToolsPaid" ToolTip="Paid recovery tools like Macrium Reflect, Acronis, etc."/>
+                <MenuItem Header="Backup Strategy Guide" Name="BtnBackupStrategy" ToolTip="3-2-1 backup rule and best practices"/>
+                <MenuItem Header="Hardware Recommendations" Name="BtnHardwareRecs" ToolTip="Hardware recommendations for backups"/>
+                <Separator/>
+                <MenuItem Header="Microsoft Professional Support" Name="BtnMicrosoftSupport" ToolTip="Microsoft pay-per-incident support options and costs"/>
+                <MenuItem Header="Local Technician Alternative" Name="BtnLocalTechnician" ToolTip="Benefits of local technicians vs Microsoft support"/>
+            </MenuItem>
+            <MenuItem Header="Settings" FontWeight="Bold">
+                <MenuItem Header="Dark Mode" Name="BtnDarkMode" ToolTip="Switch to dark theme"/>
+                <MenuItem Header="Light Mode" Name="BtnLightMode" ToolTip="Switch to light theme"/>
+                <Separator/>
+                <MenuItem Header="Compact UI" Name="BtnCompactUI" ToolTip="Switch to compact layout for smaller screens"/>
+                <MenuItem Header="Standard UI" Name="BtnStandardUI" ToolTip="Switch to standard layout"/>
+            </MenuItem>
+        </Menu>
+        <Button Name="BtnSwitchToTUI" Width="35" Height="25" Margin="2" ToolTip="Switch to Command Line Mode (TUI)" Background="#2D2D30" Foreground="White" FontFamily="Consolas" FontSize="12" Padding="0" VerticalAlignment="Center">
+            <TextBlock Text="&gt;_" VerticalAlignment="Center" HorizontalAlignment="Center"/>
+        </Button>
+        <Separator Margin="10,0" VerticalAlignment="Center"/>
+        <TextBlock Text="Zoom:" VerticalAlignment="Center" Margin="10,0,5,0" Foreground="Gray" FontSize="11"/>
+        <Button Name="BtnZoomOut" Content="-" Width="30" Height="25" Margin="2" ToolTip="Zoom Out (Smaller)" Background="#6c757d" Foreground="White" FontSize="14" FontWeight="Bold" VerticalAlignment="Center"/>
+        <TextBlock Name="ZoomLevel" Text="100%" Width="45" TextAlignment="Center" VerticalAlignment="Center" Margin="5,0" Foreground="Black" FontSize="11" FontWeight="Bold"/>
+        <Button Name="BtnZoomIn" Content="+" Width="30" Height="25" Margin="2" ToolTip="Zoom In (Larger)" Background="#6c757d" Foreground="White" FontSize="14" FontWeight="Bold" VerticalAlignment="Center"/>
+        <Button Name="BtnZoomReset" Content="Reset" Width="50" Height="25" Margin="2" ToolTip="Reset Zoom to 100%" Background="#6c757d" Foreground="White" FontSize="10" VerticalAlignment="Center"/>
+        <Separator Margin="10,0" VerticalAlignment="Center"/>
+        <TextBlock Name="NetworkStatus" Text="Network: Unknown" VerticalAlignment="Center" Margin="5,0" Foreground="Gray"/>
+        <TextBlock Name="EnvStatus" Text="Environment: Detecting..." VerticalAlignment="Center" Margin="10,0" Foreground="Gray"/>
+</StackPanel>
+    
+    <TabControl Grid.Row="2" Margin="10">
+        <TabItem Header="Volumes &amp; Health">
+            <DockPanel Margin="10">
+                <Button DockPanel.Dock="Top" Content="Refresh Volume List" Height="35" Name="BtnVol" Background="#0078D7" Foreground="White" FontWeight="Bold"/>
+                <ListView Name="VolList" Margin="0,10,0,0">
+                    <ListView.View>
+                        <GridView>
+                            <GridViewColumn Header="Letter" DisplayMemberBinding="{Binding DriveLetter}" Width="50"/>
+                            <GridViewColumn Header="Label" DisplayMemberBinding="{Binding FileSystemLabel}" Width="150"/>
+                            <GridViewColumn Header="Size" DisplayMemberBinding="{Binding Size}" Width="100"/>
+                            <GridViewColumn Header="Status" DisplayMemberBinding="{Binding HealthStatus}" Width="100"/>
+                        </GridView>
+                    </ListView.View>
+                </ListView>
+            </DockPanel>
+</TabItem>
+
+<TabItem Header="BCD Editor">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                
+                <!-- Toolbar -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                    <Button Content="Load/Refresh BCD" Height="35" Name="BtnBCD" Background="#0078D7" Foreground="White" Width="150" Margin="0,0,10,0">
+                        <Button.ToolTip>
+                            <ToolTip Content="Reloads the Boot Configuration Data (BCD) from your system. Use this to refresh the list after making changes or if entries seem out of date."/>
+                        </Button.ToolTip>
+                    </Button>
+                    <Button Content="Create Backup" Height="35" Name="BtnBCDBackup" Background="#28a745" Foreground="White" Width="130" Margin="0,0,10,0">
+                        <Button.ToolTip>
+                            <ToolTip Content="Creates a backup of your current BCD configuration before making changes. Highly recommended before editing boot entries."/>
+                        </Button.ToolTip>
+                    </Button>
+                    <Button Content="Fix Duplicates" Height="35" Name="BtnFixDuplicates" Background="#ffc107" Foreground="Black" Width="130" Margin="0,0,10,0">
+                        <Button.ToolTip>
+                            <ToolTip Content="Automatically fixes duplicate boot entry names by appending volume labels. Prevents confusion in the boot menu."/>
+                        </Button.ToolTip>
+                    </Button>
+                    <Button Content="Sync to All EFI Partitions" Height="35" Name="BtnSyncBCD" Background="#6f42c1" Foreground="White" Width="200" Margin="0,0,10,0">
+                        <Button.ToolTip>
+                            <ToolTip Content="Synchronizes BCD configuration to all EFI System Partitions. Ensures the same boot menu appears regardless of which drive BIOS boots from."/>
+                        </Button.ToolTip>
+                    </Button>
+                    <Button Content="Boot Diagnosis" Height="35" Name="BtnBootDiagnosisBCD" Background="#17a2b8" Foreground="White" Width="150" Margin="0,0,10,0">
+                        <Button.ToolTip>
+                            <ToolTip Content="Runs comprehensive diagnostics on your boot configuration to identify potential issues and provide recommendations."/>
+                        </Button.ToolTip>
+                    </Button>
+                    <Button Content="[?] Help" Height="35" Name="BtnBCDHelp" Background="#6c757d" Foreground="White" Width="100">
+                        <Button.ToolTip>
+                            <ToolTip Content="View detailed information about all BCD parameters, their purposes, and context-aware suggestions based on your current setup."/>
+                        </Button.ToolTip>
+                    </Button>
+</StackPanel>
+                
+                <!-- Main Content with Tabs -->
+                <TabControl Grid.Row="1" Name="BCDTabControl">
+                    <TabItem Header="Basic Editor">
+                        <Grid Margin="5">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="2*"/>
+                                <ColumnDefinition Width="1*"/>
+                            </Grid.ColumnDefinitions>
+                            
+                            <StackPanel Grid.Column="0" Margin="5">
+                                <TextBlock Text="BCD Boot Entries" FontWeight="Bold" Margin="0,0,0,5">
+                                    <TextBlock.ToolTip>
+                                        <ToolTip Content="List of all boot entries configured in your system. Green entries are set as default. Select an entry to edit its properties."/>
+                                    </TextBlock.ToolTip>
+                                </TextBlock>
+                                <ListBox Name="BCDList" Height="350" Margin="0,0,0,10">
+                                    <ListBox.ToolTip>
+                                        <ToolTip Content="Select a boot entry from this list to view and edit its properties. Entries marked with [DEFAULT] will boot automatically after the timeout period."/>
+                                    </ListBox.ToolTip>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding DisplayText}" FontWeight="Bold">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Foreground" Value="#0078D7"/>
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding IsDefault}" Value="True">
+                                                                    <Setter Property="Foreground" Value="#28a745"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                                <TextBlock Text="{Binding Id}" FontSize="10" Foreground="Gray"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <TextBox Name="BCDBox" AcceptsReturn="True" Height="150" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" IsReadOnly="True" Background="#222" Foreground="#00FF00">
+                                    <TextBox.ToolTip>
+                                        <ToolTip Content="Raw BCD output showing detailed information about all boot entries. This is the same output you would see from running 'bcdedit /enum /v' in Command Prompt."/>
+                                    </TextBox.ToolTip>
+                                </TextBox>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" Margin="5" Background="#E5E5E5">
+                                <TextBlock Text="Edit Selected Entry" FontWeight="Bold" Margin="5"/>
+                                <TextBlock Text="Identifier (GUID):" Margin="5,5,0,0">
+                                    <TextBlock.ToolTip>
+                                        <ToolTip Content="The unique identifier (GUID) for this boot entry. This is automatically generated by Windows and cannot be changed. Used internally by the boot manager to reference this entry."/>
+                                    </TextBlock.ToolTip>
+                                </TextBlock>
+                                <TextBox Name="EditId" Margin="5" IsReadOnly="True" Background="#DDD">
+                                    <TextBox.ToolTip>
+                                        <ToolTip Content="The unique identifier (GUID) for this boot entry. This is automatically generated by Windows and cannot be changed."/>
+                                    </TextBox.ToolTip>
+                                </TextBox>
+                                <TextBlock Text="Description:" Margin="5,5,0,0">
+                                    <TextBlock.ToolTip>
+                                        <ToolTip Content="The current description of this boot entry as stored in the BCD. This is what appears in the boot menu. You can change it using the 'New Friendly Name' field below."/>
+                                    </TextBlock.ToolTip>
+                                </TextBlock>
+                                <TextBox Name="EditDescription" Margin="5" IsReadOnly="True" Background="#DDD">
+                                    <TextBox.ToolTip>
+                                        <ToolTip Content="The current description of this boot entry. This field is read-only - use 'New Friendly Name' to change it."/>
+                                    </TextBox.ToolTip>
+                                </TextBox>
+                                <TextBlock Text="New Friendly Name:" Margin="5,5,0,0">
+                                    <TextBlock.ToolTip>
+                                        <ToolTip Content="Enter a new friendly name for this boot entry. This will replace the current description and appear in the boot menu. Examples: 'Windows 11', 'Windows 10 (Safe Mode)', 'Linux Ubuntu'."/>
+                                    </TextBlock.ToolTip>
+                                </TextBlock>
+                                <TextBox Name="EditName" Margin="5">
+                                    <TextBox.ToolTip>
+                                        <ToolTip Content="Enter a new friendly name for this boot entry. This will appear in the boot menu when you start your computer."/>
+                                    </TextBox.ToolTip>
+                                </TextBox>
+                                <Button Content="Update Description" Name="BtnUpdateBcd" Margin="5" Height="25">
+                                    <Button.ToolTip>
+                                        <ToolTip Content="Updates the boot entry description with the name you entered in 'New Friendly Name'. This change will appear in the boot menu after restart."/>
+                                    </Button.ToolTip>
+                                </Button>
+                                <Button Content="Set as Default Boot" Name="BtnSetDefault" Margin="5" Height="25" Background="#D78700" Foreground="White">
+                                    <Button.ToolTip>
+                                        <ToolTip Content="Sets this boot entry as the default option. Windows will automatically boot into this entry after the timeout period if you don't make a selection."/>
+                                    </Button.ToolTip>
+                                </Button>
+                                <Separator Margin="5,10"/>
+                                <TextBlock Text="Boot Timeout (Seconds):" Margin="5">
+                                    <TextBlock.ToolTip>
+                                        <ToolTip Content="The number of seconds the boot menu will wait before automatically starting the default boot entry. Range: 0-9999 seconds. 0 = no timeout (menu stays until you choose)."/>
+                                    </TextBlock.ToolTip>
+                                </TextBlock>
+                                <TextBox Name="TxtTimeout" Margin="5">
+                                    <TextBox.ToolTip>
+                                        <ToolTip Content="Enter the timeout in seconds (0-9999). 0 means the menu will wait indefinitely. Recommended: 10-30 seconds for most users."/>
+                                    </TextBox.ToolTip>
+                                </TextBox>
+                                <Button Content="Save Timeout" Name="BtnTimeout" Margin="5" Height="25">
+                                    <Button.ToolTip>
+                                        <ToolTip Content="Saves the boot timeout value. This determines how long the boot menu will wait before automatically starting the default entry."/>
+                                    </Button.ToolTip>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
+</TabItem>
+
+                    <TabItem Header="Advanced Properties">
+                        <Grid Margin="5">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            
+                            <TextBlock Grid.Row="0" Text="Select an entry from Basic Editor to edit all properties" FontStyle="Italic" Margin="5" Foreground="Gray"/>
+                            
+                            <DataGrid Grid.Row="1" Name="BCDPropertiesGrid" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" Margin="5">
+                                <DataGrid.ToolTip>
+                                    <ToolTip Content="Advanced properties for the selected boot entry. Edit values directly in this grid. Click 'Help' button for detailed parameter descriptions."/>
+                                </DataGrid.ToolTip>
+                                <DataGrid.Columns>
+                                    <DataGridTextColumn Header="Property" Binding="{Binding Name}" Width="200" IsReadOnly="True"/>
+                                    <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*"/>
+                                </DataGrid.Columns>
+                            </DataGrid>
+                            
+                            <StackPanel Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Bottom" Margin="5">
+                                <Button Content="Save Changes" Name="BtnSaveProperties" Height="30" Width="120" Background="#28a745" Foreground="White" Margin="5,0"/>
+                                <Button Content="Reset" Name="BtnResetProperties" Height="30" Width="80" Margin="5,0"/>
+                            </StackPanel>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
+            </Grid>
+        </TabItem>
+
+        <TabItem Header="Boot Menu Simulator">
+            <StackPanel Background="#003366" Margin="10">
+                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                    <Button Content="Load BCD Entries" Name="BtnSimLoadBCD" Height="35" Width="150" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,0,10,0" ToolTip="Load and refresh boot entries from BCD"/>
+                </StackPanel>
+                <TextBlock Text="Windows Boot Manager" Foreground="White" FontSize="22" HorizontalAlignment="Center" Margin="20"/>
+                <TextBlock Text="Choose an operating system to start:" Foreground="White" Margin="40,0,0,10"/>
+                <ListBox Name="SimList" Height="200" Width="500" Background="#003366" Foreground="White" BorderThickness="0" FontSize="18" Padding="20">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding}"/>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+                <TextBlock Name="SimTimeout" Text="Seconds until auto-start: 30" Foreground="White" HorizontalAlignment="Center" Margin="20"/>
+                <TextBlock Text="Use the BCD Editor tab to modify these entries." Foreground="#CCC" FontSize="10" HorizontalAlignment="Center"/>
+</StackPanel>
+</TabItem>
+
+        <TabItem Header="Driver Diagnostics">
+            <DockPanel Margin="10">
+                <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="Scan for Driver Errors" Height="35" Name="BtnDetect" Background="#dc3545" Foreground="White" Width="180" Margin="0,0,10,0"/>
+                        <Button Content="Scan for Missing Drivers" Height="35" Name="BtnScanDrivers" Background="#28a745" Foreground="White" Width="200" Margin="0,0,10,0"/>
+                        <Button Content="Scan All Drivers" Height="35" Name="BtnScanAllDrivers" Background="#17a2b8" Foreground="White" Width="150" Margin="0,0,10,0"/>
+                        <ComboBox Name="DriveCombo" Width="100" Height="35" VerticalContentAlignment="Center"/>
+                        <Button Content="Install Drivers" Height="35" Name="BtnInstallDrivers" Background="#6c757d" Foreground="White" Width="120" Margin="10,0,0,0" IsEnabled="False"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Button Content="All Missing Drivers" Height="30" Name="BtnAllMissingDrivers" Background="#e74c3c" Foreground="White" Width="160" Margin="0,0,10,0" ToolTip="Shows ALL devices with driver problems (any device class), including yellow exclamation marks in Device Manager"/>
+                        <Button Content="Driver Error Logs" Height="30" Name="BtnDriverErrors" Background="#6f42c1" Foreground="White" Width="150" Margin="0,0,10,0"/>
+                        <Button Content="Export Driver INF" Height="30" Name="BtnExportDriverInf" Background="#0078D7" Foreground="White" Width="150" Margin="0,0,10,0"/>
+                        <Button Content="Export Driver INF (Zip)" Height="30" Name="BtnExportDriverInfZip" Background="#005a9e" Foreground="White" Width="190" Margin="0,0,10,0"/>
+                        <Button Content="Missing Drive Helper" Height="30" Name="BtnMissingDrive" Background="#ffb900" Foreground="Black" Width="170" Margin="0,0,10,0"/>
+                        <Button Content="Driver Update Resources" Height="30" Name="BtnDriverResources" Background="#5a6268" Foreground="White" Width="190"/>
+                    </StackPanel>
+                </StackPanel>
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <TextBox Name="DrvBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" FontFamily="Consolas" Background="White" Foreground="Black" TextWrapping="Wrap" IsReadOnly="True"/>
+                </ScrollViewer>
+            </DockPanel>
+        </TabItem>
+
+        <TabItem Header="Boot Fixer">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                
+                <!-- One-Click Repair Button -->
+                <Border Grid.Row="0" Margin="0,0,0,15" Background="#E8F5E9" BorderBrush="#4CAF50" BorderThickness="2">
+                    <StackPanel Margin="15">
+                        <TextBlock Text="ONE-CLICK REPAIR" FontSize="18" FontWeight="Bold" Foreground="#2E7D32" Margin="0,0,0,5"/>
+                        <TextBlock Text="Automatically diagnose and repair common boot issues. Perfect for non-technical users." TextWrapping="Wrap" Foreground="#1B5E20" Margin="0,0,0,10"/>
+                        <Button Content="REPAIR MY PC" Name="BtnOneClickRepair" Height="50" Background="#4CAF50" Foreground="White" FontSize="16" FontWeight="Bold" Cursor="Hand" Margin="0,5"/>
+                        <TextBlock Name="TxtOneClickStatus" Text="Click the button above to start automated repair" TextWrapping="Wrap" Foreground="#2E7D32" Margin="0,5,0,0" FontStyle="Italic"/>
+                    </StackPanel>
+                </Border>
+                
+                <StackPanel Grid.Row="1" Margin="0,0,0,10">
+                    <CheckBox Name="ChkTestMode" Content="Test Mode (Preview commands only - will not execute)" IsChecked="True" FontWeight="Bold" Foreground="#d78700" Margin="5"/>
+                    <TextBlock Text="When Test Mode is enabled, commands are displayed but not executed. Uncheck to apply fixes." Foreground="Gray" Margin="5,0,0,5" TextWrapping="Wrap"/>
+                </StackPanel>
+                
+                <GroupBox Grid.Row="1" Header="Boot Repair Operations" Margin="5">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+<StackPanel Margin="10">
+                            <Button Content="1. Rebuild BCD from Windows Installation" Height="40" Name="BtnRebuildBCD" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,5"/>
+                            <TextBlock Name="TxtRebuildBCD" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
+                            
+                            <Button Content="2. Fix Boot Files (bootrec /fixboot)" Height="40" Name="BtnFixBoot" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
+                            <TextBlock Name="TxtFixBoot" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
+                            
+                            <Button Content="3. Scan for Windows Installations" Height="40" Name="BtnScanWindows" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
+                            <TextBlock Name="TxtScanWindows" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
+                            
+                            <Button Content="4. Rebuild BCD (bootrec /rebuildbcd)" Height="40" Name="BtnRebuildBCD2" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
+                            <TextBlock Name="TxtRebuildBCD2" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
+                            
+                            <Button Content="5. Set Default Boot Entry" Height="40" Name="BtnSetDefaultBoot" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
+                            <TextBlock Name="TxtSetDefault" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
+                            
+                            <Button Content="6. Boot Diagnosis" Height="40" Name="BtnBootDiagnosis" Background="#28a745" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
+                            <TextBlock Name="TxtBootDiagnosis" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to run comprehensive boot diagnosis"/>
+</StackPanel>
+                    </ScrollViewer>
+                </GroupBox>
+                
+                <GroupBox Grid.Row="2" Header="Command Output" Margin="5,10,5,5">
+                    <ScrollViewer Height="150" VerticalScrollBarVisibility="Auto">
+                        <TextBox Name="FixerOutput" AcceptsReturn="True" FontFamily="Consolas" Background="#222" Foreground="#00FF00" IsReadOnly="True" TextWrapping="Wrap"/>
+                    </ScrollViewer>
+                </GroupBox>
+            </Grid>
+</TabItem>
+
+        <TabItem Header="Diagnostics">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                    <TextBlock Text="Target Drive:" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                    <ComboBox Name="DiagDriveCombo" Width="120" Height="30" VerticalContentAlignment="Center" Margin="0,0,20,0"/>
+                    <TextBlock Name="CurrentOSLabel" Text="" VerticalAlignment="Center" Foreground="#28a745" FontWeight="Bold" Margin="0,0,10,0"/>
+                </StackPanel>
+                
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
+                    <Button Content="Check System Restore" Height="35" Name="BtnCheckRestore" Background="#28a745" Foreground="White" Width="180" Margin="0,0,10,0"/>
+                    <Button Content="Create Restore Point" Height="35" Name="BtnCreateRestorePoint" Background="#6f42c1" Foreground="White" Width="180" Margin="0,0,10,0"/>
+                    <Button Content="List Restore Points" Height="35" Name="BtnListRestorePoints" Background="#17a2b8" Foreground="White" Width="180" Margin="0,0,10,0"/>
+                    <Button Content="Check Reagentc Health" Height="35" Name="BtnCheckReagentc" Background="#0078D7" Foreground="White" Width="180" Margin="0,0,10,0"/>
+                    <Button Content="Get OS Information" Height="35" Name="BtnGetOSInfo" Background="#6f42c1" Foreground="White" Width="180" Margin="0,0,10,0"/>
+                    <Button Content="Install Failure Analysis" Height="35" Name="BtnInstallFailure" Background="#dc3545" Foreground="White" Width="200"/>
+</StackPanel>
+                
+                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <TextBox Name="DiagBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" FontFamily="Consolas" Background="White" Foreground="Black" TextWrapping="Wrap" IsReadOnly="True" Padding="10"/>
+                </ScrollViewer>
+            </Grid>
+</TabItem>
+
+        <TabItem Header="Diagnostics &amp; Logs">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                
+                <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                        <TextBlock Text="Target Drive:" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
+                        <ComboBox Name="LogDriveCombo" Width="120" Height="30" VerticalContentAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                        <Button Content="Driver Forensics" Height="35" Name="BtnDriverForensics" Background="#dc3545" Foreground="White" Width="150" Margin="0,0,10,0"/>
+                        <Button Content="Analyze Boot Log" Height="35" Name="BtnAnalyzeBootLog" Background="#dc3545" Foreground="White" Width="150" Margin="0,0,10,0"/>
+                        <Button Content="Analyze Event Logs" Height="35" Name="BtnAnalyzeEventLogs" Background="#17a2b8" Foreground="White" Width="150" Margin="0,0,10,0"/>
+                        <Button Content="Full Boot Diagnosis" Height="35" Name="BtnFullBootDiagnosis" Background="#28a745" Foreground="White" Width="150" Margin="0,0,10,0"/>
+                        <Button Content="Hardware Support" Height="35" Name="BtnHardwareSupport" Background="#6f42c1" Foreground="White" Width="150" Margin="0,0,10,0"/>
+                        <Menu VerticalAlignment="Center" Margin="0,0,10,0">
+                            <MenuItem Header="More Tools">
+                                <MenuItem Header="Unofficial Repair Tips" Name="BtnRepairTips" ToolTip="Unofficial repair tips and workarounds"/>
+                                <MenuItem Header="Generate Registry Override Script" Name="BtnGenRegScript" ToolTip="Generate registry override script"/>
+                                <MenuItem Header="One-Click Registry Fixes" Name="BtnOneClickFix" ToolTip="One-click registry fixes"/>
+                                <Separator/>
+                                <MenuItem Header="Filter Driver Forensics" Name="BtnFilterForensics" ToolTip="Filter driver forensics results"/>
+                                <MenuItem Header="Recommended Tools" Name="BtnRecommendedTools" ToolTip="Recommended diagnostic tools"/>
+                                <Separator/>
+                                <MenuItem Header="Export In-Use Drivers" Name="BtnExportDrivers" ToolTip="Export currently in-use drivers"/>
+                                <MenuItem Header="🧹 Generate Cleanup Script" Name="BtnGenCleanupScript" ToolTip="Generate cleanup script"/>
+                                <Separator/>
+                                <MenuItem Header="⬆️ In-Place Upgrade Readiness" Name="BtnInPlaceReadiness" ToolTip="Check in-place upgrade readiness"/>
+                                <MenuItem Header="✅ Ensure Repair-Install Ready" Name="BtnRepairInstallReady" ToolTip="Ensure repair-install is ready"/>
+                                <MenuItem Header="📋 Repair Templates" Name="BtnRepairTemplates" ToolTip="Repair templates"/>
+                            </MenuItem>
+                        </Menu>
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                        <Button Content="Comprehensive Log Analysis" Height="35" Name="BtnComprehensiveLogAnalysis" Background="#dc3545" Foreground="White" Width="250" Margin="0,0,10,0" FontWeight="Bold" ToolTip="Gather and analyze all important logs from all tiers"/>
+                        <Button Content="Open Event Viewer" Height="35" Name="BtnOpenEventViewer" Background="#17a2b8" Foreground="White" Width="180" Margin="0,0,10,0" ToolTip="Open Windows Event Viewer"/>
+                        <Button Content="Crash Dump Analyzer" Height="35" Name="BtnCrashDumpAnalyzer" Background="#6f42c1" Foreground="White" Width="200" Margin="0,0,10,0" ToolTip="Launch crashanalyze.exe to analyze crash dumps"/>
+                    </StackPanel>
+                </StackPanel>
+                
+                <TextBlock Grid.Row="1" Text="Offline log analysis from target Windows drive. Driver Forensics identifies missing storage drivers and required INF files. Hardware Support shows manufacturer links and driver update alerts." 
+                           FontStyle="Italic" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                
+                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <TextBox Name="LogAnalysisBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" FontFamily="Consolas" Background="White" Foreground="Black" TextWrapping="Wrap" IsReadOnly="True" Padding="10"/>
+                </ScrollViewer>
+            </Grid>
+        </TabItem>
+        
+        <TabItem Header="Repair Install Forcer">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                
+                <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                    <TextBlock Text="Force Windows to perform a repair-only in-place upgrade from ISO" FontWeight="Bold" FontSize="14" Margin="0,0,0,10"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                        <RadioButton Name="RbOnlineMode" Content="Online Mode (Running Windows)" IsChecked="True" Margin="0,0,20,0"/>
+                        <RadioButton Name="RbOfflineMode" Content="Offline Mode (Non-Booting PC - WinPE/WinRE)" Foreground="#d78700"/>
+                    </StackPanel>
+                    <TextBlock Name="RepairModeDescription" Text="This forces Setup to reinstall system files while keeping apps and data. Requires same edition, architecture, and build family. Must run from inside Windows." 
+                               Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                </StackPanel>
+                
+                <GroupBox Grid.Row="1" Header="ISO Selection &amp; Options" Margin="5">
+                    <StackPanel Margin="10">
+                        <StackPanel Orientation="Horizontal" Margin="0,5" Name="OfflineDrivePanel" Visibility="Collapsed">
+                            <TextBlock Text="Offline Windows Drive:" VerticalAlignment="Center" Width="180" Margin="0,0,10,0"/>
+                            <ComboBox Name="RepairOfflineDrive" Width="100" Height="25" VerticalContentAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock Text="(Drive letter where Windows is installed)" Foreground="Gray" VerticalAlignment="Center" FontStyle="Italic"/>
+                        </StackPanel>
+                        
+                        <StackPanel Orientation="Horizontal" Margin="0,5">
+                            <TextBlock Text="ISO/Mounted Folder Path:" VerticalAlignment="Center" Width="180" Margin="0,0,10,0"/>
+                            <TextBox Name="RepairISOPath" Width="400" Height="25" VerticalContentAlignment="Center" Margin="0,0,10,0"/>
+                            <Button Content="Browse..." Name="BtnBrowseISO" Width="80" Height="25"/>
+                        </StackPanel>
+                        
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,5">
+                            <CheckBox Name="ChkSkipCompat" Content="Skip Compatibility Checks" IsChecked="True" Margin="0,0,20,0"/>
+                            <CheckBox Name="ChkDisableDynamicUpdate" Content="Disable Dynamic Update" IsChecked="True" Margin="0,0,20,0"/>
+                            <CheckBox Name="ChkForceEdition" Content="Force Edition Alignment" IsChecked="False"/>
+                        </StackPanel>
+                        
+                        <StackPanel Orientation="Horizontal" Margin="0,10,0,5">
+                            <Button Content="Check Prerequisites" Name="BtnCheckPrereq" Background="#17a2b8" Foreground="White" Width="150" Height="35" Margin="0,0,10,0"/>
+                            <Button Content="Show Instructions" Name="BtnShowInstructions" Background="#6c757d" Foreground="White" Width="150" Height="35" Margin="0,0,10,0"/>
+                            <Button Content="Start Repair Install" Name="BtnStartRepair" Background="#28a745" Foreground="White" Width="150" Height="35" FontWeight="Bold"/>
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+                
+                <GroupBox Grid.Row="2" Header="Status &amp; Output" Margin="5,10,5,5">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <TextBox Name="RepairInstallOutput" AcceptsReturn="True" FontFamily="Consolas" Background="#222" Foreground="#00FF00" IsReadOnly="True" TextWrapping="Wrap" Padding="10"/>
+                    </ScrollViewer>
+                </GroupBox>
+                
+                <TextBlock Grid.Row="3" Text="Note: This will launch Windows Setup and restart your system. Ensure you have backups and BitLocker recovery key if applicable." 
+                           Foreground="#d78700" FontStyle="Italic" TextWrapping="Wrap" Margin="5,10,5,0"/>
+            </Grid>
+        </TabItem>
+        
+        <TabItem Header="Summary">
+            <Grid Margin="10">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+                
+                <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                    <TextBlock Text="Windows Boot Health &amp; Update Eligibility Summary" FontWeight="Bold" FontSize="14" Margin="0,0,0,10"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                        <TextBlock Text="Target Drive:" VerticalAlignment="Center" Width="100" Margin="0,0,10,0"/>
+                        <ComboBox Name="SummaryDriveCombo" Width="100" Height="25" VerticalContentAlignment="Center" Margin="0,0,10,0"/>
+                        <Button Content="Refresh Summary" Name="BtnRefreshSummary" Background="#0078D7" Foreground="White" Width="150" Height="35" FontWeight="Bold"/>
+                    </StackPanel>
+                </StackPanel>
+                
+                <TabControl Grid.Row="1" Name="SummaryTabControl">
+                    <TabItem Header="Boot Health">
+                        <Grid Margin="5">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            
+                            <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                                <TextBlock Text="Boot Health Overview" FontWeight="Bold" FontSize="12" Margin="0,0,0,5"/>
+                                <TextBlock Name="BootHealthStatus" Text="Click 'Refresh Summary' to analyze boot health" 
+                                           FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                <TextBox Name="BootHealthBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" 
+                                         FontFamily="Consolas" Background="White" Foreground="Black" 
+                                         TextWrapping="Wrap" IsReadOnly="True" Padding="10"/>
+                            </ScrollViewer>
+                        </Grid>
+                    </TabItem>
+                    
+                    <TabItem Header="Windows Update Eligibility">
+                        <Grid Margin="5">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            
+                            <StackPanel Grid.Row="0" Margin="0,0,0,10">
+                                <TextBlock Text="In-Place Repair Upgrade Eligibility" FontWeight="Bold" FontSize="12" Margin="0,0,0,5"/>
+                                <TextBlock Name="UpdateEligibilityStatus" Text="Click 'Refresh Summary' to check Windows Update eligibility" 
+                                           FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
+                            </StackPanel>
+                            
+                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                                <TextBox Name="UpdateEligibilityBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" 
+                                         FontFamily="Consolas" Background="White" Foreground="Black" 
+                                         TextWrapping="Wrap" IsReadOnly="True" Padding="10"/>
+                            </ScrollViewer>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
+            </Grid>
+        </TabItem>
+</TabControl>
+    
+    <!-- Status Bar -->
+    <StatusBar Grid.Row="3" Background="#E5E5E5" Height="25">
+        <StatusBar.ItemsPanel>
+            <ItemsPanelTemplate>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                </Grid>
+            </ItemsPanelTemplate>
+        </StatusBar.ItemsPanel>
+        <StatusBarItem Grid.Column="0">
+            <TextBlock Name="StatusBarText" Text="Ready" VerticalAlignment="Center" Margin="5,0"/>
+        </StatusBarItem>
+        <StatusBarItem Grid.Column="1">
+            <StackPanel Orientation="Horizontal" Margin="5,0">
+                <TextBlock Name="StatusBarProgress" Text="" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="#0078D7" FontWeight="Bold"/>
+                <ProgressBar Name="StatusBarProgressBar" Width="100" Height="15" Visibility="Collapsed" IsIndeterminate="True"/>
+            </StackPanel>
+        </StatusBarItem>
+    </StatusBar>
+</Grid>
+</Window>

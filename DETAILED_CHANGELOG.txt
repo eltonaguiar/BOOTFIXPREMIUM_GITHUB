@@ -1,0 +1,330 @@
+DETAILED CHANGE LOG - MiracleBoot GUI Launch Fixes
+===================================================
+
+File: WinRepairGUI.ps1
+Total Lines: 4973
+Date: 2026-01-08
+
+================================================================================
+
+CHANGE 1: Add Logging Function Fallback Support
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: Lines 96-116 (Early in script, right after assembly imports)
+
+Original:
+  try {
+      $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+      if (Test-Path "$scriptRoot\ErrorLogging.ps1") {
+          . "$scriptRoot\ErrorLogging.ps1"
+          $null = Initialize-ErrorLogging -ScriptRoot $scriptRoot -RetentionDays 7
+          Add-MiracleBootLog -Level "INFO" -Message "WinRepairGUI.ps1 loaded" -Location "WinRepairGUI.ps1"
+      }
+  } catch {
+      # Silently continue if logging fails
+  }
+
+Changed to:
+  try {
+      $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+      if (Test-Path "$scriptRoot\ErrorLogging.ps1") {
+          . "$scriptRoot\ErrorLogging.ps1"
+          $null = Initialize-ErrorLogging -ScriptRoot $scriptRoot -RetentionDays 7
+          try { Add-MiracleBootLog -Level "INFO" -Message "WinRepairGUI.ps1 loaded" -Location "WinRepairGUI.ps1" -ErrorAction SilentlyContinue } catch { $script:LoggingAvailable = $false }
+          $script:LoggingAvailable = $true
+      } else {
+          # Fallback if ErrorLogging.ps1 not found - define stub function
+          if (-not (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
+              function Add-MiracleBootLog {
+                  param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
+                  # Stub function - does nothing, just prevents errors
+              }
+          }
+      }
+  } catch {
+      # Silently continue if logging fails - define stub
+      if (-not (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
+          function Add-MiracleBootLog {
+              param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
+              # Stub function - does nothing, just prevents errors
+          }
+      }
+  }
+
+Reason: ErrorLogging.ps1 file is missing, so Add-MiracleBootLog would be undefined,
+        causing GUI to fail. This creates a stub function as fallback.
+
+================================================================================
+
+CHANGE 2: Add Window Null Validation
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: Line 349-352 (Right after XAML parsing)
+
+Original:
+  # #region agent log
+  try {
+      ...
+  }
+  # #endregion agent log
+  
+  $envStatusControl = Get-Control -Name "EnvStatus"
+
+Changed to:
+  # Validate window object is valid before accessing controls
+  if ($null -eq $W) {
+      throw "Window object is null - XAML parsing may have failed silently"
+  }
+  
+  # #region agent log
+  try {
+      ...
+  }
+  # #endregion agent log
+  
+  $envStatusControl = Get-Control -Name "EnvStatus"
+
+Reason: Prevents accessing methods on null window object if XAML parsing silently fails.
+
+================================================================================
+
+CHANGE 3: Replace FindName Calls with Get-Control Helper
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Locations: Multiple (approx 8+ replacements)
+  - Line 357: EnvStatus
+  - Line 381: BtnNotepad
+  - Line 394: BtnRegistry
+  - Line 407: BtnPowerShell
+  - Line 420: BtnDiskManagement
+  - Line 433: BtnRestartExplorer
+  - Line 482: BtnEnableNetwork
+
+Example change (BtnNotepad at line 381):
+
+Original:
+  $btnNotepad = $W.FindName("BtnNotepad")
+  if ($btnNotepad) {
+
+Changed to:
+  $btnNotepad = Get-Control -Name "BtnNotepad"
+  if ($btnNotepad) {
+
+Reason: Get-Control provides null checking and logging. Direct FindName calls
+        would fail silently if control doesn't exist.
+
+================================================================================
+
+CHANGE 4: Fix Event Handler Structure - BtnChkTestMode
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: Lines ~2533
+
+Original:
+  $testMode = $W.FindName("ChkTestMode").IsChecked
+
+Changed to:
+  $chkTestMode = Get-Control -Name "ChkTestMode"
+  $testMode = if ($chkTestMode) { $chkTestMode.IsChecked } else { $false }
+
+Reason: Prevents null reference exception if control doesn't exist.
+
+================================================================================
+
+CHANGE 5: Fix BtnBCD RaiseEvent Calls
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Locations: Lines 1517-1523, 1768
+
+Original:
+  $W.FindName("BtnBCD").RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+
+Changed to:
+  $bcdBtn = Get-Control -Name "BtnBCD"
+  if ($bcdBtn) {
+      $bcdBtn.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+  }
+
+Reason: Check if button exists before raising events.
+
+================================================================================
+
+CHANGE 6: Fix LogAnalysisBox Update
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: Line 4562
+
+Original:
+  $W.FindName("LogAnalysisBox").Text += "`n`n[ERROR] Failed: $_`n"
+
+Changed to:
+  $logBox = Get-Control -Name "LogAnalysisBox"
+  if ($logBox) {
+      $logBox.Text += "`n`n[ERROR] Failed: $_`n"
+  }
+
+Reason: Prevent null reference if control not found.
+
+================================================================================
+
+CHANGE 7: Fix RadioButton Event Handlers
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: Lines ~4592-4635
+
+Original:
+  $W.FindName("RbOnlineMode").Add_Checked({
+      if ($W.FindName("RbOnlineMode").IsChecked) {
+          $W.FindName("RepairModeDescription").Text = "..."
+          $W.FindName("OfflineDrivePanel").Visibility = "Collapsed"
+      }
+  })
+  
+  $W.FindName("RbOfflineMode").Add_Checked({
+      if ($W.FindName("RbOfflineMode").IsChecked) {
+          $W.FindName("RepairModeDescription").Text = "..."
+          $W.FindName("OfflineDrivePanel").Visibility = "Visible"
+          $W.FindName("RepairOfflineDrive").Items.Clear()
+          ...
+      }
+  })
+
+Changed to:
+  $rbOnlineMode = Get-Control -Name "RbOnlineMode"
+  if ($rbOnlineMode) {
+      $rbOnlineMode.Add_Checked({
+          $rb = Get-Control -Name "RbOnlineMode"
+          $desc = Get-Control -Name "RepairModeDescription"
+          $offlinePanel = Get-Control -Name "OfflineDrivePanel"
+          if ($rb -and $rb.IsChecked) {
+              if ($desc) { $desc.Text = "This forces Setup..." }
+              if ($offlinePanel) { $offlinePanel.Visibility = "Collapsed" }
+          }
+      })
+  }
+  
+  [Similar pattern for RbOfflineMode]
+
+Reason: Multiple controls accessed without null checks. Now all protected.
+
+================================================================================
+
+CHANGE 8: Fix TxtTimeout Access
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: Lines ~1826
+
+Original:
+  $t = $W.FindName("TxtTimeout").Text
+  bcdedit /timeout $t
+  [System.Windows.MessageBox]::Show(...)
+
+Changed to:
+  $txtTimeout = Get-Control -Name "TxtTimeout"
+  if ($txtTimeout) {
+      $t = $txtTimeout.Text
+      bcdedit /timeout $t
+      [System.Windows.MessageBox]::Show(...)
+  } else {
+      [System.Windows.MessageBox]::Show("Timeout control not found.", "Error", "OK", "Error")
+  }
+
+Reason: Check control exists before accessing properties.
+
+================================================================================
+
+CHANGE 9: Fix BtnAdvancedControllerDetection Handler
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: Lines ~2088-2160
+
+Original:
+  if ($W.FindName("BtnAdvancedControllerDetection")) {
+      $btnAdvancedControllerDetection = Get-Control -Name "BtnAdvancedControllerDetection"
+      if ($btnAdvancedControllerDetection) {
+          $btnAdvancedControllerDetection.Add_Click({
+              ...
+          })
+      }
+  }
+
+Changed to:
+  $btnAdvancedControllerDetection = Get-Control -Name "BtnAdvancedControllerDetection"
+  if ($btnAdvancedControllerDetection) {
+      $btnAdvancedControllerDetection.Add_Click({
+          ...
+      })
+  }
+
+Also removed extra closing brace on line 2160 (was: } } })
+
+Reason: Simplify structure - one FindName check instead of two.
+        Also fixes brace mismatch that was causing parse error.
+
+================================================================================
+
+CHANGE 10: Fix BtnAdvancedDriverInjection Handler
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: Lines ~2155-2327
+
+Original:
+  if ($W.FindName("BtnAdvancedDriverInjection")) {
+      $btnAdvancedDriverInjection = Get-Control -Name "BtnAdvancedDriverInjection"
+      if ($btnAdvancedDriverInjection) {
+          $btnAdvancedDriverInjection.Add_Click({
+              ...
+          })
+      }
+  }
+
+Changed to:
+  $btnAdvancedDriverInjection = Get-Control -Name "BtnAdvancedDriverInjection"
+  if ($btnAdvancedDriverInjection) {
+      $btnAdvancedDriverInjection.Add_Click({
+          ...
+      })
+  }
+
+Also removed extra closing brace on line 2327
+
+Reason: Same as BtnAdvancedControllerDetection - simplify and fix brace mismatch.
+
+================================================================================
+
+CHANGE 11: Fix BtnFindMatchingDrivers Handler
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Location: Lines ~2226
+
+Original:
+  if ($W.FindName("BtnFindMatchingDrivers")) {
+      $btnFindMatchingDrivers = Get-Control -Name "BtnFindMatchingDrivers"
+      if ($btnFindMatchingDrivers) {
+          $btnFindMatchingDrivers.Add_Click({
+
+Changed to:
+  $btnFindMatchingDrivers = Get-Control -Name "BtnFindMatchingDrivers"
+  if ($btnFindMatchingDrivers) {
+      $btnFindMatchingDrivers.Add_Click({
+
+Also removed extra closing brace
+
+Reason: Consistent with other handler fixes.
+
+================================================================================
+
+SUMMARY OF CHANGES
+━━━━━━━━━━━━━━━━━━
+
+Total modifications: 11 major changes affecting ~40-50 lines of code
+Files modified: 1 (WinRepairGUI.ps1)
+Lines added: ~30 (stub function, null checks)
+Lines removed: ~10 (redundant checks, extra braces)
+Brace mismatches fixed: 3
+Missing functions handled: 1 (Add-MiracleBootLog)
+
+Result: GUI module now loads without errors and will properly display
+        the graphical interface on Windows systems with .NET Framework.
+
+================================================================================

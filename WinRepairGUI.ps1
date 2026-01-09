@@ -93,15 +93,76 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName Microsoft.VisualBasic
 
 # Load centralized logging system
+$script:LoggingAvailable = $false
 try {
     $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
     if (Test-Path "$scriptRoot\ErrorLogging.ps1") {
         . "$scriptRoot\ErrorLogging.ps1"
         $null = Initialize-ErrorLogging -ScriptRoot $scriptRoot -RetentionDays 7
-        Add-MiracleBootLog -Level "INFO" -Message "WinRepairGUI.ps1 loaded" -Location "WinRepairGUI.ps1"
+        try { Add-MiracleBootLog -Level "INFO" -Message "WinRepairGUI.ps1 loaded" -Location "WinRepairGUI.ps1" -ErrorAction SilentlyContinue } catch { $script:LoggingAvailable = $false }
+        $script:LoggingAvailable = $true
+    } else {
+        # Fallback if ErrorLogging.ps1 not found - define stub function
+        if (-not (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
+            function Add-MiracleBootLog {
+                param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
+                # Stub function - does nothing, just prevents errors
+            }
+        }
     }
 } catch {
-    # Silently continue if logging fails
+    # Silently continue if logging fails - define stub
+    if (-not (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
+        function Add-MiracleBootLog {
+            param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
+            # Stub function - does nothing, just prevents errors
+        }
+    }
+}
+
+# Function to log GUI failures that could cause TUI fallback
+function Log-GUIFailure {
+    param(
+        [string]$Location,
+        [string]$Error,
+        [string]$Details = "",
+        [Exception]$Exception = $null
+    )
+    
+    $logMessage = "GUI FAILURE - Potential TUI Fallback`n"
+    $logMessage += "Location: $Location`n"
+    $logMessage += "Error: $Error`n"
+    if ($Details) {
+        $logMessage += "Details: $Details`n"
+    }
+    if ($Exception) {
+        $logMessage += "Exception: $($Exception.Message)`n"
+        $logMessage += "Stack Trace: $($Exception.StackTrace)`n"
+    }
+    $logMessage += "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`n"
+    $logMessage += "`n" + ("=" * 80) + "`n"
+    
+    # Try to log using the logging system
+    try {
+        if ($script:LoggingAvailable) {
+            Add-MiracleBootLog -Level "ERROR" -Message $logMessage -Location $Location -Data @{
+                Error = $Error
+                Details = $Details
+                ExceptionMessage = if ($Exception) { $Exception.Message } else { "" }
+            } -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # Fallback: write to file directly
+        try {
+            $logFile = Join-Path $env:TEMP "MiracleBoot_GUI_Failures.log"
+            Add-Content -Path $logFile -Value $logMessage -ErrorAction SilentlyContinue
+        } catch {
+            # Last resort: write to console
+            Write-Host $logMessage -ForegroundColor Red
+        }
+    }
+    
+    return $logMessage
 }
 
 # Define missing functions that GUI expects
@@ -157,483 +218,92 @@ function Show-SymbolHelper {
     Write-Host "Keyboard Symbol Helper" -ForegroundColor Cyan
     Write-Host "======================" -ForegroundColor Cyan
     Write-Host "Common Alt Codes:" -ForegroundColor Yellow
-    Write-Host "Alt+0176 = ° (degree)" -ForegroundColor White
-    Write-Host "Alt+0169 = © (copyright)" -ForegroundColor White
-    Write-Host "Alt+0174 = ® (registered)" -ForegroundColor White
-    Write-Host "Alt+0153 = ™ (trademark)" -ForegroundColor White
-    Write-Host "Alt+0131 = f (function)" -ForegroundColor White
+    Write-Host ("Alt+0176 = {0} (degree)" -f [char]0x00B0) -ForegroundColor White
+    Write-Host ("Alt+0169 = {0} (copyright)" -f [char]0x00A9) -ForegroundColor White
+    Write-Host ("Alt+0174 = {0} (registered)" -f [char]0x00AE) -ForegroundColor White
+    Write-Host ("Alt+0153 = {0} (trademark)" -f [char]0x2122) -ForegroundColor White
+    Write-Host ("Alt+0131 = {0} (function)" -f [char]0x0192) -ForegroundColor White
     Write-Host ""
     Write-Host "Use Windows Character Map for more symbols." -ForegroundColor Gray
 }
 
 # Helper function to safely get controls with null checking
-# Note: This will be defined inside Start-GUI to access $W directly
+# Defined at script level so handlers can use it (returns null if $W doesn't exist yet)
+function Get-Control {
+    param([string]$Name, [switch]$Silent)  # Silent flag to suppress logging for optional controls
+    if (-not $W) {
+        if (-not $Silent) {
+            try { Add-MiracleBootLog -Level "WARNING" -Message "Window object not available" -Location "Get-Control" -NoConsole -ErrorAction SilentlyContinue } catch {}
+        }
+        return $null
+    }
+    $control = $W.FindName($Name)
+    if (-not $control) {
+        if (-not $Silent) {
+            try { Add-MiracleBootLog -Level "WARNING" -Message "Control '$Name' not found in XAML" -Location "Get-Control" -Data @{ControlName=$Name} -NoConsole -ErrorAction SilentlyContinue } catch {}
+        }
+    }
+    return $control
+}
 
 function Start-GUI {
     # XAML definition for the main window
-    $XAML = @'
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
- xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
- Title="Miracle Boot v7.2.0 - Advanced Recovery (GitHub + Cursor)"
- Width="1200" Height="850" WindowStartupLocation="CenterScreen" Background="#F0F0F0">
-<Grid>
-    <Grid.RowDefinitions>
-        <RowDefinition Height="Auto"/>
-        <RowDefinition Height="*"/>
-        <RowDefinition Height="Auto"/>
-    </Grid.RowDefinitions>
+    # Resolve XAML path - check multiple possible locations
+    $xamlPath = $null
     
-    <!-- Utility Toolbar -->
-    <StackPanel Grid.Row="0" Orientation="Horizontal" Background="#E5E5E5" Margin="10,5">
-        <TextBlock Text="Utilities:" VerticalAlignment="Center" Margin="5,0,10,0" FontWeight="Bold"/>
-        <Button Content="Notepad" Name="BtnNotepad" Width="80" Height="25" Margin="2" ToolTip="Open Notepad"/>
-        <Button Content="Registry" Name="BtnRegistry" Width="80" Height="25" Margin="2" ToolTip="Open Registry Editor"/>
-        <Button Content="PowerShell" Name="BtnPowerShell" Width="90" Height="25" Margin="2" ToolTip="Open PowerShell"/>
-        <Button Content="System Restore" Name="BtnRestore" Width="110" Height="25" Margin="2" ToolTip="Open System Restore Points"/>
-        <Button Content="Disk Management" Name="BtnDiskManagement" Width="130" Height="25" Margin="2" ToolTip="Open Disk Management"/>
-        <Button Content="Restart Explorer" Name="BtnRestartExplorer" Width="130" Height="25" Margin="2" ToolTip="Restart Windows Explorer if it crashed"/>
-        <Separator Margin="10,0"/>
-        <Button Content="Enable Network" Name="BtnEnableNetwork" Width="110" Height="25" Margin="2" ToolTip="Enable network adapters and test internet"/>
-        <Button Content="Network Diagnostics" Name="BtnNetworkDiagnostics" Width="150" Height="25" Margin="2" ToolTip="Comprehensive network diagnostics and driver management"/>
-        <Button Content="Keyboard Symbols" Name="BtnKeyboardSymbols" Width="130" Height="25" Margin="2" ToolTip="Keyboard symbol helper and ALT code reference"/>
-        <Button Content="ChatGPT Help" Name="BtnChatGPT" Width="100" Height="25" Margin="2" ToolTip="Open ChatGPT for boot assistance help"/>
-        <Button Name="BtnSwitchToTUI" Width="35" Height="25" Margin="2" ToolTip="Switch to Command Line Mode (TUI)" Background="#2D2D30" Foreground="White" FontFamily="Consolas" FontSize="12" Padding="0">
-            <TextBlock Text="&gt;_" VerticalAlignment="Center" HorizontalAlignment="Center"/>
-        </Button>
-        <Separator Margin="10,0"/>
-        <TextBlock Name="NetworkStatus" Text="Network: Unknown" VerticalAlignment="Center" Margin="5,0" Foreground="Gray"/>
-        <TextBlock Name="EnvStatus" Text="Environment: Detecting..." VerticalAlignment="Center" Margin="10,0" Foreground="Gray"/>
-</StackPanel>
+    # Try PSScriptRoot first (if set)
+    if ($PSScriptRoot) {
+        $xamlPath = Join-Path $PSScriptRoot "WinRepairGUI.xaml"
+        if (-not (Test-Path -LiteralPath $xamlPath)) {
+            $xamlPath = $null
+        }
+    }
     
-    <TabControl Grid.Row="1" Margin="10">
-        <TabItem Header="Volumes &amp; Health">
-            <DockPanel Margin="10">
-                <Button DockPanel.Dock="Top" Content="Refresh Volume List" Height="35" Name="BtnVol" Background="#0078D7" Foreground="White" FontWeight="Bold"/>
-                <ListView Name="VolList" Margin="0,10,0,0">
-                    <ListView.View>
-                        <GridView>
-                            <GridViewColumn Header="Letter" DisplayMemberBinding="{Binding DriveLetter}" Width="50"/>
-                            <GridViewColumn Header="Label" DisplayMemberBinding="{Binding FileSystemLabel}" Width="150"/>
-                            <GridViewColumn Header="Size" DisplayMemberBinding="{Binding Size}" Width="100"/>
-                            <GridViewColumn Header="Status" DisplayMemberBinding="{Binding HealthStatus}" Width="100"/>
-                        </GridView>
-                    </ListView.View>
-                </ListView>
-            </DockPanel>
-</TabItem>
-
-<TabItem Header="BCD Editor">
-            <Grid Margin="10">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
-                
-                <!-- Toolbar -->
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
-                    <Button Content="Load/Refresh BCD" Height="35" Name="BtnBCD" Background="#0078D7" Foreground="White" Width="150" Margin="0,0,10,0"/>
-                    <Button Content="Create Backup" Height="35" Name="BtnBCDBackup" Background="#28a745" Foreground="White" Width="130" Margin="0,0,10,0"/>
-                    <Button Content="Fix Duplicates" Height="35" Name="BtnFixDuplicates" Background="#ffc107" Foreground="Black" Width="130" Margin="0,0,10,0"/>
-                    <Button Content="Sync to All EFI Partitions" Height="35" Name="BtnSyncBCD" Background="#6f42c1" Foreground="White" Width="200" Margin="0,0,10,0"/>
-                    <Button Content="Boot Diagnosis" Height="35" Name="BtnBootDiagnosisBCD" Background="#17a2b8" Foreground="White" Width="150"/>
-</StackPanel>
-                
-                <!-- Main Content with Tabs -->
-                <TabControl Grid.Row="1" Name="BCDTabControl">
-                    <TabItem Header="Basic Editor">
-                        <Grid Margin="5">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="2*"/>
-                                <ColumnDefinition Width="1*"/>
-                            </Grid.ColumnDefinitions>
-                            
-                            <StackPanel Grid.Column="0" Margin="5">
-                                <TextBlock Text="BCD Boot Entries" FontWeight="Bold" Margin="0,0,0,5"/>
-                                <ListBox Name="BCDList" Height="350" Margin="0,0,0,10">
-                                    <ListBox.ItemTemplate>
-                                        <DataTemplate>
-                                            <StackPanel>
-                                                <TextBlock Text="{Binding DisplayText}" FontWeight="Bold">
-                                                    <TextBlock.Style>
-                                                        <Style TargetType="TextBlock">
-                                                            <Setter Property="Foreground" Value="#0078D7"/>
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding IsDefault}" Value="True">
-                                                                    <Setter Property="Foreground" Value="#28a745"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </TextBlock.Style>
-                                                </TextBlock>
-                                                <TextBlock Text="{Binding Id}" FontSize="10" Foreground="Gray"/>
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
-                                <TextBox Name="BCDBox" AcceptsReturn="True" Height="150" VerticalScrollBarVisibility="Auto" FontFamily="Consolas" IsReadOnly="True" Background="#222" Foreground="#00FF00"/>
-                            </StackPanel>
-
-                            <StackPanel Grid.Column="1" Margin="5" Background="#E5E5E5">
-                                <TextBlock Text="Edit Selected Entry" FontWeight="Bold" Margin="5"/>
-                                <TextBlock Text="Identifier (GUID):" Margin="5,5,0,0"/>
-                                <TextBox Name="EditId" Margin="5" IsReadOnly="True" Background="#DDD"/>
-                                <TextBlock Text="Description:" Margin="5,5,0,0"/>
-                                <TextBox Name="EditDescription" Margin="5"/>
-                                <TextBlock Text="New Friendly Name:" Margin="5,5,0,0"/>
-                                <TextBox Name="EditName" Margin="5"/>
-                                <Button Content="Update Description" Name="BtnUpdateBcd" Margin="5" Height="25"/>
-                                <Button Content="Set as Default Boot" Name="BtnSetDefault" Margin="5" Height="25" Background="#D78700" Foreground="White"/>
-                                <Separator Margin="5,10"/>
-                                <TextBlock Text="Boot Timeout (Seconds):" Margin="5"/>
-                                <TextBox Name="TxtTimeout" Margin="5"/>
-                                <Button Content="Save Timeout" Name="BtnTimeout" Margin="5" Height="25"/>
-                            </StackPanel>
-                        </Grid>
-</TabItem>
-
-                    <TabItem Header="Advanced Properties">
-                        <Grid Margin="5">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
-                            </Grid.RowDefinitions>
-                            
-                            <TextBlock Grid.Row="0" Text="Select an entry from Basic Editor to edit all properties" FontStyle="Italic" Margin="5" Foreground="Gray"/>
-                            
-                            <DataGrid Grid.Row="1" Name="BCDPropertiesGrid" AutoGenerateColumns="False" CanUserAddRows="False" IsReadOnly="False" Margin="5">
-                                <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Property" Binding="{Binding Name}" Width="200" IsReadOnly="True"/>
-                                    <DataGridTextColumn Header="Value" Binding="{Binding Value}" Width="*"/>
-                                </DataGrid.Columns>
-                            </DataGrid>
-                            
-                            <StackPanel Grid.Row="1" Orientation="Horizontal" VerticalAlignment="Bottom" Margin="5">
-                                <Button Content="Save Changes" Name="BtnSaveProperties" Height="30" Width="120" Background="#28a745" Foreground="White" Margin="5,0"/>
-                                <Button Content="Reset" Name="BtnResetProperties" Height="30" Width="80" Margin="5,0"/>
-                            </StackPanel>
-                        </Grid>
-                    </TabItem>
-                </TabControl>
-            </Grid>
-        </TabItem>
-
-        <TabItem Header="Boot Menu Simulator">
-            <StackPanel Background="#003366" Margin="10">
-                <TextBlock Text="Windows Boot Manager" Foreground="White" FontSize="22" HorizontalAlignment="Center" Margin="20"/>
-                <TextBlock Text="Choose an operating system to start:" Foreground="White" Margin="40,0,0,10"/>
-                <ListBox Name="SimList" Height="200" Width="500" Background="#003366" Foreground="White" BorderThickness="0" FontSize="18" Padding="20">
-                    <ListBox.ItemTemplate>
-                        <DataTemplate>
-                            <TextBlock Text="{Binding}"/>
-                        </DataTemplate>
-                    </ListBox.ItemTemplate>
-                </ListBox>
-                <TextBlock Name="SimTimeout" Text="Seconds until auto-start: 30" Foreground="White" HorizontalAlignment="Center" Margin="20"/>
-                <TextBlock Text="Use the BCD Editor tab to modify these entries." Foreground="#CCC" FontSize="10" HorizontalAlignment="Center"/>
-</StackPanel>
-</TabItem>
-
-        <TabItem Header="Driver Diagnostics">
-            <DockPanel Margin="10">
-                <StackPanel DockPanel.Dock="Top" Margin="0,0,0,10">
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                        <Button Content="Scan for Driver Errors" Height="35" Name="BtnDetect" Background="#dc3545" Foreground="White" Width="180" Margin="0,0,10,0"/>
-                        <Button Content="Scan for Missing Drivers" Height="35" Name="BtnScanDrivers" Background="#28a745" Foreground="White" Width="200" Margin="0,0,10,0"/>
-                        <Button Content="Scan All Drivers" Height="35" Name="BtnScanAllDrivers" Background="#17a2b8" Foreground="White" Width="150" Margin="0,0,10,0"/>
-                        <ComboBox Name="DriveCombo" Width="100" Height="35" VerticalContentAlignment="Center"/>
-                        <Button Content="Install Drivers" Height="35" Name="BtnInstallDrivers" Background="#6c757d" Foreground="White" Width="120" Margin="10,0,0,0" IsEnabled="False"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal">
-                        <Button Content="Driver Error Logs" Height="30" Name="BtnDriverErrors" Background="#6f42c1" Foreground="White" Width="150" Margin="0,0,10,0"/>
-                        <Button Content="Export Driver INF" Height="30" Name="BtnExportDriverInf" Background="#0078D7" Foreground="White" Width="150" Margin="0,0,10,0"/>
-                        <Button Content="Export Driver INF (Zip)" Height="30" Name="BtnExportDriverInfZip" Background="#005a9e" Foreground="White" Width="190" Margin="0,0,10,0"/>
-                        <Button Content="Missing Drive Helper" Height="30" Name="BtnMissingDrive" Background="#ffb900" Foreground="Black" Width="170" Margin="0,0,10,0"/>
-                        <Button Content="Driver Update Resources" Height="30" Name="BtnDriverResources" Background="#5a6268" Foreground="White" Width="190"/>
-                    </StackPanel>
-                </StackPanel>
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <TextBox Name="DrvBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" FontFamily="Consolas" Background="White" Foreground="Black" TextWrapping="Wrap" IsReadOnly="True"/>
-                </ScrollViewer>
-            </DockPanel>
-        </TabItem>
-
-        <TabItem Header="Boot Fixer">
-            <Grid Margin="10">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-                
-                <!-- One-Click Repair Button -->
-                <Border Grid.Row="0" Margin="0,0,0,15" Background="#E8F5E9" BorderBrush="#4CAF50" BorderThickness="2">
-                    <StackPanel Margin="15">
-                        <TextBlock Text="🚀 ONE-CLICK REPAIR" FontSize="18" FontWeight="Bold" Foreground="#2E7D32" Margin="0,0,0,5"/>
-                        <TextBlock Text="Automatically diagnose and repair common boot issues. Perfect for non-technical users." TextWrapping="Wrap" Foreground="#1B5E20" Margin="0,0,0,10"/>
-                        <Button Content="REPAIR MY PC" Name="BtnOneClickRepair" Height="50" Background="#4CAF50" Foreground="White" FontSize="16" FontWeight="Bold" Cursor="Hand" Margin="0,5"/>
-                        <TextBlock Name="TxtOneClickStatus" Text="Click the button above to start automated repair" TextWrapping="Wrap" Foreground="#2E7D32" Margin="0,5,0,0" FontStyle="Italic"/>
-                    </StackPanel>
-                </Border>
-                
-                <StackPanel Grid.Row="1" Margin="0,0,0,10">
-                    <CheckBox Name="ChkTestMode" Content="Test Mode (Preview commands only - will not execute)" IsChecked="True" FontWeight="Bold" Foreground="#d78700" Margin="5"/>
-                    <TextBlock Text="When Test Mode is enabled, commands are displayed but not executed. Uncheck to apply fixes." Foreground="Gray" Margin="5,0,0,5" TextWrapping="Wrap"/>
-                </StackPanel>
-                
-                <GroupBox Grid.Row="1" Header="Boot Repair Operations" Margin="5">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-<StackPanel Margin="10">
-                            <Button Content="1. Rebuild BCD from Windows Installation" Height="40" Name="BtnRebuildBCD" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,5"/>
-                            <TextBlock Name="TxtRebuildBCD" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
-                            
-                            <Button Content="2. Fix Boot Files (bootrec /fixboot)" Height="40" Name="BtnFixBoot" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
-                            <TextBlock Name="TxtFixBoot" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
-                            
-                            <Button Content="3. Scan for Windows Installations" Height="40" Name="BtnScanWindows" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
-                            <TextBlock Name="TxtScanWindows" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
-                            
-                            <Button Content="4. Rebuild BCD (bootrec /rebuildbcd)" Height="40" Name="BtnRebuildBCD2" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
-                            <TextBlock Name="TxtRebuildBCD2" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
-                            
-                            <Button Content="5. Set Default Boot Entry" Height="40" Name="BtnSetDefaultBoot" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
-                            <TextBlock Name="TxtSetDefault" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to see command and explanation"/>
-                            
-                            <Button Content="6. Boot Diagnosis" Height="40" Name="BtnBootDiagnosis" Background="#28a745" Foreground="White" FontWeight="Bold" Margin="0,10,0,5"/>
-                            <TextBlock Name="TxtBootDiagnosis" TextWrapping="Wrap" Margin="10,5" Foreground="Gray" FontSize="11" Text="Click to run comprehensive boot diagnosis"/>
-</StackPanel>
-                    </ScrollViewer>
-                </GroupBox>
-                
-                <GroupBox Grid.Row="2" Header="Command Output" Margin="5,10,5,5">
-                    <ScrollViewer Height="150" VerticalScrollBarVisibility="Auto">
-                        <TextBox Name="FixerOutput" AcceptsReturn="True" FontFamily="Consolas" Background="#222" Foreground="#00FF00" IsReadOnly="True" TextWrapping="Wrap"/>
-                    </ScrollViewer>
-                </GroupBox>
-            </Grid>
-</TabItem>
-
-        <TabItem Header="Diagnostics">
-            <Grid Margin="10">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
-                
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
-                    <TextBlock Text="Target Drive:" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
-                    <ComboBox Name="DiagDriveCombo" Width="120" Height="30" VerticalContentAlignment="Center" Margin="0,0,20,0"/>
-                    <TextBlock Name="CurrentOSLabel" Text="" VerticalAlignment="Center" Foreground="#28a745" FontWeight="Bold" Margin="0,0,10,0"/>
-                </StackPanel>
-                
-                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
-                    <Button Content="Check System Restore" Height="35" Name="BtnCheckRestore" Background="#28a745" Foreground="White" Width="180" Margin="0,0,10,0"/>
-                    <Button Content="Create Restore Point" Height="35" Name="BtnCreateRestorePoint" Background="#6f42c1" Foreground="White" Width="180" Margin="0,0,10,0"/>
-                    <Button Content="List Restore Points" Height="35" Name="BtnListRestorePoints" Background="#17a2b8" Foreground="White" Width="180" Margin="0,0,10,0"/>
-                    <Button Content="Check Reagentc Health" Height="35" Name="BtnCheckReagentc" Background="#0078D7" Foreground="White" Width="180" Margin="0,0,10,0"/>
-                    <Button Content="Get OS Information" Height="35" Name="BtnGetOSInfo" Background="#6f42c1" Foreground="White" Width="180" Margin="0,0,10,0"/>
-                    <Button Content="Install Failure Analysis" Height="35" Name="BtnInstallFailure" Background="#dc3545" Foreground="White" Width="200"/>
-</StackPanel>
-                
-                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-                    <TextBox Name="DiagBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" FontFamily="Consolas" Background="White" Foreground="Black" TextWrapping="Wrap" IsReadOnly="True" Padding="10"/>
-                </ScrollViewer>
-            </Grid>
-</TabItem>
-
-        <TabItem Header="Diagnostics &amp; Logs">
-            <Grid Margin="10">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
-                
-                <StackPanel Grid.Row="0" Margin="0,0,0,10">
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                        <TextBlock Text="Target Drive:" VerticalAlignment="Center" Margin="0,0,10,0" FontWeight="Bold"/>
-                        <ComboBox Name="LogDriveCombo" Width="120" Height="30" VerticalContentAlignment="Center"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal">
-                        <Button Content="Driver Forensics" Height="35" Name="BtnDriverForensics" Background="#dc3545" Foreground="White" Width="150" Margin="0,0,10,0"/>
-                        <Button Content="Analyze Boot Log" Height="35" Name="BtnAnalyzeBootLog" Background="#dc3545" Foreground="White" Width="150" Margin="0,0,10,0"/>
-                        <Button Content="Analyze Event Logs" Height="35" Name="BtnAnalyzeEventLogs" Background="#17a2b8" Foreground="White" Width="150" Margin="0,0,10,0"/>
-                    <Button Content="Full Boot Diagnosis" Height="35" Name="BtnFullBootDiagnosis" Background="#28a745" Foreground="White" Width="150" Margin="0,0,10,0"/>
-                    <Button Content="Hardware Support" Height="35" Name="BtnHardwareSupport" Background="#6f42c1" Foreground="White" Width="150" Margin="0,0,10,0"/>
-                    <Button Content="Unofficial Repair Tips" Height="35" Name="BtnRepairTips" Background="#ffc107" Foreground="Black" Width="180" Margin="0,0,10,0"/>
-                    <Button Content="Generate Registry Override Script" Height="35" Name="BtnGenRegScript" Background="#dc3545" Foreground="White" Width="220" Margin="0,0,10,0"/>
-                    <Button Content="One-Click Registry Fixes" Height="35" Name="BtnOneClickFix" Background="#28a745" Foreground="White" Width="200" Margin="0,0,10,0"/>
-                    <Button Content="Filter Driver Forensics" Height="35" Name="BtnFilterForensics" Background="#17a2b8" Foreground="White" Width="180" Margin="0,0,10,0"/>
-                    <Button Content="Recommended Tools" Height="35" Name="BtnRecommendedTools" Background="#6c757d" Foreground="White" Width="160" Margin="0,0,10,0"/>
-                        <Button Content="Export In-Use Drivers" Height="35" Name="BtnExportDrivers" Background="#28a745" Foreground="White" Width="180" Margin="0,0,10,0"/>
-                        <Button Content="Generate Cleanup Script" Height="35" Name="BtnGenCleanupScript" Background="#ffc107" Foreground="Black" Width="180" Margin="0,0,10,0"/>
-                        <Button Content="In-Place Upgrade Readiness" Height="35" Name="BtnInPlaceReadiness" Background="#dc3545" Foreground="White" Width="200" Margin="0,0,10,0"/>
-                        <Button Content="Ensure Repair-Install Ready" Height="35" Name="BtnRepairInstallReady" Background="#dc3545" Foreground="White" Width="220" Margin="0,0,10,0"/>
-                        <Button Content="Repair Templates" Height="35" Name="BtnRepairTemplates" Background="#6f42c1" Foreground="White" Width="180"/>
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                        <Button Content="Comprehensive Log Analysis" Height="35" Name="BtnComprehensiveLogAnalysis" Background="#dc3545" Foreground="White" Width="250" Margin="0,0,10,0" FontWeight="Bold" ToolTip="Gather and analyze all important logs from all tiers"/>
-                        <Button Content="Open Event Viewer" Height="35" Name="BtnOpenEventViewer" Background="#17a2b8" Foreground="White" Width="180" Margin="0,0,10,0" ToolTip="Open Windows Event Viewer"/>
-                        <Button Content="Crash Dump Analyzer" Height="35" Name="BtnCrashDumpAnalyzer" Background="#6f42c1" Foreground="White" Width="200" Margin="0,0,10,0" ToolTip="Launch crashanalyze.exe to analyze crash dumps"/>
-                    </StackPanel>
-                </StackPanel>
-                
-                <TextBlock Grid.Row="1" Text="Offline log analysis from target Windows drive. Driver Forensics identifies missing storage drivers and required INF files. Hardware Support shows manufacturer links and driver update alerts." 
-                           FontStyle="Italic" Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"/>
-                
-                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-                    <TextBox Name="LogAnalysisBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" FontFamily="Consolas" Background="White" Foreground="Black" TextWrapping="Wrap" IsReadOnly="True" Padding="10"/>
-                </ScrollViewer>
-            </Grid>
-        </TabItem>
-        
-        <TabItem Header="Repair Install Forcer">
-            <Grid Margin="10">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
-                
-                <StackPanel Grid.Row="0" Margin="0,0,0,10">
-                    <TextBlock Text="Force Windows to perform a repair-only in-place upgrade from ISO" FontWeight="Bold" FontSize="14" Margin="0,0,0,10"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                        <RadioButton Name="RbOnlineMode" Content="Online Mode (Running Windows)" IsChecked="True" Margin="0,0,20,0"/>
-                        <RadioButton Name="RbOfflineMode" Content="Offline Mode (Non-Booting PC - WinPE/WinRE)" Foreground="#d78700"/>
-                    </StackPanel>
-                    <TextBlock Name="RepairModeDescription" Text="This forces Setup to reinstall system files while keeping apps and data. Requires same edition, architecture, and build family. Must run from inside Windows." 
-                               Foreground="Gray" TextWrapping="Wrap" Margin="0,0,0,10"/>
-                </StackPanel>
-                
-                <GroupBox Grid.Row="1" Header="ISO Selection &amp; Options" Margin="5">
-                    <StackPanel Margin="10">
-                        <StackPanel Orientation="Horizontal" Margin="0,5" Name="OfflineDrivePanel" Visibility="Collapsed">
-                            <TextBlock Text="Offline Windows Drive:" VerticalAlignment="Center" Width="180" Margin="0,0,10,0"/>
-                            <ComboBox Name="RepairOfflineDrive" Width="100" Height="25" VerticalContentAlignment="Center" Margin="0,0,10,0"/>
-                            <TextBlock Text="(Drive letter where Windows is installed)" Foreground="Gray" VerticalAlignment="Center" FontStyle="Italic"/>
-                        </StackPanel>
-                        
-                        <StackPanel Orientation="Horizontal" Margin="0,5">
-                            <TextBlock Text="ISO/Mounted Folder Path:" VerticalAlignment="Center" Width="180" Margin="0,0,10,0"/>
-                            <TextBox Name="RepairISOPath" Width="400" Height="25" VerticalContentAlignment="Center" Margin="0,0,10,0"/>
-                            <Button Content="Browse..." Name="BtnBrowseISO" Width="80" Height="25"/>
-                        </StackPanel>
-                        
-                        <StackPanel Orientation="Horizontal" Margin="0,10,0,5">
-                            <CheckBox Name="ChkSkipCompat" Content="Skip Compatibility Checks" IsChecked="True" Margin="0,0,20,0"/>
-                            <CheckBox Name="ChkDisableDynamicUpdate" Content="Disable Dynamic Update" IsChecked="True" Margin="0,0,20,0"/>
-                            <CheckBox Name="ChkForceEdition" Content="Force Edition Alignment" IsChecked="False"/>
-                        </StackPanel>
-                        
-                        <StackPanel Orientation="Horizontal" Margin="0,10,0,5">
-                            <Button Content="Check Prerequisites" Name="BtnCheckPrereq" Background="#17a2b8" Foreground="White" Width="150" Height="35" Margin="0,0,10,0"/>
-                            <Button Content="Show Instructions" Name="BtnShowInstructions" Background="#6c757d" Foreground="White" Width="150" Height="35" Margin="0,0,10,0"/>
-                            <Button Content="Start Repair Install" Name="BtnStartRepair" Background="#28a745" Foreground="White" Width="150" Height="35" FontWeight="Bold"/>
-                        </StackPanel>
-                    </StackPanel>
-                </GroupBox>
-                
-                <GroupBox Grid.Row="2" Header="Status &amp; Output" Margin="5,10,5,5">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <TextBox Name="RepairInstallOutput" AcceptsReturn="True" FontFamily="Consolas" Background="#222" Foreground="#00FF00" IsReadOnly="True" TextWrapping="Wrap" Padding="10"/>
-                    </ScrollViewer>
-                </GroupBox>
-                
-                <TextBlock Grid.Row="3" Text="Note: This will launch Windows Setup and restart your system. Ensure you have backups and BitLocker recovery key if applicable." 
-                           Foreground="#d78700" FontStyle="Italic" TextWrapping="Wrap" Margin="5,10,5,0"/>
-            </Grid>
-        </TabItem>
-        
-        <TabItem Header="Summary">
-            <Grid Margin="10">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                </Grid.RowDefinitions>
-                
-                <StackPanel Grid.Row="0" Margin="0,0,0,10">
-                    <TextBlock Text="Windows Boot Health &amp; Update Eligibility Summary" FontWeight="Bold" FontSize="14" Margin="0,0,0,10"/>
-                    <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                        <TextBlock Text="Target Drive:" VerticalAlignment="Center" Width="100" Margin="0,0,10,0"/>
-                        <ComboBox Name="SummaryDriveCombo" Width="100" Height="25" VerticalContentAlignment="Center" Margin="0,0,10,0"/>
-                        <Button Content="Refresh Summary" Name="BtnRefreshSummary" Background="#0078D7" Foreground="White" Width="150" Height="35" FontWeight="Bold"/>
-                    </StackPanel>
-                </StackPanel>
-                
-                <TabControl Grid.Row="1" Name="SummaryTabControl">
-                    <TabItem Header="Boot Health">
-                        <Grid Margin="5">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
-                            </Grid.RowDefinitions>
-                            
-                            <StackPanel Grid.Row="0" Margin="0,0,0,10">
-                                <TextBlock Text="Boot Health Overview" FontWeight="Bold" FontSize="12" Margin="0,0,0,5"/>
-                                <TextBlock Name="BootHealthStatus" Text="Click 'Refresh Summary' to analyze boot health" 
-                                           FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
-                            </StackPanel>
-                            
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                                <TextBox Name="BootHealthBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" 
-                                         FontFamily="Consolas" Background="White" Foreground="Black" 
-                                         TextWrapping="Wrap" IsReadOnly="True" Padding="10"/>
-                            </ScrollViewer>
-                        </Grid>
-                    </TabItem>
-                    
-                    <TabItem Header="Windows Update Eligibility">
-                        <Grid Margin="5">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="*"/>
-                            </Grid.RowDefinitions>
-                            
-                            <StackPanel Grid.Row="0" Margin="0,0,0,10">
-                                <TextBlock Text="In-Place Repair Upgrade Eligibility" FontWeight="Bold" FontSize="12" Margin="0,0,0,5"/>
-                                <TextBlock Name="UpdateEligibilityStatus" Text="Click 'Refresh Summary' to check Windows Update eligibility" 
-                                           FontSize="11" Foreground="Gray" TextWrapping="Wrap"/>
-                            </StackPanel>
-                            
-                            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-                                <TextBox Name="UpdateEligibilityBox" AcceptsReturn="True" VerticalScrollBarVisibility="Disabled" 
-                                         FontFamily="Consolas" Background="White" Foreground="Black" 
-                                         TextWrapping="Wrap" IsReadOnly="True" Padding="10"/>
-                            </ScrollViewer>
-                        </Grid>
-                    </TabItem>
-                </TabControl>
-            </Grid>
-        </TabItem>
-</TabControl>
+    # Try script root from calling script
+    if (-not $xamlPath) {
+        $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+        if ($scriptRoot) {
+            $xamlPath = Join-Path $scriptRoot "WinRepairGUI.xaml"
+            if (-not (Test-Path -LiteralPath $xamlPath)) {
+                $xamlPath = $null
+            }
+        }
+    }
     
-    <!-- Status Bar -->
-    <StatusBar Grid.Row="2" Background="#E5E5E5" Height="25">
-        <StatusBar.ItemsPanel>
-            <ItemsPanelTemplate>
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                </Grid>
-            </ItemsPanelTemplate>
-        </StatusBar.ItemsPanel>
-        <StatusBarItem Grid.Column="0">
-            <TextBlock Name="StatusBarText" Text="Ready" VerticalAlignment="Center" Margin="5,0"/>
-        </StatusBarItem>
-        <StatusBarItem Grid.Column="1">
-            <StackPanel Orientation="Horizontal" Margin="5,0">
-                <TextBlock Name="StatusBarProgress" Text="" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="#0078D7" FontWeight="Bold"/>
-                <ProgressBar Name="StatusBarProgressBar" Width="100" Height="15" Visibility="Collapsed" IsIndeterminate="True"/>
-            </StackPanel>
-        </StatusBarItem>
-    </StatusBar>
-</Grid>
-</Window>
-'@
+    # Try current directory
+    if (-not $xamlPath) {
+        $xamlPath = Join-Path (Get-Location).Path "WinRepairGUI.xaml"
+        if (-not (Test-Path -LiteralPath $xamlPath)) {
+            $xamlPath = $null
+        }
+    }
+    
+    # Try relative to this script's location
+    if (-not $xamlPath) {
+        $thisScriptPath = $MyInvocation.MyCommand.Path
+        if ($thisScriptPath) {
+            $thisScriptDir = Split-Path -Parent $thisScriptPath
+            $xamlPath = Join-Path $thisScriptDir "WinRepairGUI.xaml"
+            if (-not (Test-Path -LiteralPath $xamlPath)) {
+                $xamlPath = $null
+            }
+        }
+    }
+    
+    if (-not $xamlPath -or -not (Test-Path -LiteralPath $xamlPath)) {
+        $errorMsg = "XAML file not found. Searched in:`n"
+        $errorMsg += "  - PSScriptRoot: $(if ($PSScriptRoot) { $PSScriptRoot } else { 'not set' })`n"
+        $errorMsg += "  - Script path: $(if ($MyInvocation.MyCommand.Path) { Split-Path -Parent $MyInvocation.MyCommand.Path } else { 'not set' })`n"
+        $errorMsg += "  - Current directory: $((Get-Location).Path)"
+        throw $errorMsg
+    }
+    $XAML = Get-Content -LiteralPath $xamlPath -Raw -ErrorAction Stop
+    if ($XAML -match 'x:Class=') {
+        # Strip x:Class to avoid class mismatch when loading loose XAML.
+        $XAML = $XAML -replace '\s+x:Class="[^"]*"', ''
+        $XAML = $XAML -replace "\s+x:Class='[^']*'", ''
+        Write-Verbose "Removed x:Class attribute from XAML."
+    }
 
 
 # #region agent log
@@ -743,24 +413,7 @@ try {
     throw "Failed to parse XAML: $_"
 }
 
-# Helper function to safely get controls with null checking
-# MUST be defined here (right after $W is created) because it's called during event handler setup
-function Get-Control {
-    param([string]$Name, [switch]$Silent)  # Silent flag to suppress logging for optional controls
-    if (-not $W) {
-        if (-not $Silent) {
-            Add-MiracleBootLog -Level "WARNING" -Message "Window object not available" -Location "Get-Control" -NoConsole
-        }
-        return $null
-    }
-    $control = $W.FindName($Name)
-    if (-not $control) {
-        if (-not $Silent) {
-            Add-MiracleBootLog -Level "WARNING" -Message "Control '$Name' not found in XAML" -Location "Get-Control" -Data @{ControlName=$Name} -NoConsole
-        }
-    }
-    return $control
-}
+# Get-Control is now defined at script level (above) so handlers can use it
 
 # Helper function to safely wire up event handlers with null checking
 function Connect-EventHandler {
@@ -796,6 +449,99 @@ $envType = "FullOS"
 if (Test-Path 'HKLM:\System\CurrentControlSet\Control\MiniNT') { $envType = "WinRE" }
 if ($env:SystemDrive -eq 'X:') { $envType = "WinRE" }
 
+# Validate window object is valid before accessing controls
+if ($null -eq $W) {
+    throw "Window object is null - XAML parsing may have failed silently"
+}
+
+# Load WinRepairCore module to make helper functions available for button handlers
+try {
+    # Resolve WinRepairCore path with multiple fallbacks (handles dot-sourcing scenarios)
+    $coreModulePath = $null
+    
+    # Try 1: Current directory first (most common scenario)
+    $testPath = Join-Path (Get-Location).Path "WinRepairCore.ps1"
+    if (Test-Path -LiteralPath $testPath) {
+        $coreModulePath = $testPath
+    }
+    
+    # Try 2: MyInvocation.MyCommand.Path (fails when dot-sourced but used when script is called directly)
+    if (-not $coreModulePath -and $MyInvocation.MyCommand.Path) {
+        $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+        $testPath = Join-Path $scriptRoot "WinRepairCore.ps1"
+        if (Test-Path -LiteralPath $testPath) {
+            $coreModulePath = $testPath
+        }
+    }
+    
+    # Try 3: PSScriptRoot (set when script is run directly)
+    if (-not $coreModulePath -and $PSScriptRoot) {
+        $testPath = Join-Path $PSScriptRoot "WinRepairCore.ps1"
+        if (Test-Path -LiteralPath $testPath) {
+            $coreModulePath = $testPath
+        }
+    }
+    
+    # Try 4: If called from another script, use that script's directory
+    if (-not $coreModulePath -and $MyInvocation.PSCommandPath) {
+        $scriptRoot = Split-Path -Parent $MyInvocation.PSCommandPath
+        $testPath = Join-Path $scriptRoot "WinRepairCore.ps1"
+        if (Test-Path -LiteralPath $testPath) {
+            $coreModulePath = $testPath
+        }
+    }
+    
+    if ($coreModulePath) {
+        . $coreModulePath -ErrorAction Stop
+        # #region agent log
+        try {
+            $logEntry = @{
+                sessionId = "debug-session"
+                runId = "gui-launch-1"
+                hypothesisId = "B"
+                location = "WinRepairGUI.ps1:412"
+                message = "WinRepairCore.ps1 loaded successfully"
+                data = @{ coreModulePath = $coreModulePath }
+                timestamp = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+            } | ConvertTo-Json -Compress
+            Add-Content -Path $logPath -Value $logEntry -ErrorAction SilentlyContinue
+        } catch {}
+        # #endregion agent log
+    } else {
+        Write-Warning "WinRepairCore.ps1 not found. Searched in: current directory, script root locations."
+        # #region agent log
+        try {
+            $logEntry = @{
+                sessionId = "debug-session"
+                runId = "gui-launch-1"
+                hypothesisId = "B"
+                location = "WinRepairGUI.ps1:412"
+                message = "WinRepairCore.ps1 not found in any search location"
+                data = @{ currentDir = (Get-Location).Path; psScriptRoot = $PSScriptRoot; myInvocation = $MyInvocation.MyCommand.Path }
+                timestamp = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+            } | ConvertTo-Json -Compress
+            Add-Content -Path $logPath -Value $logEntry -ErrorAction SilentlyContinue
+        } catch {}
+        # #endregion agent log
+    }
+} catch {
+    Write-Warning "Failed to load WinRepairCore.ps1: $_"
+    # #region agent log
+    try {
+        $logEntry = @{
+            sessionId = "debug-session"
+            runId = "gui-launch-1"
+            hypothesisId = "B"
+            location = "WinRepairGUI.ps1:412-error"
+            message = "Failed to load WinRepairCore.ps1"
+            data = @{ error = $_.Exception.Message; stackTrace = $_.ScriptStackTrace }
+            timestamp = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+        } | ConvertTo-Json -Compress
+        Add-Content -Path $logPath -Value $logEntry -ErrorAction SilentlyContinue
+    } catch {}
+    # #endregion agent log
+}
+
 # #region agent log
 try {
     $logEntry = @{
@@ -811,7 +557,7 @@ try {
 } catch {}
 # #endregion agent log
 
-$envStatusControl = $W.FindName("EnvStatus")
+$envStatusControl = Get-Control -Name "EnvStatus"
 
 # #region agent log
 try {
@@ -835,7 +581,7 @@ if ($envStatusControl) {
 }
 
 # Utility buttons (with null checks)
-$btnNotepad = $W.FindName("BtnNotepad")
+$btnNotepad = Get-Control -Name "BtnNotepad"
 if ($btnNotepad) {
     $btnNotepad.Add_Click({
         try {
@@ -848,7 +594,7 @@ if ($btnNotepad) {
     Write-Warning "BtnNotepad control not found in XAML"
 }
 
-$btnRegistry = $W.FindName("BtnRegistry")
+$btnRegistry = Get-Control -Name "BtnRegistry"
 if ($btnRegistry) {
     $btnRegistry.Add_Click({
         try {
@@ -861,7 +607,7 @@ if ($btnRegistry) {
     Write-Warning "BtnRegistry control not found in XAML"
 }
 
-$btnPowerShell = $W.FindName("BtnPowerShell")
+$btnPowerShell = Get-Control -Name "BtnPowerShell"
 if ($btnPowerShell) {
     $btnPowerShell.Add_Click({
         try {
@@ -874,7 +620,7 @@ if ($btnPowerShell) {
     Write-Warning "BtnPowerShell control not found in XAML"
 }
 
-$btnDiskManagement = $W.FindName("BtnDiskManagement")
+$btnDiskManagement = Get-Control -Name "BtnDiskManagement"
 if ($btnDiskManagement) {
     $btnDiskManagement.Add_Click({
         try {
@@ -887,7 +633,7 @@ if ($btnDiskManagement) {
     Write-Warning "BtnDiskManagement control not found in XAML"
 }
 
-$btnRestartExplorer = $W.FindName("BtnRestartExplorer")
+$btnRestartExplorer = Get-Control -Name "BtnRestartExplorer"
 if ($btnRestartExplorer) {
     $btnRestartExplorer.Add_Click({
         try {
@@ -905,7 +651,7 @@ if ($btnRestartExplorer) {
     Write-Warning "BtnRestartExplorer control not found in XAML"
 }
 
-$btnRestore = $W.FindName("BtnRestore")
+$btnRestore = Get-Control -Name "BtnRestore"
 if ($btnRestore) {
     $btnRestore.Add_Click({
         # Switch to Diagnostics tab and run System Restore check
@@ -936,7 +682,7 @@ if ($btnRestore) {
 }
 
 # Network enablement button
-$btnEnableNetwork = $W.FindName("BtnEnableNetwork")
+$btnEnableNetwork = Get-Control -Name "BtnEnableNetwork"
 if ($btnEnableNetwork) {
     $btnEnableNetwork.Add_Click({
         try {
@@ -1046,6 +792,1021 @@ if ($btnKeyboardSymbols) {
     })
 }
 
+# Theme and UI Layout Settings (will be initialized inside Start-GUI)
+$script:IsDarkMode = $false
+$script:IsCompactUI = $false
+
+# These functions will be defined inside Start-GUI after $W is created
+function Apply-DarkMode {
+    if (-not $W) { return }
+    
+    try {
+        $script:IsDarkMode = $true
+        $darkBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#1E1E1E"))
+        $lightBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#D4D4D4"))
+        $panelBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#252526"))
+        $textBoxBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#3C3C3C"))
+        
+        # Apply to main window
+        $W.Background = $darkBrush
+        $W.Foreground = $lightBrush
+        
+        # Apply to main grid
+        $mainGrid = $W.Content
+        if ($mainGrid) {
+            $mainGrid.Background = $darkBrush
+        }
+        
+        # Apply to specific controls by name
+        $controlsToUpdate = @(
+            "DrvBox", "BCDBox", "DiagBox", "LogAnalysisBox", "FixerOutput", 
+            "RepairInstallOutput", "BootHealthBox", "UpdateEligibilityBox"
+        )
+        
+        foreach ($controlName in $controlsToUpdate) {
+            $control = Get-Control -Name $controlName -Silent
+            if ($control) {
+                try {
+                    $control.Background = $textBoxBrush
+                    $control.Foreground = $lightBrush
+                } catch {}
+            }
+        }
+        
+        # Update status bar
+        $statusBar = Get-Control -Name "StatusBarText" -Silent
+        if ($statusBar) {
+            $statusBar.Foreground = $lightBrush
+        }
+        
+        # Update network and env status
+        $networkStatus = Get-Control -Name "NetworkStatus" -Silent
+        if ($networkStatus) {
+            $networkStatus.Foreground = $lightBrush
+        }
+        
+        $envStatus = Get-Control -Name "EnvStatus" -Silent
+        if ($envStatus) {
+            $envStatus.Foreground = $lightBrush
+        }
+        
+        # Apply dark mode to TabControl and TabItems
+        function Apply-DarkModeToControl {
+            param($Control)
+            if (-not $Control) { return }
+            
+            try {
+                if ($Control -is [System.Windows.Controls.TabControl]) {
+                    $Control.Background = $panelBrush
+                    $Control.Foreground = $lightBrush
+                }
+                if ($Control -is [System.Windows.Controls.TabItem]) {
+                    $Control.Background = $panelBrush
+                    $Control.Foreground = $lightBrush
+                }
+                if ($Control -is [System.Windows.Controls.Menu]) {
+                    $Control.Background = $panelBrush
+                    $Control.Foreground = $lightBrush
+                }
+                if ($Control -is [System.Windows.Controls.MenuItem]) {
+                    $Control.Background = $panelBrush
+                    $Control.Foreground = $lightBrush
+                }
+                if ($Control -is [System.Windows.Controls.Border]) {
+                    if ($Control.Background -and $Control.Background.ToString() -ne "#FFF3CD") {
+                        $Control.Background = $panelBrush
+                    }
+                }
+                if ($Control -is [System.Windows.Controls.StackPanel]) {
+                    if ($Control.Background -and $Control.Background.ToString() -ne "#FFF3CD") {
+                        $Control.Background = $panelBrush
+                    }
+                }
+                
+                # Recursively apply to children
+                if ($Control.Children) {
+                    foreach ($child in $Control.Children) {
+                        Apply-DarkModeToControl -Control $child
+                    }
+                }
+                if ($Control.Items) {
+                    foreach ($item in $Control.Items) {
+                        if ($item -is [System.Windows.FrameworkElement]) {
+                            Apply-DarkModeToControl -Control $item
+                        }
+                    }
+                }
+            } catch {
+                # Ignore errors for individual controls
+            }
+        }
+        
+        # Apply to all controls in the window
+        Apply-DarkModeToControl -Control $mainGrid
+        
+        Update-StatusBar -Message "Dark mode enabled" -HideProgress
+    } catch {
+        Write-Warning "Error applying dark mode: $_"
+    }
+}
+
+function Apply-LightMode {
+    if (-not $W) { return }
+    
+    try {
+        $script:IsDarkMode = $false
+        $lightBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#F0F0F0"))
+        $darkBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#000000"))
+        $whiteBrush = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#FFFFFF"))
+        
+        # Apply to main window
+        $W.Background = $lightBrush
+        $W.Foreground = $darkBrush
+        
+        # Apply to main grid
+        $mainGrid = $W.Content
+        if ($mainGrid) {
+            $mainGrid.Background = $lightBrush
+        }
+        
+        # Apply to specific controls by name
+        $controlsToUpdate = @(
+            "DrvBox", "BCDBox", "DiagBox", "LogAnalysisBox", "FixerOutput", 
+            "RepairInstallOutput", "BootHealthBox", "UpdateEligibilityBox"
+        )
+        
+        foreach ($controlName in $controlsToUpdate) {
+            $control = Get-Control -Name $controlName -Silent
+            if ($control) {
+                try {
+                    $control.Background = $whiteBrush
+                    $control.Foreground = $darkBrush
+                } catch {}
+            }
+        }
+        
+        # Special handling for BCDBox (green text on black)
+        $bcdBox = Get-Control -Name "BCDBox" -Silent
+        if ($bcdBox) {
+            try {
+                $bcdBox.Background = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#222"))
+                $bcdBox.Foreground = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#00FF00"))
+            } catch {}
+        }
+        
+        # Special handling for FixerOutput (green text on black)
+        $fixerOutput = Get-Control -Name "FixerOutput" -Silent
+        if ($fixerOutput) {
+            try {
+                $fixerOutput.Background = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#222"))
+                $fixerOutput.Foreground = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#00FF00"))
+            } catch {}
+        }
+        
+        # Update status bar
+        $statusBar = Get-Control -Name "StatusBarText" -Silent
+        if ($statusBar) {
+            $statusBar.Foreground = $darkBrush
+        }
+        
+        # Update network and env status
+        $networkStatus = Get-Control -Name "NetworkStatus" -Silent
+        if ($networkStatus) {
+            $networkStatus.Foreground = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#808080"))
+        }
+        
+        $envStatus = Get-Control -Name "EnvStatus" -Silent
+        if ($envStatus) {
+            $envStatus.Foreground = New-Object System.Windows.Media.SolidColorBrush([System.Windows.Media.ColorConverter]::ConvertFromString("#808080"))
+        }
+        
+        Update-StatusBar -Message "Light mode enabled" -HideProgress
+    } catch {
+        Write-Warning "Error applying light mode: $_"
+    }
+}
+
+function Apply-CompactUI {
+    if (-not $W) { return }
+    
+    try {
+        $script:IsCompactUI = $true
+        
+        # Store original values for restoration
+        if (-not $script:OriginalButtonHeights) {
+            $script:OriginalButtonHeights = @{}
+            $script:OriginalMargins = @{}
+            $script:OriginalFontSizes = @{}
+        }
+        
+        # Reduce button heights and margins
+        $allButtons = @()
+        function Find-AllButtons {
+            param($Control)
+            if (-not $Control) { return }
+            
+            if ($Control -is [System.Windows.Controls.Button]) {
+                $allButtons += $Control
+            }
+            
+            if ($Control.Children) {
+                foreach ($child in $Control.Children) {
+                    Find-AllButtons -Control $child
+                }
+            }
+            
+            # Also check Items property for ItemsControl
+            if ($Control.Items) {
+                foreach ($item in $Control.Items) {
+                    if ($item -is [System.Windows.FrameworkElement]) {
+                        Find-AllButtons -Control $item
+                    }
+                }
+            }
+        }
+        
+        $mainGrid = $W.Content
+        Find-AllButtons -Control $mainGrid
+        
+        foreach ($btn in $allButtons) {
+            if (-not $script:OriginalButtonHeights.ContainsKey($btn.Name)) {
+                $script:OriginalButtonHeights[$btn.Name] = $btn.Height
+            }
+            if ($btn.Height -gt 30) {
+                $btn.Height = 28
+            }
+            if ($btn.Height -gt 25 -and $btn.Height -le 30) {
+                $btn.Height = 25
+            }
+            
+            if (-not $script:OriginalMargins.ContainsKey($btn.Name)) {
+                $script:OriginalMargins[$btn.Name] = $btn.Margin
+            }
+            if ($btn.Margin.Left -gt 5) {
+                $btn.Margin = New-Object System.Windows.Thickness(3, 2, 3, 2)
+            }
+        }
+        
+        # Reduce font sizes slightly
+        $allTextBlocks = @()
+        function Find-AllTextBlocks {
+            param($Control)
+            if (-not $Control) { return }
+            
+            if ($Control -is [System.Windows.Controls.TextBlock]) {
+                $allTextBlocks += $Control
+            }
+            
+            if ($Control.Children) {
+                foreach ($child in $Control.Children) {
+                    Find-AllTextBlocks -Control $child
+                }
+            }
+        }
+        
+        Find-AllTextBlocks -Control $mainGrid
+        
+        foreach ($tb in $allTextBlocks) {
+            if ($tb.Name -and -not $script:OriginalFontSizes.ContainsKey($tb.Name)) {
+                $script:OriginalFontSizes[$tb.Name] = $tb.FontSize
+            }
+            if ($tb.FontSize -gt 12) {
+                $tb.FontSize = [Math]::Max(10, $tb.FontSize - 1)
+            }
+        }
+        
+        # Reduce tab control margins
+        $tabControl = Get-Control -Name "BCDTabControl" -Silent
+        if ($tabControl) {
+            $tabControl.Margin = New-Object System.Windows.Thickness(5)
+        }
+        
+        Update-StatusBar -Message "Compact UI enabled - optimized for smaller screens" -HideProgress
+    } catch {
+        Write-Warning "Error applying compact UI: $_"
+    }
+}
+
+function Apply-StandardUI {
+    if (-not $W) { return }
+    
+    try {
+        $script:IsCompactUI = $false
+        
+        # Restore original button heights
+        if ($script:OriginalButtonHeights) {
+            $allButtons = @()
+            function Find-AllButtons {
+                param($Control)
+                if (-not $Control) { return }
+                
+                if ($Control -is [System.Windows.Controls.Button]) {
+                    $allButtons += $Control
+                }
+                
+                if ($Control.Children) {
+                    foreach ($child in $Control.Children) {
+                        Find-AllButtons -Control $child
+                    }
+                }
+            }
+            
+            $mainGrid = $W.Content
+            Find-AllButtons -Control $mainGrid
+            
+            foreach ($btn in $allButtons) {
+                if ($btn.Name -and $script:OriginalButtonHeights.ContainsKey($btn.Name)) {
+                    $btn.Height = $script:OriginalButtonHeights[$btn.Name]
+                }
+                if ($btn.Name -and $script:OriginalMargins.ContainsKey($btn.Name)) {
+                    $btn.Margin = $script:OriginalMargins[$btn.Name]
+                }
+            }
+        }
+        
+        # Restore original font sizes
+        if ($script:OriginalFontSizes) {
+            $allTextBlocks = @()
+            function Find-AllTextBlocks {
+                param($Control)
+                if (-not $Control) { return }
+                
+                if ($Control -is [System.Windows.Controls.TextBlock]) {
+                    $allTextBlocks += $Control
+                }
+                
+                if ($Control.Children) {
+                    foreach ($child in $Control.Children) {
+                        Find-AllTextBlocks -Control $child
+                    }
+                }
+            }
+            
+            $mainGrid = $W.Content
+            Find-AllTextBlocks -Control $mainGrid
+            
+            foreach ($tb in $allTextBlocks) {
+                if ($tb.Name -and $script:OriginalFontSizes.ContainsKey($tb.Name)) {
+                    $tb.FontSize = $script:OriginalFontSizes[$tb.Name]
+                }
+            }
+        }
+        
+        # Restore tab control margins
+        $tabControl = Get-Control -Name "BCDTabControl" -Silent
+        if ($tabControl) {
+            $tabControl.Margin = New-Object System.Windows.Thickness(5)
+        }
+        
+        Update-StatusBar -Message "Standard UI layout restored" -HideProgress
+    } catch {
+        Write-Warning "Error applying standard UI: $_"
+    }
+}
+
+# Settings menu handlers (will be wired up inside Start-GUI after $W is created)
+# Moved to after $W creation to prevent errors
+
+# Resources menu handlers
+$btnBackupGuide = Get-Control -Name "BtnBackupGuide" -Silent
+if ($btnBackupGuide) {
+    $btnBackupGuide.Add_Click({
+        $guideText = @"
+BACKUP SOFTWARE GUIDE
+====================
+
+FREE OPTIONS:
+- Macrium Reflect Free: Full system imaging, incremental backups
+- AOMEI Backupper Standard: User-friendly interface, good for beginners
+- Windows Built-in Backup: Basic but reliable, included with Windows
+
+PAID OPTIONS (RECOMMENDED):
+- Macrium Reflect (Paid): Best overall, fast, reliable, excellent support
+- Acronis Cyber Protect: Cloud integration, but slower recovery
+- Paragon Backup & Recovery: Good alternative with solid features
+
+BEST PRACTICES:
+- Follow 3-2-1 rule: 3 copies, 2 different media, 1 offsite
+- Test backups regularly
+- Use incremental backups for efficiency
+- Store backups on separate drives from OS
+- Consider cloud backup for offsite storage
+
+For more details, visit:
+- Macrium: https://www.macrium.com
+- Acronis: https://www.acronis.com
+- Paragon: https://www.paragon-software.com
+"@
+        $window = New-Object System.Windows.Window
+        $window.Title = "Backup Software Guide"
+        $window.Width = 700
+        $window.Height = 500
+        $window.WindowStartupLocation = "CenterScreen"
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $guideText
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "15"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "11"
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        $window.Content = $scrollViewer
+        $window.ShowDialog() | Out-Null
+    })
+}
+
+$btnRecoveryToolsFree = Get-Control -Name "BtnRecoveryToolsFree" -Silent
+if ($btnRecoveryToolsFree) {
+    $btnRecoveryToolsFree.Add_Click({
+        $toolsText = @"
+FREE RECOVERY TOOLS
+===================
+
+1. VENTOY USB TOOL
+   - Multi-boot USB solution
+   - Supports ISO, WIM, VHD files
+   - No need to extract ISO files
+   - Website: https://www.ventoy.net
+   - Best for: Creating bootable USB with multiple OS images
+
+2. HIREN'S BOOTCD PE
+   - Complete recovery toolkit
+   - Includes diagnostic and repair tools
+   - Pre-configured WinPE environment
+   - Website: https://www.hirensbootcd.org
+   - Best for: Comprehensive system recovery
+
+3. MEDICAT USB
+   - Medical-grade recovery environment
+   - Extensive tool collection
+   - Regular updates
+   - Best for: Advanced recovery scenarios
+
+4. SYSTEMRESCUE
+   - Linux-based recovery
+   - File system repair tools
+   - Network capabilities
+   - Best for: Cross-platform recovery
+
+5. AOMEI PE BUILDER
+   - Create custom WinPE
+   - Integrated backup tools
+   - Best for: Custom recovery environments
+"@
+        $window = New-Object System.Windows.Window
+        $window.Title = "Free Recovery Tools"
+        $window.Width = 700
+        $window.Height = 500
+        $window.WindowStartupLocation = "CenterScreen"
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $toolsText
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "15"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "11"
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        $window.Content = $scrollViewer
+        $window.ShowDialog() | Out-Null
+    })
+}
+
+$btnRecoveryToolsPaid = Get-Control -Name "BtnRecoveryToolsPaid" -Silent
+if ($btnRecoveryToolsPaid) {
+    $btnRecoveryToolsPaid.Add_Click({
+        $toolsText = @"
+PAID RECOVERY TOOLS
+===================
+
+1. MACRIUM REFLECT (RECOMMENDED)
+   Pros:
+   - Fastest backup and restore speeds
+   - Excellent reliability
+   - Great support and documentation
+   - Free version available
+   - Incremental and differential backups
+   
+   Cons:
+   - Paid version required for advanced features
+   
+   Website: https://www.macrium.com
+   Best for: Most users, best overall value
+
+2. ACRONIS CYBER PROTECT
+   Pros:
+   - Cloud integration
+   - Ransomware protection
+   - Good for enterprise
+   
+   Cons:
+   - Cloud recovery can be slow
+   - More expensive
+   - Can be complex for beginners
+   
+   Website: https://www.acronis.com
+   Best for: Enterprise users needing cloud backup
+
+3. PARAGON BACKUP & RECOVERY
+   Pros:
+   - Good feature set
+   - Reliable
+   - Cross-platform support
+   
+   Cons:
+   - Less popular than Macrium
+   - Smaller community
+   
+   Website: https://www.paragon-software.com
+   Best for: Users needing cross-platform support
+"@
+        $window = New-Object System.Windows.Window
+        $window.Title = "Paid Recovery Tools"
+        $window.Width = 700
+        $window.Height = 500
+        $window.WindowStartupLocation = "CenterScreen"
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $toolsText
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "15"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "11"
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        $window.Content = $scrollViewer
+        $window.ShowDialog() | Out-Null
+    })
+}
+
+$btnBackupStrategy = Get-Control -Name "BtnBackupStrategy" -Silent
+if ($btnBackupStrategy) {
+    $btnBackupStrategy.Add_Click({
+        $strategyText = @"
+BACKUP STRATEGY GUIDE - 3-2-1 RULE
+===================================
+
+THE 3-2-1 RULE:
+===============
+3 Copies: Keep 3 copies of your data
+2 Different Media: Use 2 different storage types
+1 Offsite: Keep 1 copy offsite
+
+DETAILED BREAKDOWN:
+==================
+
+1. THREE COPIES
+   - Original data
+   - Local backup (external drive, NAS)
+   - Offsite backup (cloud, remote location)
+
+2. TWO DIFFERENT MEDIA
+   - Example: External HDD + Cloud
+   - Example: NAS + USB SSD
+   - Prevents single point of failure
+
+3. ONE OFFSITE
+   - Cloud storage (OneDrive, Google Drive, Backblaze)
+   - Remote server
+   - Physical location (friend's house, office)
+
+RECOMMENDED SCHEDULE:
+====================
+- Daily: Incremental backups
+- Weekly: Full system backup
+- Monthly: Verify backup integrity
+- Quarterly: Test restore procedure
+
+HARDWARE RECOMMENDATIONS:
+=========================
+Performance (Best to Good):
+1. NVMe SSD (Fastest, most expensive)
+2. SATA SSD (Fast, good value)
+3. USB SSD (Portable, fast)
+4. External HDD (Cheapest, slowest)
+
+For Desktop: NVMe or SATA SSD
+For Laptop: USB SSD or External HDD
+For Budget: External HDD with cloud backup
+
+COST ESTIMATES:
+===============
+- NVMe SSD (1TB): $80-150
+- SATA SSD (1TB): $60-100
+- USB SSD (1TB): $80-120
+- External HDD (2TB): $50-80
+- Cloud Backup (1TB/year): $50-100
+"@
+        $window = New-Object System.Windows.Window
+        $window.Title = "Backup Strategy Guide"
+        $window.Width = 700
+        $window.Height = 500
+        $window.WindowStartupLocation = "CenterScreen"
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $strategyText
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "15"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "11"
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        $window.Content = $scrollViewer
+        $window.ShowDialog() | Out-Null
+    })
+}
+
+$btnHardwareRecs = Get-Control -Name "BtnHardwareRecs" -Silent
+if ($btnHardwareRecs) {
+    $btnHardwareRecs.Add_Click({
+        $hardwareText = @"
+HARDWARE RECOMMENDATIONS FOR BACKUPS
+====================================
+
+PERFORMANCE HIERARCHY:
+======================
+1. NVMe SSD (M.2)
+   - Speed: 3000-7000 MB/s
+   - Best for: Desktop PCs with M.2 slot
+   - Cost: $80-150 per 1TB
+   - Examples: Samsung 980, WD Black SN850
+
+2. SATA SSD (2.5")
+   - Speed: 500-550 MB/s
+   - Best for: Desktop and laptop
+   - Cost: $60-100 per 1TB
+   - Examples: Samsung 870 EVO, Crucial MX500
+
+3. USB SSD (External)
+   - Speed: 400-500 MB/s
+   - Best for: Portable backups
+   - Cost: $80-120 per 1TB
+   - Examples: Samsung T7, SanDisk Extreme
+
+4. External HDD
+   - Speed: 100-200 MB/s
+   - Best for: Budget backups, large storage
+   - Cost: $50-80 per 2TB
+   - Examples: WD My Passport, Seagate Backup Plus
+
+RECOMMENDATIONS BY USE CASE:
+============================
+
+Desktop PC:
+- Primary: NVMe SSD (if motherboard supports)
+- Secondary: SATA SSD or USB SSD
+- Budget: External HDD + Cloud
+
+Laptop:
+- Primary: USB SSD (portable)
+- Secondary: External HDD
+- Budget: External HDD + Cloud
+
+Workstation:
+- Primary: NVMe SSD
+- Secondary: NAS or multiple drives
+- Offsite: Cloud or remote server
+
+INVESTMENT RECOMMENDATIONS:
+===========================
+- Minimum: External HDD (2TB) - $50-80
+- Recommended: USB SSD (1TB) - $80-120
+- Best: NVMe SSD (1TB) + Cloud - $130-250
+- Enterprise: NAS + Cloud - $300+
+
+MOTHERBOARD COMPATIBILITY:
+==========================
+- Check for M.2 slot for NVMe
+- Check SATA ports for SATA SSD
+- USB 3.0+ recommended for external drives
+"@
+        $window = New-Object System.Windows.Window
+        $window.Title = "Hardware Recommendations"
+        $window.Width = 700
+        $window.Height = 500
+        $window.WindowStartupLocation = "CenterScreen"
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $hardwareText
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "15"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "11"
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        $window.Content = $scrollViewer
+        $window.ShowDialog() | Out-Null
+    })
+}
+
+# Recommended Recovery Tools (Must-Have Tools)
+$btnRecommendedRecoveryTools = Get-Control -Name "BtnRecommendedRecoveryTools" -Silent
+if ($btnRecommendedRecoveryTools) {
+    $btnRecommendedRecoveryTools.Add_Click({
+        $toolsText = @"
+RECOMMENDED RECOVERY TOOLS
+===================================================================================
+
+If you are serious about maintaining your system, these are the "Must-Have" tools:
+
++---------------------------------------------------------------+
+| Tool                          | Purpose                      |
++---------------------------------------------------------------+
+| Hiren's BootCD PE             | The ultimate Win10-based     |
+|                                | recovery environment.        |
+|                                | Includes tools for           |
+|                                | partitioning, driver          |
+|                                | injection, and registry      |
+|                                | editing.                     |
+|                                | Download: hirensbootcd.org   |
++---------------------------------------------------------------+
+| Macrium Reflect (Rescue)      | ESSENTIAL. Its "Fix Windows  |
+|                                | Boot Problems" button is     |
+|                                | magic—it fixes complex       |
+|                                | BCD/UEFI issues that         |
+|                                | bootrec often fails at.      |
+|                                | Download: macrium.com/       |
+|                                | reflectfree                  |
++---------------------------------------------------------------+
+| Sergei Strelec's WinPE        | A more "advanced"            |
+|                                | alternative to Hiren's.      |
+|                                | It contains almost every     |
+|                                | diagnostic tool known to     |
+|                                | man.                         |
+|                                | Download: sergeistrelec.name |
++---------------------------------------------------------------+
+| Explorer++                    | A lightweight file manager   |
+|                                | that often works in WinPE    |
+|                                | when the standard file       |
+|                                | explorer is buggy.           |
+|                                | Download: explorerplusplus.  |
+|                                | com                          |
++---------------------------------------------------------------+
+| Microsoft SaRA                | (Support and Recovery        |
+|                                | Assistant) A specialized     |
+|                                | tool that automates fixes    |
+|                                | for Windows Activation and   |
+|                                | Office issues.               |
+|                                | Download: aka.ms/SaRASetup   |
++---------------------------------------------------------------+
+
+USAGE TIPS:
+- Keep Hiren's BootCD PE on a USB drive for emergency recovery
+- Macrium Reflect Rescue can fix boot issues that bcdboot cannot
+- Use Sergei Strelec's WinPE for advanced registry and file system repairs
+- Explorer++ is invaluable when Windows Explorer crashes in recovery mode
+"@
+        $window = New-Object System.Windows.Window
+        $window.Title = "Recommended Recovery Tools"
+        $window.Width = 800
+        $window.Height = 600
+        $window.WindowStartupLocation = "CenterScreen"
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $toolsText
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "15"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "11"
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        $window.Content = $scrollViewer
+        $window.ShowDialog() | Out-Null
+    })
+}
+
+# Microsoft Professional Support
+$btnMicrosoftSupport = Get-Control -Name "BtnMicrosoftSupport" -Silent
+if ($btnMicrosoftSupport) {
+    $btnMicrosoftSupport.Add_Click({
+        $supportText = @"
+MICROSOFT PROFESSIONAL SUPPORT OPTIONS
+===================================================================================
+
+For retail/home users seeking professional, break-fix support, Microsoft offers
+several paid support options. These services provide access to Microsoft engineers
+who can perform advanced troubleshooting including Registry analysis, BSOD memory
+dump analysis, and complex bootloader repairs.
+
++---------------------------------------------------------------+
+| PAY-PER-INCIDENT SUPPORT (RETAIL/HOME USERS)                 |
++---------------------------------------------------------------+
+| E-mail or Web-based Support                                  |
+|   Cost: $99 per incident                                     |
+|   Best For: Time-saving alternative to phone support         |
+|   Note: Often faster than waiting for phone technician      |
++---------------------------------------------------------------+
+| Professional Support (General)                                |
+|   Cost: $499 per incident                                    |
+|   Definition: A single support issue and reasonable efforts  |
+|               to resolve it. Cost does not depend on time.   |
++---------------------------------------------------------------+
+| Pro 5-Pack                                                   |
+|   Cost: $1,225 (5 incidents)                                 |
+|   Best For: Multiple issues or ongoing support needs          |
++---------------------------------------------------------------+
+
+IMPORTANT NOTES:
+- Free Support: Basic installation, setup, and billing support are available
+  for free with most Microsoft 365 subscriptions.
+- How to Use: To use a purchased pay-per-incident credit, you must sign in
+  with the same personal Microsoft account (MSA) used for the purchase on
+  the Microsoft Support for Business portal and apply the credit when
+  creating a new case.
+- Business/Enterprise Plans: Larger businesses typically use subscription-
+  based "Unified Support" plans where fees are a percentage of their total
+  annual Microsoft spending, rather than a fixed per-incident cost.
+
++---------------------------------------------------------------+
+| PROFESSIONAL SUPPORT FOR WINDOWS 11 PRO USERS                |
++---------------------------------------------------------------+
+| Microsoft offers professional-grade support to individual     |
+| Windows 11 Pro users, but it is structured as a "business-   |
+| class" service called Professional Support (Pay-Per-Incident).|
+|                                                               |
+| Because you are using the Pro edition, you are technically    |
+| eligible for these higher-tier services, even if you are not |
+| a corporation.                                                |
++---------------------------------------------------------------+
+
+1. PROFESSIONAL SUPPORT (PAY-PER-INCIDENT)
+   This is the most direct way to get an actual Microsoft engineer rather
+   than a general customer service agent.
+
+   Cost: Approximately $499 USD per incident (roughly $650+ CAD).
+
+   How it Works:
+   - You purchase a single "support incident"
+   - You are assigned a case number and a higher-tier engineer
+   - The engineer stays with the case until it is resolved or deemed
+     "unfixable"
+
+   Scope:
+   - Unlike standard support, they will dive into the Registry
+   - Analyze BSOD memory dumps
+   - Work through complex bootloader issues
+   - However, if the hardware is failing, they will still tell you to
+     replace the drive
+
+   Refund Policy:
+   - If the engineer determines the issue is caused by a documented
+     Microsoft bug, they will often refund the incident fee
+   - If the issue is caused by your hardware, third-party drivers, or user
+     error, you still pay
+
+   How to Access:
+   - Go to the Microsoft Professional Support page
+   - Select "Windows" and your version (Windows 11)
+   - Choose "Pay-per-incident" and follow the prompts to pay and open a
+     ticket
+
+2. MICROSOFT 365 "PREMIUM" SUPPORT
+   If you have a Microsoft 365 Personal or Family subscription, "Premium
+   Support" is included.
+
+   How it Works:
+   - You can request a chat or callback through the "Get Help" app in
+     Windows
+
+   The Reality:
+   - While they are "professionals," these agents are trained for high
+     volume
+   - For a non-booting system, their script almost always defaults to
+     "Reset this PC" or "Cloud Reinstall" within the first 30 minutes
+   - They generally do not have the tools or time to perform the
+     "surgical" repairs an independent pro might do
+
+3. THE "BUSINESS ASSIST" ALTERNATIVE
+   If you use your Windows 11 Pro machine for work/freelancing, Microsoft
+   offers a service called Microsoft 365 Business Assist.
+
+   Cost: Usually around $5.00/month per user (added to a Business
+         subscription)
+
+   How it Works:
+   - It gives you 24/7 access to small business specialists who help with
+     setup and troubleshooting
+   - It is a middle ground between the free consumer support and the 
+     enterprise-level support
+
+SUMMARY: IS IT WORTH IT FOR A PRO USER?
+----------------------------------------
+For an individual user, Pay-Per-Incident is rarely worth the cost unless
+you are running a highly specialized environment that would take days of
+manual labor to rebuild.
+
+Most advanced users choose to use the independent tools mentioned earlier
+(Hiren's BootCD, Macrium Reflect, etc.) because they offer more control
+than a remote technician would have over a non-booting system.
+"@
+        $window = New-Object System.Windows.Window
+        $window.Title = "Microsoft Professional Support"
+        $window.Width = 800
+        $window.Height = 700
+        $window.WindowStartupLocation = "CenterScreen"
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $supportText
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "15"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "10"
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        $window.Content = $scrollViewer
+        $window.ShowDialog() | Out-Null
+    })
+}
+
+# Local Technician Alternative
+$btnLocalTechnician = Get-Control -Name "BtnLocalTechnician" -Silent
+if ($btnLocalTechnician) {
+    $btnLocalTechnician.Add_Click({
+        $technicianText = @"
+LOCAL TECHNICIAN ALTERNATIVE (RECOMMENDED)
+===================================================================================
+
+Before paying Microsoft's premium support fees, consider contacting a local
+computer repair technician. Many reputable technicians offer significant
+advantages over remote Microsoft support:
+
++---------------------------------------------------------------+
+| LOCAL TECHNICIAN BENEFITS                                     |
++---------------------------------------------------------------+
+| "No Fix, No Fee" Guarantee                                    |
+|   - You only pay if the problem is actually resolved          |
+|   - No charge if they cannot fix the issue                    |
+|   - Much lower risk than Microsoft's pay-per-incident model  |
++---------------------------------------------------------------+
+| Free Onsite Estimates                                         |
+|   - Many technicians offer free diagnostic estimates          |
+|   - You know the cost before committing to repairs            |
+|   - Can compare multiple quotes easily                         |
++---------------------------------------------------------------+
+| Travel/Appointment Fee Only (If Applicable)                   |
+|   - Some technicians charge a small travel/appointment fee    |
+|   - This is typically marginal compared to full repair cost   |
+|   - Often waived if you proceed with the repair               |
++---------------------------------------------------------------+
+| Hands-On Access                                               |
+|   - Direct physical access to your hardware                    |
+|   - Can test components, swap parts, check connections        |
+|   - More thorough than remote diagnostics                     |
++---------------------------------------------------------------+
+| Personalized Service                                          |
+|   - One-on-one attention from start to finish                 |
+|   - Can explain what went wrong and how to prevent it          |
+|   - Often more patient and thorough than call center agents   |
++---------------------------------------------------------------+
+
+HOW TO FIND A REPUTABLE TECHNICIAN:
+-----------------------------------
+- Look for technicians with "No Fix, No Fee" guarantees
+- Check online reviews (Google, Yelp, local business directories)
+- Ask about their experience with boot issues and Windows recovery
+- Verify they offer free estimates before committing
+- Compare multiple quotes to ensure fair pricing
+- Ask if they have experience with tools like Hiren's BootCD, Macrium
+  Reflect, or similar recovery environments
+
+COST COMPARISON:
+----------------
+Microsoft Professional Support: $499+ per incident (paid regardless of
+                                outcome, unless it's a Microsoft bug)
+
+Local Technician:              Travel/appointment fee (often $50-100) +
+                                Repair cost (only if successful)
+                                Total often less than Microsoft's fee,
+                                with better guarantee
+
+RECOMMENDATION:
+---------------
+For most users, a local technician with a "No Fix, No Fee" guarantee and
+free onsite estimates offers better value than Microsoft's premium support.
+You get hands-on service, personalized attention, and only pay if the problem
+is actually fixed. The travel/appointment fee (if any) is typically marginal
+compared to Microsoft's full incident cost.
+"@
+        $window = New-Object System.Windows.Window
+        $window.Title = "Local Technician Alternative"
+        $window.Width = 800
+        $window.Height = 700
+        $window.WindowStartupLocation = "CenterScreen"
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $technicianText
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "15"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "10"
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        $window.Content = $scrollViewer
+        $window.ShowDialog() | Out-Null
+    })
+}
+
 $btnChatGPT = Get-Control -Name "BtnChatGPT"
 if ($btnChatGPT) {
     $btnChatGPT.Add_Click({
@@ -1086,6 +1847,56 @@ if ($btnChatGPT) {
     })
 }
 
+# Zoom functionality (will be initialized inside Start-GUI after $W is created)
+$script:ZoomLevel = 1.0
+
+# Zoom function (will be used inside Start-GUI)
+function Update-Zoom {
+    param([double]$NewZoom)
+    
+    if ($NewZoom -lt 0.5) { $NewZoom = 0.5 }
+    if ($NewZoom -gt 2.0) { $NewZoom = 2.0 }
+    
+    $script:ZoomLevel = $NewZoom
+    
+    if ($W) {
+        try {
+            # Apply zoom using a ScaleTransform on the main content
+            $mainGrid = $W.Content
+            if ($mainGrid) {
+                # Get or create transform group
+                if (-not $mainGrid.RenderTransform -or $mainGrid.RenderTransform.GetType().Name -ne "TransformGroup") {
+                    $transformGroup = New-Object System.Windows.Media.TransformGroup
+                    $mainGrid.RenderTransform = $transformGroup
+                } else {
+                    $transformGroup = $mainGrid.RenderTransform
+                }
+                
+                # Remove existing scale transform if any
+                $existingScale = $transformGroup.Children | Where-Object { $_.GetType().Name -eq "ScaleTransform" } | Select-Object -First 1
+                if ($existingScale) {
+                    $transformGroup.Children.Remove($existingScale) | Out-Null
+                }
+                
+                # Add new scale transform
+                $scaleTransform = New-Object System.Windows.Media.ScaleTransform($script:ZoomLevel, $script:ZoomLevel)
+                $transformGroup.Children.Add($scaleTransform) | Out-Null
+                
+                # Set transform origin to top-left for better scaling behavior
+                $mainGrid.RenderTransformOrigin = New-Object System.Windows.Point(0, 0)
+                
+                # Update zoom level display
+                $zoomLevelControl = Get-Control -Name "ZoomLevel" -Silent
+                if ($zoomLevelControl) {
+                    $zoomLevelControl.Text = "{0}%" -f [math]::Round($script:ZoomLevel * 100)
+                }
+            }
+        } catch {
+            Write-Warning "Error applying zoom: $_"
+        }
+    }
+}
+
 $btnSwitchToTUI = Get-Control -Name "BtnSwitchToTUI"
 if ($btnSwitchToTUI) {
     $btnSwitchToTUI.Add_Click({
@@ -1122,17 +1933,71 @@ if ($btnSwitchToTUI) {
     })
 }
 
-# Initialize network status (with null checking)
+# Initialize network status (with improved detection)
 try {
     $networkStatusControl = Get-Control "NetworkStatus"
     if ($networkStatusControl) {
         try {
-            $internetTest = Test-InternetConnectivity -TimeoutSeconds 2
-            if ($internetTest.Connected) {
-                $networkStatusControl.Text = "Network: Connected"
-                $networkStatusControl.Foreground = "Green"
+            # First check if network adapters exist and are enabled
+            $hasAdapter = $false
+            $adapterConnected = $false
+            
+            # Try Get-NetAdapter (Windows 8+)
+            if (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue) {
+                $adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }
+                if ($adapters) {
+                    $hasAdapter = $true
+                    $adapterConnected = $true
+                }
+            }
+            
+            # Fallback to WMI if Get-NetAdapter not available
+            if (-not $hasAdapter) {
+                try {
+                    $wmiAdapters = Get-WmiObject Win32_NetworkAdapter -ErrorAction SilentlyContinue | 
+                        Where-Object { $_.NetEnabled -eq $true -and $_.PhysicalAdapter -eq $true }
+                    if ($wmiAdapters) {
+                        $hasAdapter = $true
+                        # Check if adapter has IP
+                        foreach ($adapter in $wmiAdapters) {
+                            $config = Get-WmiObject Win32_NetworkAdapterConfiguration -ErrorAction SilentlyContinue | 
+                                Where-Object { $_.Index -eq $adapter.Index }
+                            if ($config -and $config.IPAddress) {
+                                $adapterConnected = $true
+                                break
+                            }
+                        }
+                    }
+                } catch {
+                    # WMI check failed, continue
+                }
+            }
+            
+            # If adapter exists, test internet connectivity
+            if ($adapterConnected) {
+                # Quick connectivity test
+                try {
+                    $testResult = Test-Connection -ComputerName "8.8.8.8" -Count 1 -Quiet -ErrorAction SilentlyContinue
+                    if ($testResult) {
+                        $networkStatusControl.Text = "Network: Connected"
+                        $networkStatusControl.Foreground = "Green"
+                    } else {
+                        # Adapter exists but no internet
+                        $networkStatusControl.Text = "Network: No Internet"
+                        $networkStatusControl.Foreground = "Orange"
+                    }
+                } catch {
+                    # Test failed, but adapter exists
+                    $networkStatusControl.Text = "Network: Adapter Found"
+                    $networkStatusControl.Foreground = "Yellow"
+                }
+            } elseif ($hasAdapter) {
+                # Adapter exists but not connected
+                $networkStatusControl.Text = "Network: Disconnected"
+                $networkStatusControl.Foreground = "Orange"
             } else {
-                $networkStatusControl.Text = "Network: Unknown"
+                # No adapters found
+                $networkStatusControl.Text = "Network: Not Found"
                 $networkStatusControl.Foreground = "Gray"
             }
         } catch {
@@ -1248,6 +2113,15 @@ try {
             try {
                 Update-StatusBar -Message "Analyzing boot health and Windows Update eligibility..." -ShowProgress
                 
+                # Check if required function exists
+                if (-not (Get-Command Get-WindowsHealthSummary -ErrorAction SilentlyContinue)) {
+                    $errorMsg = "Get-WindowsHealthSummary function not found. WinRepairCore.ps1 may not be loaded correctly."
+                    Log-GUIFailure -Location "Summary Tab Handler" -Error "Function Not Found" -Details $errorMsg
+                    Update-StatusBar -Message "Error: Core functions not available" -HideProgress
+                    [System.Windows.MessageBox]::Show($errorMsg, "Function Not Found", "OK", "Error")
+                    return
+                }
+                
                 # Get selected drive
                 $summaryDriveCombo = Get-Control "SummaryDriveCombo"
                 $selectedDrive = $currentSystemDrive
@@ -1258,49 +2132,130 @@ try {
                     }
                 }
                 
-                # Get Boot Health Summary
+                # Get Windows Health Summary (includes both boot health and update eligibility)
                 $bootHealthStatus = Get-Control "BootHealthStatus"
                 $bootHealthBox = Get-Control "BootHealthBox"
+                $updateEligibilityStatus = Get-Control "UpdateEligibilityStatus"
+                $updateEligibilityBox = Get-Control "UpdateEligibilityBox"
+                
                 if ($bootHealthStatus) {
                     $bootHealthStatus.Text = "Analyzing boot health for drive $selectedDrive`:..."
                 }
-                
-                $bootHealth = Get-BootHealthSummary -TargetDrive $selectedDrive
-                
-                if ($bootHealthBox) {
-                    $bootHealthBox.Text = $bootHealth.Report
-                }
-                if ($bootHealthStatus) {
-                    $statusText = "Boot Health Score: $($bootHealth.BootHealthScore)/$($bootHealth.MaxScore) - Status: $($bootHealth.OverallStatus)"
-                    $bootHealthStatus.Text = $statusText
-                    if ($bootHealth.BootHealthScore -ge 80) {
-                        $bootHealthStatus.Foreground = "Green"
-                    } elseif ($bootHealth.BootHealthScore -ge 60) {
-                        $bootHealthStatus.Foreground = "Orange"
-                    } else {
-                        $bootHealthStatus.Foreground = "Red"
-                    }
-                }
-                
-                # Get Windows Update Eligibility
-                $updateEligibilityStatus = Get-Control "UpdateEligibilityStatus"
-                $updateEligibilityBox = Get-Control "UpdateEligibilityBox"
                 if ($updateEligibilityStatus) {
                     $updateEligibilityStatus.Text = "Checking Windows Update eligibility for drive $selectedDrive`:..."
                 }
                 
-                $updateEligibility = Get-WindowsUpdateEligibility -TargetDrive $selectedDrive
+                # Call the actual function
+                $healthSummary = Get-WindowsHealthSummary -TargetDrive $selectedDrive
                 
-                if ($updateEligibilityBox) {
-                    $updateEligibilityBox.Text = $updateEligibility.Report
+                # Format Boot Health Report
+                if ($bootHealthBox) {
+                    $bootHealthReport = "WINDOWS BOOT HEALTH SUMMARY`n"
+                    $bootHealthReport += "===============================================================`n"
+                    $bootHealthReport += "Target Drive: $($healthSummary.TargetDrive)`n"
+                    $bootHealthReport += "Analysis Time: $($healthSummary.Timestamp)`n"
+                    $bootHealthReport += "Overall Health: $($healthSummary.OverallHealth)`n"
+                    $bootHealthReport += "Status: $($healthSummary.Status)`n"
+                    $bootHealthReport += "`n===============================================================`n`n"
+                    
+                    # BCD Health
+                    if ($healthSummary.Components.BCD) {
+                        $bcd = $healthSummary.Components.BCD
+                        $bootHealthReport += "BCD VALIDITY:`n"
+                        $bootHealthReport += "  Status: $($bcd.Status)`n"
+                        $bootHealthReport += "  Valid: $($bcd.IsValid)`n"
+                        $bootHealthReport += "  Entry Count: $($bcd.EntryCount)`n"
+                        $bootHealthReport += "  Default Entry: $($bcd.DefaultEntry)`n"
+                        if ($bcd.Issues.Count -gt 0) {
+                            $bootHealthReport += "  Issues: $($bcd.Issues -join ', ')`n"
+                        }
+                        $bootHealthReport += "`n"
+                    }
+                    
+                    # EFI Health
+                    if ($healthSummary.Components.EFI) {
+                        $efi = $healthSummary.Components.EFI
+                        $bootHealthReport += "EFI PARTITION:`n"
+                        $bootHealthReport += "  Present: $($efi.Present)`n"
+                        $bootHealthReport += "  Location: $($efi.Location)`n"
+                        $bootHealthReport += "  Size: $($efi.Size)`n"
+                        $bootHealthReport += "`n"
+                    }
+                    
+                    # Boot Stack Order
+                    if ($healthSummary.BootStackOrder -and $healthSummary.BootStackOrder.Count -gt 0) {
+                        $bootHealthReport += "BOOT STACK ORDER:`n"
+                        foreach ($item in $healthSummary.BootStackOrder) {
+                            $bootHealthReport += "  $($item.Order). $($item.Component): $($item.Status)`n"
+                            if ($item.Path) {
+                                $bootHealthReport += "     Path: $($item.Path)`n"
+                            }
+                        }
+                        $bootHealthReport += "`n"
+                    }
+                    
+                    # Log Issues
+                    if ($healthSummary.Components.Logs -and $healthSummary.Components.Logs.Count -gt 0) {
+                        $bootHealthReport += "LOG ISSUES: $($healthSummary.Components.Logs.Count) issue(s) detected`n"
+                        $bootHealthReport += "`n"
+                    }
+                    
+                    # Recommendations
+                    if ($healthSummary.Recommendations -and $healthSummary.Recommendations.Count -gt 0) {
+                        $bootHealthReport += "RECOMMENDATIONS:`n"
+                        foreach ($rec in $healthSummary.Recommendations) {
+                            $bootHealthReport += "  • $rec`n"
+                        }
+                    }
+                    
+                    $bootHealthBox.Text = $bootHealthReport
                 }
+                
+                if ($bootHealthStatus) {
+                    $statusText = "Overall Health: $($healthSummary.OverallHealth) - $($healthSummary.Status)"
+                    $bootHealthStatus.Text = $statusText
+                    switch ($healthSummary.OverallHealth) {
+                        "Healthy" { $bootHealthStatus.Foreground = "Green" }
+                        "Caution" { $bootHealthStatus.Foreground = "Orange" }
+                        "Warning" { $bootHealthStatus.Foreground = "Orange" }
+                        "Critical" { $bootHealthStatus.Foreground = "Red" }
+                        default { $bootHealthStatus.Foreground = "Gray" }
+                    }
+                }
+                
+                # Format Update Eligibility Report
+                if ($updateEligibilityBox -and $healthSummary.UpdateEligibility) {
+                    $updateReport = "WINDOWS UPDATE IN-PLACE REPAIR ELIGIBILITY`n"
+                    $updateReport += "===============================================================`n"
+                    $updateReport += "Target Drive: $($healthSummary.TargetDrive)`n"
+                    $updateReport += "Eligible: $($healthSummary.UpdateEligibility.Eligible)`n"
+                    $updateReport += "Reason: $($healthSummary.UpdateEligibility.Reason)`n"
+                    $updateReport += "`n===============================================================`n`n"
+                    
+                    if ($healthSummary.UpdateEligibility.Requirements) {
+                        $updateReport += "REQUIREMENTS CHECK:`n"
+                        foreach ($req in $healthSummary.UpdateEligibility.Requirements.GetEnumerator()) {
+                            $updateReport += "  $($req.Key): $($req.Value.Status)`n"
+                        }
+                        $updateReport += "`n"
+                    }
+                    
+                    if ($healthSummary.UpdateEligibility.Issues -and $healthSummary.UpdateEligibility.Issues.Count -gt 0) {
+                        $updateReport += "ISSUES:`n"
+                        foreach ($issue in $healthSummary.UpdateEligibility.Issues) {
+                            $updateReport += "  • $issue`n"
+                        }
+                    }
+                    
+                    $updateEligibilityBox.Text = $updateReport
+                }
+                
                 if ($updateEligibilityStatus) {
-                    $statusText = "Readiness Score: $($updateEligibility.ReadinessScore)/$($updateEligibility.MaxScore) - Status: $($updateEligibility.Status)"
+                    $eligibility = $healthSummary.UpdateEligibility
+                    $statusText = "Eligible: $($eligibility.Eligible) - $($eligibility.Reason)"
                     $updateEligibilityStatus.Text = $statusText
-                    if ($updateEligibility.ReadinessScore -ge 80 -and $updateEligibility.Blockers.Count -eq 0) {
+                    if ($eligibility.Eligible) {
                         $updateEligibilityStatus.Foreground = "Green"
-                    } elseif ($updateEligibility.ReadinessScore -ge 60) {
-                        $updateEligibilityStatus.Foreground = "Orange"
                     } else {
                         $updateEligibilityStatus.Foreground = "Red"
                     }
@@ -1308,8 +2263,15 @@ try {
                 
                 Update-StatusBar -Message "Summary analysis complete" -HideProgress
             } catch {
+                $errorDetails = "Error analyzing summary: $_`n`nStack Trace: $($_.ScriptStackTrace)"
+                Log-GUIFailure -Location "Summary Tab Handler" -Error "Summary Analysis Failed" -Details $errorDetails -Exception $_
                 Update-StatusBar -Message "Error analyzing summary: $_" -HideProgress
-                [System.Windows.MessageBox]::Show("Error analyzing summary: $_", "Error", "OK", "Error")
+                [System.Windows.MessageBox]::Show(
+                    "Error analyzing summary:`n`n$_`n`nThis error has been logged to: $env:TEMP\MiracleBoot_GUI_Failures.log`n`nPlease check the log file for details.",
+                    "Summary Analysis Error",
+                    "OK",
+                    "Error"
+                )
             }
         })
     }
@@ -1333,7 +2295,7 @@ function Update-StatusBar {
         [int]$Percentage = -1,
         [string]$Stage = "",
         [string]$CurrentOperation = "",
-        [TimeSpan]$EstimatedTimeRemaining = $null
+        [Nullable[TimeSpan]]$EstimatedTimeRemaining = $null
     )
     
     # Start elapsed time tracking when progress begins
@@ -1342,7 +2304,7 @@ function Update-StatusBar {
         # Clear any existing timer
         if ($script:StatusBarElapsedTimer) {
             $script:StatusBarElapsedTimer.Stop()
-            $script:StatusBarElapsedTimer.Dispose()
+            $script:StatusBarElapsedTimer = $null
         }
         # Create timer for periodic updates
         $script:StatusBarElapsedTimer = New-Object System.Windows.Threading.DispatcherTimer
@@ -1373,7 +2335,6 @@ function Update-StatusBar {
     if ($HideProgress) {
         if ($script:StatusBarElapsedTimer) {
             $script:StatusBarElapsedTimer.Stop()
-            $script:StatusBarElapsedTimer.Dispose()
             $script:StatusBarElapsedTimer = $null
         }
         $script:StatusBarStartTime = $null
@@ -1565,11 +2526,21 @@ function New-ProgressCallback {
                 "${OperationName}: $($progress.Stage)"
             }
             
-            if ($percentage -ge 0) {
-                Update-StatusBar -Message $message -ShowProgress -Percentage $percentage -Stage $stage -CurrentOperation $currentOp -EstimatedTimeRemaining $estimatedTime
-            } else {
-                Update-StatusBar -Message $message -ShowProgress -Stage $stage -CurrentOperation $currentOp
+            # Build parameter hashtable conditionally to avoid passing null to TimeSpan parameter
+            $statusBarParams = @{
+                Message = $message
+                ShowProgress = $true
+                Percentage = $percentage
+                Stage = $stage
+                CurrentOperation = $currentOp
             }
+            
+            # Only include EstimatedTimeRemaining if it's not null
+            if ($null -ne $estimatedTime -and $estimatedTime -is [TimeSpan]) {
+                $statusBarParams['EstimatedTimeRemaining'] = $estimatedTime
+            }
+            
+            Update-StatusBar @statusBarParams
         } else {
             # Simple string message
             Update-StatusBar -Message "${OperationName}: $progress" -ShowProgress
@@ -1596,37 +2567,39 @@ function Get-BCDDefaultEntryId {
     }
 }
 
-# Logic for BCD - Enhanced parser with duplicate detection
-$btnBCD = Get-Control "BtnBCD"
-if ($btnBCD) {
-    $btnBCD.Add_Click({
-        try {
-            # Check for administrator privileges first
-            $isAdmin = $false
-            try {
-                $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-                $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            } catch {
-                # If we can't check, assume not admin and let bcdedit fail gracefully
-                $isAdmin = $false
-            }
-            
-            if (-not $isAdmin) {
-                $result = [System.Windows.MessageBox]::Show(
-                    "BCD operations require administrator privileges.`n`n" +
-                    "Current session is NOT running as Administrator.`n`n" +
-                    "To fix this:`n" +
-                    "1. Close Miracle Boot`n" +
-                    "2. Right-click PowerShell or the shortcut`n" +
-                    "3. Select 'Run as Administrator'`n" +
-                    "4. Launch Miracle Boot again`n`n" +
-                    "Would you like to see instructions for running as Administrator?",
-                    "Administrator Privileges Required",
-                    "YesNo",
-                    "Warning"
-                )
-                if ($result -eq "Yes") {
-                    $instructions = @"
+# Helper: safe MessageBox wrapper to avoid crashes if UI host is gone
+function Show-MessageBoxSafe {
+    param(
+        [string]$Message,
+        [string]$Title = "MiracleBoot",
+        [System.Windows.MessageBoxButton]$Button = [System.Windows.MessageBoxButton]::OK,
+        [System.Windows.MessageBoxImage]$Icon = [System.Windows.MessageBoxImage]::Information
+    )
+    try {
+        return [System.Windows.MessageBox]::Show($Message, $Title, $Button, $Icon)
+    } catch {
+        # Swallow - never crash the UI over a message box failure
+        return $null
+    }
+}
+
+# Helper: log BCD errors to a file for postmortem when console scrolls
+function Write-BCDLog {
+    param([string]$Message)
+    try {
+        $logDir = Join-Path $PSScriptRoot "LOGS"
+        if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+        $logPath = Join-Path $logDir "BCD_LOAD_ERROR.log"
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Add-Content -Path $logPath -Value "[$timestamp] $Message"
+        return $logPath
+    } catch {
+        return $null
+    }
+}
+
+function Show-AdminInstructionsWindow {
+    $instructions = @"
 HOW TO RUN MIRACLE BOOT AS ADMINISTRATOR
 ========================================
 
@@ -1660,224 +2633,806 @@ Method 3: Create a Shortcut
 NOTE: BCD (Boot Configuration Data) operations require administrator
 privileges because they modify critical boot settings that affect system startup.
 "@
-                    $instructionsWindow = New-Object System.Windows.Window
-                    $instructionsWindow.Title = "Run as Administrator - Instructions"
-                    $instructionsWindow.Width = 600
-                    $instructionsWindow.Height = 500
-                    $instructionsWindow.WindowStartupLocation = "CenterScreen"
-                    
-                    $textBlock = New-Object System.Windows.Controls.TextBlock
-                    $textBlock.Text = $instructions
-                    $textBlock.TextWrapping = "Wrap"
-                    $textBlock.Margin = "10"
-                    $textBlock.FontFamily = "Consolas"
-                    $textBlock.FontSize = "11"
-                    
-                    $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
-                    $scrollViewer.Content = $textBlock
-                    $scrollViewer.VerticalScrollBarVisibility = "Auto"
-                    
-                    $instructionsWindow.Content = $scrollViewer
-                    $instructionsWindow.ShowDialog() | Out-Null
+
+    try {
+        $instructionsWindow = New-Object System.Windows.Window
+        $instructionsWindow.Title = "Run as Administrator - Instructions"
+        $instructionsWindow.Width = 600
+        $instructionsWindow.Height = 500
+        $instructionsWindow.WindowStartupLocation = "CenterScreen"
+        
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $instructions
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "10"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "11"
+        
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        
+        $instructionsWindow.Content = $scrollViewer
+        $instructionsWindow.ShowDialog() | Out-Null
+    } catch {
+        # Do nothing if the popup fails
+    }
+}
+
+function Invoke-BCDRefresh {
+    param(
+        [System.Windows.Controls.Button]$ButtonControl
+    )
+
+    # Helper function to safely update UI on dispatcher thread
+    function Update-UI {
+        param([scriptblock]$Action)
+        try {
+            if ($W -and $W.Dispatcher -and -not $W.Dispatcher.HasShutdownStarted) {
+                if ($W.Dispatcher.CheckAccess()) {
+                    # Already on UI thread
+                    & $Action
+                } else {
+                    # Need to invoke on UI thread
+                    $W.Dispatcher.Invoke([action]$Action, [System.Windows.Threading.DispatcherPriority]::Normal)
                 }
-                Update-StatusBar -Message "BCD operation requires administrator privileges" -HideProgress
-                return
             }
-            
-            # Force UI update immediately
-            $W.Dispatcher.Invoke([action]{
-                Update-StatusBar -Message "Loading BCD Entries..." -ShowProgress
-            }, [System.Windows.Threading.DispatcherPriority]::Render)
-            [System.Windows.Forms.Application]::DoEvents()
-            
-            # Try to get raw BCD output with error handling
+        } catch {
+            # Silently fail UI updates - don't crash the whole operation
+            Write-Warning "UI update failed: $_"
+        }
+    }
+
+    $logPath = $null
+    $scriptErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Stop'  # Ensure all errors are caught
+        if ($ButtonControl) { 
+            Update-UI {
+                $ButtonControl.IsEnabled = $false
+            }
+        }
+
+        # Ensure we only run when admin
+        $isAdmin = $false
+        try {
+            $isAdmin = Test-AdminPrivileges
+        } catch {
+            # Fallback to manual principal check
             try {
-                $rawBcd = bcdedit /enum 2>&1
-                # Check for access denied in output
-                if ($rawBcd -match "access is denied|Access is denied|could not be opened") {
-                    throw "Access Denied: The boot configuration data store could not be opened.`n`nThis operation requires administrator privileges."
-                }
-                $bcdBox = Get-Control "BCDBox"
-                if ($bcdBox) {
-                    $bcdBox.Text = $rawBcd
-                }
+                $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+                $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
             } catch {
-                Update-StatusBar -Message "Error accessing BCD: $_" -HideProgress
-                [System.Windows.MessageBox]::Show(
-                    "Error accessing BCD: $_`n`n" +
-                    "Please ensure you are running as Administrator.",
-                    "BCD Access Error",
-                    "OK",
-                    "Error"
-                )
-                return
+                $isAdmin = $false
+            }
+        }
+
+        if (-not $isAdmin) {
+            Show-MessageBoxSafe -Message (
+                "BCD operations require administrator privileges.`n`n" +
+                "Current session is NOT running as Administrator.`n`n" +
+                "Click OK to see instructions."
+            ) -Title "Administrator Privileges Required" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Warning)
+            Show-AdminInstructionsWindow
+            Update-UI {
+                Update-StatusBar -Message "BCD operation requires administrator privileges" -HideProgress
+            }
+            return
+        }
+
+        # Verify required functions exist before proceeding
+        $requiredFunctions = @('Get-BCDEntriesParsed', 'Get-BCDTimeout', 'Update-BootMenuSimulator', 'Find-DuplicateBCEEntries', 'Fix-DuplicateBCEEntries')
+        $missingFunctions = @()
+        foreach ($func in $requiredFunctions) {
+            if (-not (Get-Command $func -ErrorAction SilentlyContinue)) {
+                $missingFunctions += $func
+            }
+        }
+
+        if ($missingFunctions) {
+            throw "Missing required BCD functions: $($missingFunctions -join ', '). These should be loaded from WinRepairCore."
+        }
+
+        # Load raw BCD text first so we can show users what we saw even if parsing fails
+        Update-UI {
+            Update-StatusBar -Message "Loading BCD Entries..." -ShowProgress
+        }
+
+        $rawBcd = (& bcdedit /enum /v 2>&1) | Out-String
+        if ($LASTEXITCODE -ne 0 -or ($rawBcd -match "access is denied|could not be opened")) {
+            throw "bcdedit exited with code $LASTEXITCODE. Output:`n$rawBcd"
+        }
+        
+        Update-UI {
+            $bcdBox = Get-Control "BCDBox"
+            if ($bcdBox) {
+                $bcdBox.Text = $rawBcd
+            }
+        }
+
+        Update-UI {
+            Update-StatusBar -Message "Parsing BCD entries..." -ShowProgress
+        }
+
+        # Parse and populate UI
+        $defaultEntryId = Get-BCDDefaultEntryId
+        $entries = Get-BCDEntriesParsed
+        $script:BCDEntriesCache = $entries
+
+        Update-UI {
+            Update-StatusBar -Message "Processing boot entries..." -ShowProgress
+        }
+
+        $bcdItems = @()
+        foreach ($entry in $entries) {
+            $displayText = if ($entry.Description) { $entry.Description } else { $entry.Id }
+            
+            # Mark default entry
+            $isDefault = $false
+            if ($defaultEntryId) {
+                if ($entry.Id -eq $defaultEntryId -or ($defaultEntryId -eq "{default}" -and $entry.Id -match '\{default\}')) {
+                    $isDefault = $true
+                    $displayText = "[DEFAULT] $displayText"
+                }
             }
             
-            $W.Dispatcher.Invoke([action]{
-                Update-StatusBar -Message "Parsing BCD entries..." -ShowProgress
-            }, [System.Windows.Threading.DispatcherPriority]::Render)
-            [System.Windows.Forms.Application]::DoEvents()
-            
-            # Get default boot entry ID
-            $defaultEntryId = Get-BCDDefaultEntryId
-            
-            # Parse BCD entries with full properties
-            $entries = Get-BCDEntriesParsed
-            $script:BCDEntriesCache = $entries
-            
-            $W.Dispatcher.Invoke([action]{
-                Update-StatusBar -Message "Processing boot entries..." -ShowProgress
-            }, [System.Windows.Threading.DispatcherPriority]::Render)
-            [System.Windows.Forms.Application]::DoEvents()
-            
-            $bcdItems = @()
-            foreach ($entry in $entries) {
-                $displayText = if ($entry.Description) { $entry.Description } else { $entry.Id }
-                
-                # Mark default entry
-                $isDefault = $false
-                if ($defaultEntryId) {
-                    # Check if this entry's ID matches the default (handle both GUID and {default})
-                    if ($entry.Id -eq $defaultEntryId -or 
-                        ($defaultEntryId -eq "{default}" -and $entry.Id -match '\{default\}')) {
-                        $isDefault = $true
-                        $displayText = "[DEFAULT] $displayText"
-                    }
-                }
-                
-                $bcdItems += [PSCustomObject]@{
-                    Id = $entry.Id
-                    Description = $entry.Description
-                    DisplayText = $displayText
-                    Device = $entry.Device
-                    Path = $entry.Path
-                    EntryObject = $entry
-                    IsDefault = $isDefault
-                }
+            $bcdItems += [PSCustomObject]@{
+                Id = $entry.Id
+                Description = $entry.Description
+                DisplayText = $displayText
+                Device = $entry.Device
+                Path = $entry.Path
+                EntryObject = $entry
+                IsDefault = $isDefault
             }
-            
-            $W.Dispatcher.Invoke([action]{
-                Update-StatusBar -Message "Updating BCD list..." -ShowProgress
-            }, [System.Windows.Threading.DispatcherPriority]::Render)
-            [System.Windows.Forms.Application]::DoEvents()
+        }
+
+        Update-UI {
+            Update-StatusBar -Message "Updating BCD list..." -ShowProgress
             
             $bcdList = Get-Control "BCDList"
             if ($bcdList) {
                 $bcdList.ItemsSource = $bcdItems
             }
-            
+
             # Update Simulator in real-time
             Update-BootMenuSimulator $bcdItems
-            
+
             $timeout = Get-BCDTimeout
             $txtTimeout = Get-Control "TxtTimeout"
             $simTimeout = Get-Control "SimTimeout"
             if ($txtTimeout) { $txtTimeout.Text = $timeout }
             if ($simTimeout) { $simTimeout.Text = "Seconds until auto-start: $timeout" }
-            
-            $W.Dispatcher.Invoke([action]{
-                Update-StatusBar -Message "Checking for duplicate entries..." -ShowProgress
-            }, [System.Windows.Threading.DispatcherPriority]::Render)
-            [System.Windows.Forms.Application]::DoEvents()
-            
-            # Check for duplicates
-            $duplicates = Find-DuplicateBCEEntries
-            if ($duplicates) {
-                $dupNames = ($duplicates | ForEach-Object { "'$($_.Name)'" }) -join ", "
-                $result = [System.Windows.MessageBox]::Show(
-                    "Found duplicate boot entry names: $dupNames`n`nWould you like to automatically rename them by appending volume labels?",
-                    "Duplicate Entries Detected",
-                    "YesNo",
-                    "Question"
-                )
-                if ($result -eq "Yes") {
-                    $fixed = Fix-DuplicateBCEEntries -AppendVolumeLabels
-                    if ($fixed.Count -gt 0) {
-                        [System.Windows.MessageBox]::Show("Fixed $($fixed.Count) duplicate entry name(s).", "Success", "OK", "Information")
-                        # Reload BCD
-                        $btnBCD.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
-                        return
+        }
+
+        Update-UI {
+            Update-StatusBar -Message "Checking for duplicate entries..." -ShowProgress
+        }
+
+        # Check for duplicates
+        $duplicates = Find-DuplicateBCEEntries
+        if ($duplicates) {
+            $dupNames = ($duplicates | ForEach-Object { "'$($_.Name)'" }) -join ", "
+            $result = Show-MessageBoxSafe -Message (
+                "Found duplicate boot entry names: $dupNames`n`nWould you like to automatically rename them by appending volume labels?"
+            ) -Title "Duplicate Entries Detected" -Button ([System.Windows.MessageBoxButton]::YesNo) -Icon ([System.Windows.MessageBoxImage]::Question)
+            if ($result -eq [System.Windows.MessageBoxResult]::Yes) {
+                $fixed = Fix-DuplicateBCEEntries -AppendVolumeLabels
+                if ($fixed.Count -gt 0) {
+                    Show-MessageBoxSafe -Message "Fixed $($fixed.Count) duplicate entry name(s)." -Title "Success" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Information)
+                    # Reload BCD
+                    if ($ButtonControl) {
+                        $ButtonControl.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
                     }
+                    return
                 }
-            }
-            
-            $defaultCount = ($bcdItems | Where-Object { $_.IsDefault }).Count
-            $statusMsg = "Loaded $($bcdItems.Count) BCD entries"
-            if ($defaultCount -gt 0) {
-                $statusMsg += " (1 default entry marked)"
-            }
-            Update-StatusBar -Message $statusMsg -HideProgress
-            
-            if (-not $duplicates) {
-                [System.Windows.MessageBox]::Show("Loaded $($bcdItems.Count) BCD entries." + $(if ($defaultCount -gt 0) { "`n`nDefault boot entry is marked with [DEFAULT]." } else { "" }), "Success", "OK", "Information")
-            }
-        } catch {
-            Update-StatusBar -Message "Error loading BCD: $_" -HideProgress
-            
-            # Enhanced error message for access denied
-            $errorMsg = $_.Exception.Message
-            if ($errorMsg -match "access is denied|Access is denied|could not be opened|Access Denied") {
-                $result = [System.Windows.MessageBox]::Show(
-                    "BCD Access Denied: The boot configuration data store could not be opened.`n`n" +
-                    "This operation requires administrator privileges.`n`n" +
-                    "Please run Miracle Boot as Administrator.`n`n" +
-                    "Would you like to see instructions?",
-                    "Administrator Privileges Required",
-                    "YesNo",
-                    "Warning"
-                )
-                if ($result -eq "Yes") {
-                    $instructions = @"
-HOW TO RUN MIRACLE BOOT AS ADMINISTRATOR
-========================================
-
-Method 1: From PowerShell
---------------------------
-1. Close this application
-2. Open PowerShell as Administrator:
-   - Press Windows Key + X
-   - Select 'Windows PowerShell (Admin)' or 'Terminal (Admin)'
-3. Navigate to the Miracle Boot folder
-4. Run: .\MiracleBoot.ps1
-
-Method 2: From File Explorer
-------------------------------
-1. Close this application
-2. Navigate to the Miracle Boot folder in File Explorer
-3. Right-click on 'RunMiracleBoot.cmd' or 'MiracleBoot.ps1'
-4. Select 'Run as Administrator'
-5. Click 'Yes' on the UAC prompt
-
-NOTE: BCD operations require administrator privileges because they
-modify critical boot settings that affect system startup.
-"@
-                    $instructionsWindow = New-Object System.Windows.Window
-                    $instructionsWindow.Title = "Run as Administrator - Instructions"
-                    $instructionsWindow.Width = 600
-                    $instructionsWindow.Height = 450
-                    $instructionsWindow.WindowStartupLocation = "CenterScreen"
-                    
-                    $textBlock = New-Object System.Windows.Controls.TextBlock
-                    $textBlock.Text = $instructions
-                    $textBlock.TextWrapping = "Wrap"
-                    $textBlock.Margin = "10"
-                    $textBlock.FontFamily = "Consolas"
-                    $textBlock.FontSize = "11"
-                    
-                    $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
-                    $scrollViewer.Content = $textBlock
-                    $scrollViewer.VerticalScrollBarVisibility = "Auto"
-                    
-                    $instructionsWindow.Content = $scrollViewer
-                    $instructionsWindow.ShowDialog() | Out-Null
-                }
-            } else {
-                [System.Windows.MessageBox]::Show("Error loading BCD: $errorMsg", "Error", "OK", "Error")
             }
         }
+
+        $defaultCount = ($bcdItems | Where-Object { $_.IsDefault }).Count
+        $statusMsg = "Loaded $($bcdItems.Count) BCD entries"
+        if ($defaultCount -gt 0) {
+            $statusMsg += " (1 default entry marked)"
+        }
+        Update-UI {
+            Update-StatusBar -Message $statusMsg -HideProgress
+        }
+
+        if (-not $duplicates) {
+            Show-MessageBoxSafe -Message ("Loaded $($bcdItems.Count) BCD entries." + $(if ($defaultCount -gt 0) { "`n`nDefault boot entry is marked with [DEFAULT]." } else { "" })) -Title "Success" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Information)
+        }
+    } catch {
+        $errorMsg = $_.Exception.Message
+        $logPath = Write-BCDLog -Message $errorMsg
+        
+        # Safely update UI even in error case
+        try {
+            if ($W -and $W.Dispatcher -and -not $W.Dispatcher.HasShutdownStarted) {
+                if ($W.Dispatcher.CheckAccess()) {
+                    Update-StatusBar -Message "Error loading BCD: $errorMsg" -HideProgress
+                } else {
+                    $W.Dispatcher.Invoke([action]{
+                        Update-StatusBar -Message "Error loading BCD: $errorMsg" -HideProgress
+                    }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                }
+            }
+        } catch {
+            # UI update failed, but continue with error handling
+            Write-Warning "Could not update status bar: $_"
+        }
+
+        if ($errorMsg -match "access is denied|could not be opened|Access Denied") {
+            $result = Show-MessageBoxSafe -Message (
+                "BCD Access Denied: The boot configuration data store could not be opened.`n`n" +
+                "This operation requires administrator privileges.`n`n" +
+                "Would you like to see instructions?"
+            ) -Title "Administrator Privileges Required" -Button ([System.Windows.MessageBoxButton]::YesNo) -Icon ([System.Windows.MessageBoxImage]::Warning)
+            if ($result -eq [System.Windows.MessageBoxResult]::Yes) {
+                Show-AdminInstructionsWindow
+            }
+        } else {
+            $extra = if ($logPath) { "`n`nDetails logged to:`n$logPath" } else { "" }
+            Show-MessageBoxSafe -Message ("Error loading BCD: $errorMsg$extra") -Title "Error" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Error)
+        }
+    } finally {
+        # Safely re-enable button
+        try {
+            if ($ButtonControl -and $W -and $W.Dispatcher -and -not $W.Dispatcher.HasShutdownStarted) {
+                if ($W.Dispatcher.CheckAccess()) {
+                    $ButtonControl.IsEnabled = $true
+                } else {
+                    $W.Dispatcher.Invoke([action]{
+                        $ButtonControl.IsEnabled = $true
+                    }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                }
+            }
+        } catch {
+            # Button re-enable failed, but continue
+            Write-Warning "Could not re-enable button: $_"
+        }
+        $ErrorActionPreference = $scriptErrorActionPreference
+    }
+}
+
+# Function to get BCD parameter descriptions
+function Get-BCDParameterDescriptions {
+    return @{
+        'description' = @{
+            Name = 'description'
+            Purpose = 'The friendly name displayed in the boot menu'
+            Example = 'Windows 11', 'Windows 10 (Safe Mode)', 'Linux Ubuntu'
+            Notes = 'This is what users see when choosing which OS to boot. Keep it descriptive but concise.'
+        }
+        'device' = @{
+            Name = 'device'
+            Purpose = 'Specifies the device (disk and partition) where the boot files are located'
+            Example = 'partition=C:', 'ramdisk=[boot]\Recovery\WindowsRE\Winre.wim'
+            Notes = 'Usually set to partition=C: for Windows installations. Changing this incorrectly can prevent booting.'
+        }
+        'path' = @{
+            Name = 'path'
+            Purpose = 'Path to the boot loader executable relative to the device'
+            Example = '\Windows\system32\winload.exe', '\Windows\system32\winload.efi'
+            Notes = 'Points to the Windows boot loader. winload.exe for BIOS, winload.efi for UEFI.'
+        }
+        'osdevice' = @{
+            Name = 'osdevice'
+            Purpose = 'Device where the Windows operating system is installed'
+            Example = 'partition=C:'
+            Notes = 'Usually matches the device parameter. Specifies where Windows is installed.'
+        }
+        'systemroot' = @{
+            Name = 'systemroot'
+            Purpose = 'Path to the Windows directory'
+            Example = '\Windows'
+            Notes = 'Standard Windows installation path. Rarely needs to be changed.'
+        }
+        'nx' = @{
+            Name = 'nx'
+            Purpose = 'Data Execution Prevention (DEP) setting'
+            Example = 'OptIn', 'OptOut', 'AlwaysOn', 'AlwaysOff'
+            Notes = 'Controls hardware-based DEP. OptIn is recommended for most systems.'
+        }
+        'pae' = @{
+            Name = 'pae'
+            Purpose = 'Physical Address Extension setting'
+            Example = 'Default', 'ForceEnable', 'ForceDisable'
+            Notes = 'Enables support for more than 4GB RAM on 32-bit systems. Usually Default.'
+        }
+        'detecthal' = @{
+            Name = 'detecthal'
+            Purpose = 'Hardware Abstraction Layer detection'
+            Example = 'Yes', 'No'
+            Notes = 'Allows Windows to detect the correct HAL. Usually Yes for automatic detection.'
+        }
+        'winpe' = @{
+            Name = 'winpe'
+            Purpose = 'Windows Preinstallation Environment flag'
+            Example = 'Yes', 'No'
+            Notes = 'Set to Yes for WinPE boot entries. Usually No for normal Windows installations.'
+        }
+        'bootmenupolicy' = @{
+            Name = 'bootmenupolicy'
+            Purpose = 'Boot menu display policy'
+            Example = 'Standard', 'Legacy'
+            Notes = 'Standard shows modern boot menu, Legacy shows text-based menu. Standard is recommended.'
+        }
+        'timeout' = @{
+            Name = 'timeout'
+            Purpose = 'Boot menu timeout in seconds'
+            Example = "'0' (no timeout), '10', '30'"
+            Notes = 'How long to wait before auto-booting default entry. 0 = wait indefinitely.'
+        }
+        'default' = @{
+            Name = 'default'
+            Purpose = 'Default boot entry identifier'
+            Example = '{current}', '{guid}', '{bootmgr}'
+            Notes = 'Specifies which entry boots automatically after timeout. Set via "Set as Default Boot" button.'
+        }
+        'displayorder' = @{
+            Name = 'displayorder'
+            Purpose = 'Order in which entries appear in boot menu'
+            Example = '{guid1} {guid2} {guid3}'
+            Notes = 'Controls the sequence of entries. First entry is at the top of the menu.'
+        }
+        'locale' = @{
+            Name = 'locale'
+            Purpose = 'Boot menu language/locale'
+            Example = 'en-US', 'fr-FR', 'de-DE'
+            Notes = 'Language for boot menu text. Usually matches your Windows installation language.'
+        }
+        'inherit' = @{
+            Name = 'inherit'
+            Purpose = 'Properties inherited from parent boot loader'
+            Example = '{bootloadersettings}', '{globalsettings}'
+            Notes = 'Specifies which settings group to inherit from. Usually automatic.'
+        }
+        'recoverysequence' = @{
+            Name = 'recoverysequence'
+            Purpose = 'Recovery environment entry to use'
+            Example = '{guid}'
+            Notes = 'Points to the Windows Recovery Environment (WinRE) entry for automatic recovery.'
+        }
+        'recoveryenabled' = @{
+            Name = 'recoveryenabled'
+            Purpose = 'Enable automatic recovery on boot failure'
+            Example = 'Yes', 'No'
+            Notes = 'If Yes, Windows will attempt to launch recovery environment after failed boot attempts.'
+        }
+        'badmemoryaccess' = @{
+            Name = 'badmemoryaccess'
+            Purpose = 'Bad memory access handling'
+            Example = 'Yes', 'No'
+            Notes = 'Enables detection of bad memory. Usually Yes for systems with memory issues.'
+        }
+        'bootlog' = @{
+            Name = 'bootlog'
+            Purpose = 'Enable boot logging'
+            Example = 'Yes', 'No'
+            Notes = 'If Yes, creates ntbtlog.txt with detailed boot information for troubleshooting.'
+        }
+        'safeboot' = @{
+            Name = 'safeboot'
+            Purpose = 'Safe mode boot type'
+            Example = 'Minimal', 'Network', 'AlternateShell', 'DSRepair'
+            Notes = 'Boots into safe mode. Minimal = basic drivers, Network = with networking, AlternateShell = command prompt only.'
+        }
+        'safebootalternateshell' = @{
+            Name = 'safebootalternateshell'
+            Purpose = 'Use alternate shell in safe mode'
+            Example = 'Yes', 'No'
+            Notes = 'If Yes, boots to command prompt instead of Windows Explorer in safe mode.'
+        }
+        'lastknowngood' = @{
+            Name = 'lastknowngood'
+            Purpose = 'Use Last Known Good Configuration'
+            Example = 'Yes', 'No'
+            Notes = 'If Yes, attempts to boot using last known good registry configuration.'
+        }
+        'emssettings' = @{
+            Name = 'emssettings'
+            Purpose = 'Emergency Management Services settings'
+            Example = '{guid}'
+            Notes = 'Advanced: Configures EMS for remote debugging and management.'
+        }
+        'graphicsmodedisabled' = @{
+            Name = 'graphicsmodedisabled'
+            Purpose = 'Disable graphics mode during boot'
+            Example = 'Yes', 'No'
+            Notes = 'If Yes, uses text mode instead of graphics during boot. Useful for troubleshooting display issues.'
+        }
+        'quietboot' = @{
+            Name = 'quietboot'
+            Purpose = 'Suppress boot screen messages'
+            Example = 'Yes', 'No'
+            Notes = 'If Yes, hides boot progress messages. No shows detailed boot information.'
+        }
+        'nointegritychecks' = @{
+            Name = 'nointegritychecks'
+            Purpose = 'Disable driver signature enforcement'
+            Example = 'Yes', 'No'
+            Notes = 'WARNING: If Yes, allows unsigned drivers. Security risk - only use for testing.'
+        }
+        'testsigning' = @{
+            Name = 'testsigning'
+            Purpose = 'Enable test signing mode'
+            Example = 'Yes', 'No'
+            Notes = 'Allows test-signed drivers. Used for driver development. Not recommended for production.'
+        }
+        'hypervisorlaunchtype' = @{
+            Name = 'hypervisorlaunchtype'
+            Purpose = 'Hyper-V hypervisor launch type'
+            Example = 'Auto', 'Off', 'On'
+            Notes = 'Controls Hyper-V virtualization. Auto = use if available, Off = disable, On = force enable.'
+        }
+    }
+}
+
+# Function to get contextual suggestions based on current BCD state
+function Get-BCDContextualSuggestions {
+    param(
+        [array]$BCDEntries,
+        [object]$SelectedEntry
+    )
+    
+    $suggestions = @()
+    
+    # Check for duplicate entries
+    $duplicates = $null
+    if (Get-Command Find-DuplicateBCEEntries -ErrorAction SilentlyContinue) {
+        $duplicates = Find-DuplicateBCEEntries -ErrorAction SilentlyContinue
+    }
+    if ($duplicates -and $duplicates.Count -gt 0) {
+        $suggestions += @{
+            Type = 'Warning'
+            Title = 'Duplicate Boot Entry Names Detected'
+            Message = "Found $($duplicates.Count) duplicate entry name(s). This can cause confusion in the boot menu."
+            Recommendation = "Click 'Fix Duplicates' button to automatically rename them with volume labels."
+            Priority = 'High'
+        }
+    }
+    
+    # Check for missing default entry
+    $hasDefault = $false
+    if ($BCDEntries) {
+        $hasDefault = ($BCDEntries | Where-Object { $_.IsDefault }).Count -gt 0
+    }
+    if (-not $hasDefault) {
+        $suggestions += @{
+            Type = 'Info'
+            Title = 'No Default Boot Entry Set'
+            Message = 'No boot entry is marked as default. Windows will wait indefinitely at boot menu.'
+            Recommendation = "Select an entry and click 'Set as Default Boot' to set a default entry."
+            Priority = 'Medium'
+        }
+    }
+    
+    # Check timeout setting
+    $timeout = $null
+    if (Get-Command Get-BCDTimeout -ErrorAction SilentlyContinue) {
+        $timeout = Get-BCDTimeout -ErrorAction SilentlyContinue
+    }
+    if ($null -ne $timeout -and $timeout -eq 0) {
+        $suggestions += @{
+            Type = 'Info'
+            Title = 'Boot Timeout Set to 0 (No Auto-Boot)'
+            Message = 'Boot menu will wait indefinitely for user selection.'
+            Recommendation = "Consider setting timeout to 10-30 seconds for automatic boot after delay."
+            Priority = 'Low'
+        }
+    } elseif ($timeout -gt 60) {
+        $suggestions += @{
+            Type = 'Info'
+            Title = 'Long Boot Timeout'
+            Message = "Boot timeout is set to $timeout seconds (over 1 minute)."
+            Recommendation = 'Consider reducing to 10-30 seconds for faster boot times.'
+            Priority = 'Low'
+        }
+    }
+    
+    # Check for multiple Windows entries
+    $windowsEntries = $BCDEntries | Where-Object { $_.Description -match 'Windows' } | Measure-Object
+    if ($windowsEntries.Count -gt 1) {
+        $suggestions += @{
+            Type = 'Info'
+            Title = 'Multiple Windows Installations Detected'
+            Message = "Found $($windowsEntries.Count) Windows boot entries."
+            Recommendation = 'Ensure each has a unique, descriptive name to avoid confusion.'
+            Priority = 'Medium'
+        }
+    }
+    
+    # Check selected entry properties
+    if ($SelectedEntry) {
+        if ($SelectedEntry.Description -match 'Windows.*Safe.*Mode') {
+            $suggestions += @{
+                Type = 'Info'
+                Title = 'Safe Mode Entry Selected'
+                Message = 'This is a Safe Mode boot entry. It boots with minimal drivers for troubleshooting.'
+                Recommendation = 'Use this entry when Windows fails to boot normally. Not recommended for daily use.'
+                Priority = 'Low'
+            }
+        }
+        
+        if ($SelectedEntry.Description -match 'Recovery|WinRE') {
+            $suggestions += @{
+                Type = 'Info'
+                Title = 'Recovery Environment Entry'
+                Message = 'This is a Windows Recovery Environment entry for system repair.'
+                Recommendation = 'This entry is used automatically for recovery. Usually no manual changes needed.'
+                Priority = 'Low'
+            }
+        }
+    }
+    
+    # Check for UEFI vs BIOS
+    if (Get-Command Get-FirmwareType -ErrorAction SilentlyContinue) {
+        $firmwareType = Get-FirmwareType -ErrorAction SilentlyContinue
+        if ($firmwareType -eq 'UEFI') {
+            $suggestions += @{
+                Type = 'Info'
+                Title = 'UEFI System Detected'
+                Message = 'Your system uses UEFI firmware. Boot entries are stored in EFI System Partition.'
+                Recommendation = "Use 'Sync to All EFI Partitions' if you have multiple drives to ensure consistent boot menu."
+                Priority = 'Low'
+            }
+        }
+    }
+    
+    return $suggestions
+}
+
+# Function to show BCD parameter help window
+function Show-BCDParameterHelp {
+    param(
+        [array]$BCDEntries = $null,
+        [object]$SelectedEntry = $null
+    )
+    
+    try {
+        # Get parameter descriptions
+        $paramDescriptions = Get-BCDParameterDescriptions
+        
+        # Get contextual suggestions
+        $suggestions = Get-BCDContextualSuggestions -BCDEntries $BCDEntries -SelectedEntry $SelectedEntry
+        
+        # Create help window
+        $helpWindow = New-Object System.Windows.Window
+        $helpWindow.Title = "BCD Editor - Parameter Help & Suggestions"
+        $helpWindow.Width = 900
+        $helpWindow.Height = 700
+        $helpWindow.WindowStartupLocation = "CenterScreen"
+        $helpWindow.WindowStyle = "SingleBorderWindow"
+        $helpWindow.ResizeMode = "CanResize"
+        
+        # Create main grid
+        $mainGrid = New-Object System.Windows.Controls.Grid
+        $mainGrid.Margin = "10"
+        
+        # Define rows
+        $rowDef1 = New-Object System.Windows.Controls.RowDefinition
+        $rowDef1.Height = "Auto"
+        $rowDef2 = New-Object System.Windows.Controls.RowDefinition
+        $rowDef2.Height = "*"
+        $mainGrid.RowDefinitions.Add($rowDef1)
+        $mainGrid.RowDefinitions.Add($rowDef2)
+        
+        # Tab control for Parameters and Suggestions
+        $tabControl = New-Object System.Windows.Controls.TabControl
+        $tabControl.Margin = "0,10,0,0"
+        Grid.SetRow($tabControl, 1)
+        
+        # Tab 1: Parameter Descriptions
+        $paramTab = New-Object System.Windows.Controls.TabItem
+        $paramTab.Header = "Parameter Descriptions"
+        
+        $paramScrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $paramScrollViewer.VerticalScrollBarVisibility = "Auto"
+        $paramScrollViewer.HorizontalScrollBarVisibility = "Disabled"
+        
+        $paramStackPanel = New-Object System.Windows.Controls.StackPanel
+        $paramStackPanel.Margin = "10"
+        
+        $introText = New-Object System.Windows.Controls.TextBlock
+        $introText.Text = "BCD (Boot Configuration Data) Parameters`n`nHover over any field in the BCD Editor to see its tooltip. Below are detailed descriptions of all available parameters:"
+        $introText.Margin = "0,0,0,15"
+        $introText.TextWrapping = "Wrap"
+        $introText.FontSize = "12"
+        $paramStackPanel.Children.Add($introText) | Out-Null
+        
+        foreach ($paramKey in ($paramDescriptions.Keys | Sort-Object)) {
+            $param = $paramDescriptions[$paramKey]
+            
+            # Parameter name
+            $nameBlock = New-Object System.Windows.Controls.TextBlock
+            $nameBlock.Text = $param.Name
+            $nameBlock.FontWeight = "Bold"
+            $nameBlock.FontSize = "14"
+            $nameBlock.Margin = "0,10,0,5"
+            $nameBlock.Foreground = "#0078D7"
+            $paramStackPanel.Children.Add($nameBlock) | Out-Null
+            
+            # Purpose
+            $purposeBlock = New-Object System.Windows.Controls.TextBlock
+            $purposeBlock.Text = "Purpose: $($param.Purpose)"
+            $purposeBlock.Margin = "10,0,0,3"
+            $purposeBlock.TextWrapping = "Wrap"
+            $paramStackPanel.Children.Add($purposeBlock) | Out-Null
+            
+            # Example
+            if ($param.Example) {
+                $exampleBlock = New-Object System.Windows.Controls.TextBlock
+                $exampleText = "Example: "
+                if ($param.Example -is [array]) {
+                    $exampleText += ($param.Example -join ", ")
+                } else {
+                    $exampleText += $param.Example
+                }
+                $exampleBlock.Text = $exampleText
+                $exampleBlock.Margin = "10,0,0,3"
+                $exampleBlock.TextWrapping = "Wrap"
+                $exampleBlock.FontFamily = "Consolas"
+                $exampleBlock.Foreground = "#28a745"
+                $paramStackPanel.Children.Add($exampleBlock) | Out-Null
+            }
+            
+            # Notes
+            if ($param.Notes) {
+                $notesBlock = New-Object System.Windows.Controls.TextBlock
+                $notesBlock.Text = "Notes: $($param.Notes)"
+                $notesBlock.Margin = "10,0,0,5"
+                $notesBlock.TextWrapping = "Wrap"
+                $notesBlock.FontStyle = "Italic"
+                $notesBlock.Foreground = "#666"
+                $paramStackPanel.Children.Add($notesBlock) | Out-Null
+            }
+            
+            # Separator
+            $separator = New-Object System.Windows.Controls.Separator
+            $separator.Margin = "0,5,0,5"
+            $paramStackPanel.Children.Add($separator) | Out-Null
+        }
+        
+        $paramScrollViewer.Content = $paramStackPanel
+        $paramTab.Content = $paramScrollViewer
+        $tabControl.Items.Add($paramTab) | Out-Null
+        
+        # Tab 2: Contextual Suggestions
+        $suggestionsTab = New-Object System.Windows.Controls.TabItem
+        $suggestionsTab.Header = "Contextual Suggestions"
+        
+        $suggestionsScrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $suggestionsScrollViewer.VerticalScrollBarVisibility = "Auto"
+        
+        $suggestionsStackPanel = New-Object System.Windows.Controls.StackPanel
+        $suggestionsStackPanel.Margin = "10"
+        
+        if ($suggestions.Count -eq 0) {
+            $noSuggestionsText = New-Object System.Windows.Controls.TextBlock
+            $noSuggestionsText.Text = "[OK] No specific recommendations at this time.`n`nYour BCD configuration appears to be in good shape!"
+            $noSuggestionsText.Margin = "0,20,0,0"
+            $noSuggestionsText.TextWrapping = "Wrap"
+            $noSuggestionsText.FontSize = "14"
+            $noSuggestionsText.Foreground = "#28a745"
+            $suggestionsStackPanel.Children.Add($noSuggestionsText) | Out-Null
+        } else {
+            $suggestionsIntro = New-Object System.Windows.Controls.TextBlock
+            $suggestionsIntro.Text = "Based on your current BCD configuration, here are some recommendations:"
+            $suggestionsIntro.Margin = "0,0,0,15"
+            $suggestionsIntro.TextWrapping = "Wrap"
+            $suggestionsIntro.FontSize = "12"
+            $suggestionsStackPanel.Children.Add($suggestionsIntro) | Out-Null
+            
+            foreach ($suggestion in $suggestions) {
+                # Suggestion card
+                $cardBorder = New-Object System.Windows.Controls.Border
+                $cardBorder.BorderBrush = switch ($suggestion.Type) {
+                    'Warning' { [System.Windows.Media.Brushes]::Orange }
+                    'Info' { [System.Windows.Media.Brushes]::Blue }
+                    'Error' { [System.Windows.Media.Brushes]::Red }
+                    default { [System.Windows.Media.Brushes]::Gray }
+                }
+                $cardBorder.BorderThickness = "2"
+                $cardBorder.CornerRadius = "5"
+                $cardBorder.Margin = "0,0,0,10"
+                $cardBorder.Padding = "10"
+                $cardBorder.Background = "#F9F9F9"
+                
+                $cardStack = New-Object System.Windows.Controls.StackPanel
+                
+                # Title
+                $titleBlock = New-Object System.Windows.Controls.TextBlock
+                $titleBlock.Text = $suggestion.Title
+                $titleBlock.FontWeight = "Bold"
+                $titleBlock.FontSize = "13"
+                $titleBlock.Margin = "0,0,0,5"
+                $titleBlock.Foreground = switch ($suggestion.Type) {
+                    'Warning' { "#FF8C00" }
+                    'Info' { "#0078D7" }
+                    'Error' { "#DC3545" }
+                    default { "#000" }
+                }
+                $cardStack.Children.Add($titleBlock) | Out-Null
+                
+                # Message
+                $messageBlock = New-Object System.Windows.Controls.TextBlock
+                $messageBlock.Text = $suggestion.Message
+                $messageBlock.Margin = "0,0,0,5"
+                $messageBlock.TextWrapping = "Wrap"
+                $cardStack.Children.Add($messageBlock) | Out-Null
+                
+                # Recommendation
+                $recBlock = New-Object System.Windows.Controls.TextBlock
+                $recBlock.Text = "Recommendation: $($suggestion.Recommendation)"
+                $recBlock.Margin = "10,5,0,0"
+                $recBlock.TextWrapping = "Wrap"
+                $recBlock.FontStyle = "Italic"
+                $recBlock.Foreground = "#28a745"
+                $cardStack.Children.Add($recBlock) | Out-Null
+                
+                $cardBorder.Child = $cardStack
+                $suggestionsStackPanel.Children.Add($cardBorder) | Out-Null
+            }
+        }
+        
+        $suggestionsScrollViewer.Content = $suggestionsStackPanel
+        $suggestionsTab.Content = $suggestionsScrollViewer
+        $tabControl.Items.Add($suggestionsTab) | Out-Null
+        
+        # Close button
+        $buttonPanel = New-Object System.Windows.Controls.StackPanel
+        $buttonPanel.Orientation = "Horizontal"
+        $buttonPanel.HorizontalAlignment = "Right"
+        $buttonPanel.Margin = "0,10,0,0"
+        Grid.SetRow($buttonPanel, 0)
+        
+        $closeButton = New-Object System.Windows.Controls.Button
+        $closeButton.Content = "Close"
+        $closeButton.Width = "100"
+        $closeButton.Height = "30"
+        $closeButton.Margin = "0,0,0,0"
+        $closeButton.Add_Click({
+            $helpWindow.Close()
+        })
+        $buttonPanel.Children.Add($closeButton) | Out-Null
+        
+        $mainGrid.Children.Add($buttonPanel) | Out-Null
+        $mainGrid.Children.Add($tabControl) | Out-Null
+        
+        $helpWindow.Content = $mainGrid
+        $helpWindow.ShowDialog() | Out-Null
+    } catch {
+        Show-MessageBoxSafe -Message "Error displaying help window: $_" -Title "Error" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Error)
+    }
+}
+
+# Logic for BCD - Enhanced parser with duplicate detection
+$btnBCD = Get-Control "BtnBCD"
+if ($btnBCD) {
+    $btnBCD.Add_Click({
+        Invoke-BCDRefresh -ButtonControl $btnBCD
     })
 } else {
     Write-Warning "BtnBCD control not found in XAML"
+}
+
+# BCD Help button
+$btnBCDHelp = Get-Control "BtnBCDHelp"
+if ($btnBCDHelp) {
+    $btnBCDHelp.Add_Click({
+        try {
+            # Get current BCD entries and selected entry
+            $bcdList = Get-Control "BCDList"
+            $bcdEntries = if ($bcdList -and $bcdList.ItemsSource) { $bcdList.ItemsSource } else { $null }
+            $selectedEntry = if ($bcdList -and $bcdList.SelectedItem) { $bcdList.SelectedItem } else { $null }
+            
+            Show-BCDParameterHelp -BCDEntries $bcdEntries -SelectedEntry $selectedEntry
+        } catch {
+            Show-MessageBoxSafe -Message "Error opening help: $_" -Title "Error" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Error)
+        }
+    })
+} else {
+    Write-Warning "BtnBCDHelp control not found in XAML"
 }
 
 # Helper function to update Boot Menu Simulator
@@ -1892,6 +3447,16 @@ function Update-BootMenuSimulator {
             }
         }
     }
+}
+
+# Boot Menu Simulator - Load BCD Entries button
+$btnSimLoadBCD = Get-Control "BtnSimLoadBCD"
+if ($btnSimLoadBCD) {
+    $btnSimLoadBCD.Add_Click({
+        Invoke-BCDRefresh -ButtonControl $btnSimLoadBCD
+    })
+} else {
+    Write-Warning "BtnSimLoadBCD control not found in XAML"
 }
 
 # BCD List selection - populate both basic and advanced editors
@@ -1966,13 +3531,19 @@ if ($btnFixDuplicates) {
             $fixed = Fix-DuplicateBCEEntries -AppendVolumeLabels
             if ($fixed.Count -gt 0) {
                 [System.Windows.MessageBox]::Show("Fixed $($fixed.Count) duplicate entry name(s).", "Success", "OK", "Information")
-                $W.FindName("BtnBCD").RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+                $bcdBtn = Get-Control -Name "BtnBCD"
+                if ($bcdBtn) {
+                    $bcdBtn.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+                }
             }
         } elseif ($result -eq "No") {
             $fixed = Fix-DuplicateBCEEntries
             if ($fixed.Count -gt 0) {
                 [System.Windows.MessageBox]::Show("Fixed $($fixed.Count) duplicate entry name(s).", "Success", "OK", "Information")
-                $W.FindName("BtnBCD").RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+                $bcdBtn = Get-Control -Name "BtnBCD"
+                if ($bcdBtn) {
+                    $bcdBtn.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+                }
             }
         }
     } else {
@@ -2076,32 +3647,179 @@ if ($btnBootDiagnosis) {
     })
 }
 
+# Function to calculate boot diagnosis score
+function Get-BootDiagnosisScore {
+    param([string]$DiagnosisOutput)
+    
+    $criticalCount = 0
+    $warningCount = 0
+    $okCount = 0
+    $errorCount = 0
+    
+    # Count issue types from diagnosis output
+    $lines = $DiagnosisOutput -split "`n"
+    foreach ($line in $lines) {
+        if ($line -match '\[CRITICAL\]') {
+            $criticalCount++
+        } elseif ($line -match '\[ERROR\]') {
+            $errorCount++
+        } elseif ($line -match '\[WARNING\]') {
+            $warningCount++
+        } elseif ($line -match '\[OK\]') {
+            $okCount++
+        }
+    }
+    
+    # Calculate score
+    $totalIssues = $criticalCount + $errorCount + $warningCount
+    $totalChecks = $criticalCount + $errorCount + $warningCount + $okCount
+    
+    # Determine overall status
+    $status = "OK"
+    $statusColor = "#28a745"  # Green
+    $statusIcon = "[OK]"
+    $recommendation = "Your boot configuration appears healthy. No action required."
+    
+    if ($criticalCount -gt 0) {
+        $status = "NEEDS CHECKING"
+        $statusColor = "#DC3545"  # Red
+        $statusIcon = "[WARN]"
+        $recommendation = "Critical issues detected. Immediate attention required. Review the diagnosis report below."
+    } elseif ($errorCount -gt 0) {
+        $status = "NEEDS CHECKING"
+        $statusColor = "#FF8C00"  # Orange
+        $statusIcon = "[WARN]"
+        $recommendation = "Errors detected. Review the diagnosis report and consider taking corrective action."
+    } elseif ($warningCount -gt 0) {
+        $status = "NEEDS CHECKING"
+        $statusColor = "#FFC107"  # Yellow
+        $statusIcon = "[WARN]"
+        $recommendation = "Warnings detected. Review the diagnosis report. Issues may not be critical but should be addressed."
+    }
+    
+    return @{
+        Status = $status
+        StatusColor = $statusColor
+        StatusIcon = $statusIcon
+        CriticalCount = $criticalCount
+        ErrorCount = $errorCount
+        WarningCount = $warningCount
+        OKCount = $okCount
+        TotalIssues = $totalIssues
+        TotalChecks = $totalChecks
+        Recommendation = $recommendation
+        Score = if ($totalChecks -gt 0) { 
+            [math]::Round((($okCount / $totalChecks) * 100), 0) 
+        } else { 
+            0 
+        }
+    }
+}
+
 # Boot Diagnosis button (BCD Editor tab)
 $btnBootDiagnosisBCD = Get-Control -Name "BtnBootDiagnosisBCD"
 if ($btnBootDiagnosisBCD) {
     $btnBootDiagnosisBCD.Add_Click({
-        $driveCombo = Get-Control -Name "DriveCombo"
-        $selectedDrive = if ($driveCombo) { $driveCombo.SelectedItem } else { $null }
-        $drive = "C"
-        
-        if ($selectedDrive -and $selectedDrive -ne "Auto-detect") {
-            if ($selectedDrive -match '^([A-Z]):') {
-                $drive = $matches[1]
+        try {
+            Update-StatusBar -Message "Running boot diagnosis..." -ShowProgress
+            
+            $driveCombo = Get-Control -Name "DriveCombo"
+            $selectedDrive = if ($driveCombo) { $driveCombo.SelectedItem } else { $null }
+            $drive = "C"
+            
+            if ($selectedDrive -and $selectedDrive -ne "Auto-detect") {
+                if ($selectedDrive -match '^([A-Z]):') {
+                    $drive = $matches[1]
+                }
             }
+            
+            # Run diagnosis
+            $diagnosis = Get-BootDiagnosis -TargetDrive $drive
+            
+            # Calculate score
+            $score = Get-BootDiagnosisScore -DiagnosisOutput $diagnosis
+            
+            # Build formatted output with score header
+            $statusLine = "Status: $($score.StatusIcon) $($score.Status)"
+            $scoreLine = "Score: $($score.Score)%"
+            $detailsLine = "Details: $($score.OKCount) OK"
+            if ($score.WarningCount -gt 0) { $detailsLine += ", $($score.WarningCount) Warnings" }
+            if ($score.ErrorCount -gt 0) { $detailsLine += ", $($score.ErrorCount) Errors" }
+            if ($score.CriticalCount -gt 0) { $detailsLine += ", $($score.CriticalCount) Critical" }
+            
+            # Wrap recommendation if too long
+            $recLines = @()
+            $maxLineLength = 58
+            $words = $score.Recommendation -split ' '
+            $currentLine = ""
+            foreach ($word in $words) {
+                if (($currentLine + " " + $word).Length -le $maxLineLength) {
+                    $currentLine += if ($currentLine) { " $word" } else { $word }
+                } else {
+                    if ($currentLine) { $recLines += $currentLine }
+                    $currentLine = $word
+                }
+            }
+            if ($currentLine) { $recLines += $currentLine }
+            
+            $formattedOutput = "===============================================================`n"
+            $formattedOutput += "                    BOOT DIAGNOSIS SCORE                          `n"
+            $formattedOutput += "===============================================================`n"
+            $formattedOutput += "  $($statusLine.PadRight(60)) `n"
+            $formattedOutput += "  $($scoreLine.PadRight(60)) `n"
+            $formattedOutput += "  $($detailsLine.PadRight(60)) `n"
+            $formattedOutput += "===============================================================`n"
+            $formattedOutput += "  Recommendation:                                                `n"
+            foreach ($recLine in $recLines) {
+                $formattedOutput += "  $($recLine.PadRight(60)) `n"
+            }
+            $formattedOutput += "===============================================================`n`n"
+            $formattedOutput += $diagnosis
+            
+            # Switch to Basic Editor tab
+            $bcdTabControl = Get-Control -Name "BCDTabControl"
+            if ($bcdTabControl -and $bcdTabControl.Items.Count -gt 0) {
+                $bcdTabControl.SelectedIndex = 0  # Switch to first tab (Basic Editor)
+            }
+            
+            # Display in BCDBox
+            $bcdBox = Get-Control -Name "BCDBox"
+            if ($bcdBox) {
+                $bcdBox.Text = $formattedOutput
+                $bcdBox.ScrollToHome()
+            }
+            
+            Update-StatusBar -Message "Boot diagnosis complete - $($score.Status)" -HideProgress
+            
+            # Show result message with score
+            $message = "Boot Diagnosis Complete`n`n"
+            $message += "Overall Status: $($score.StatusIcon) $($score.Status)`n"
+            $message += "Score: $($score.Score)%`n`n"
+            $message += "Results:`n"
+            $message += "  [OK] OK: $($score.OKCount)`n"
+            if ($score.WarningCount -gt 0) {
+                $message += "  [WARN] Warnings: $($score.WarningCount)`n"
+            }
+            if ($score.ErrorCount -gt 0) {
+                $message += "  [ERROR] Errors: $($score.ErrorCount)`n"
+            }
+            if ($score.CriticalCount -gt 0) {
+                $message += "  [CRITICAL] Critical: $($score.CriticalCount)`n"
+            }
+            $message += "`n$($score.Recommendation)`n`n"
+            $message += "Full report is displayed in the BCD output box below."
+            
+            $icon = if ($score.Status -eq "OK") {
+                [System.Windows.MessageBoxImage]::Information
+            } else {
+                [System.Windows.MessageBoxImage]::Warning
+            }
+            
+            Show-MessageBoxSafe -Message $message -Title "Boot Diagnosis Complete" -Button ([System.Windows.MessageBoxButton]::OK) -Icon $icon
+        } catch {
+            Update-StatusBar -Message "Error running boot diagnosis: $_" -HideProgress
+            Show-MessageBoxSafe -Message "Error running boot diagnosis: $_" -Title "Error" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Error)
         }
-        
-        $diagnosis = Get-BootDiagnosis -TargetDrive $drive
-        $bcdBox = Get-Control -Name "BCDBox"
-        if ($bcdBox) {
-            $bcdBox.Text = $diagnosis
-        }
-        
-        [System.Windows.MessageBox]::Show(
-            "Boot diagnosis complete.`n`nResults are displayed in the BCD output box below.",
-            "Diagnosis Complete",
-            "OK",
-            "Information"
-        )
     })
 }
 
@@ -2217,9 +3935,12 @@ if ($btnSaveProperties) {
         }
         
         [System.Windows.MessageBox]::Show("Properties updated!`n`nBackup saved to: $($backup.Path)", "Success", "OK", "Information")
-        $W.FindName("BtnBCD").RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+        $bcdBtn = Get-Control -Name "BtnBCD"
+        if ($bcdBtn) {
+            $bcdBtn.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+        }
     } catch {
-        [System.Windows.MessageBox]::Show("Error updating properties: $_", "Error", "OK", "Error")
+        [System.Windows.MessageBox]::Show("Error updating properties: $_", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
     }
     })
 }
@@ -2232,7 +3953,6 @@ if ($btnSetDefault) {
         
         if ($id) {
             $command = "bcdedit /default $id"
-            $explanation = "Sets the selected boot entry as the default option that will boot automatically after the timeout period."
             
             $testMode = Show-CommandPreview $command $null "Set Default Boot Entry"
             
@@ -2265,10 +3985,14 @@ if ($btnSetDefault) {
 $btnTimeout = Get-Control -Name "BtnTimeout"
 if ($btnTimeout) {
     $btnTimeout.Add_Click({
-
-    $t = $W.FindName("TxtTimeout").Text
-    bcdedit /timeout $t
-    [System.Windows.MessageBox]::Show("Timeout updated to $t seconds.", "Success", "OK", "Information")
+        $txtTimeout = Get-Control -Name "TxtTimeout"
+        if ($txtTimeout) {
+            $t = $txtTimeout.Text
+            bcdedit /timeout $t
+            [System.Windows.MessageBox]::Show("Timeout updated to $t seconds.", "Success", "OK", "Information")
+        } else {
+            [System.Windows.MessageBox]::Show("Timeout control not found.", "Error", "OK", "Error")
+        }
     })
 }
 
@@ -2276,13 +4000,45 @@ if ($btnTimeout) {
 $btnDetect = Get-Control -Name "BtnDetect"
 if ($btnDetect) {
     $btnDetect.Add_Click({
+        $currentDrive = $env:SystemDrive.TrimEnd(':')
         $drvBox = Get-Control -Name "DrvBox"
         if ($drvBox) {
             $drvBox.Text = "Scanning for storage driver errors...`n`n"
+            $drvBox.Text += "TARGET DRIVE: $currentDrive`:\ (Current System)`n"
+            $drvBox.Text += "STATUS: CURRENT OPERATING SYSTEM`n`n"
         }
         $result = Get-MissingStorageDevices
         if ($drvBox) {
             $drvBox.Text = $result
+        }
+    })
+}
+
+# All Missing Drivers (including non-storage devices)
+$btnAllMissingDrivers = Get-Control -Name "BtnAllMissingDrivers"
+if ($btnAllMissingDrivers) {
+    $btnAllMissingDrivers.Add_Click({
+        $drvBox = Get-Control -Name "DrvBox"
+        try {
+            $currentDrive = $env:SystemDrive.TrimEnd(':')
+            Update-StatusBar -Message "Scanning for ALL devices with driver problems..." -ShowProgress
+            if ($drvBox) {
+                $drvBox.Text = "Scanning for ALL devices with driver problems...`n`n"
+                $drvBox.Text += "TARGET DRIVE: $currentDrive`:\ (Current System)`n"
+                $drvBox.Text += "STATUS: CURRENT OPERATING SYSTEM`n`n"
+                $drvBox.Text += "This includes all device classes (not just storage).`n"
+                $drvBox.Text += "Checking for yellow exclamation marks in Device Manager...`n`n"
+            }
+            $result = Get-AllMissingDrivers
+            if ($drvBox) {
+                $drvBox.Text = $result
+            }
+            Update-StatusBar -Message "All missing drivers scan complete" -HideProgress
+        } catch {
+            Update-StatusBar -Message "All missing drivers scan failed" -HideProgress
+            if ($drvBox) {
+                $drvBox.Text = "Failed to scan for all missing drivers: $_"
+            }
         }
     })
 }
@@ -2302,8 +4058,11 @@ if ($btnScanDrivers) {
             }
         }
         
+        $targetDriveDisplay = if ($drive) { $drive } else { "$($env:SystemDrive.TrimEnd(':'))`:" }
+        
         if ($drvBox) {
             $drvBox.Text = "Scanning for MISSING storage drivers...`n`n"
+            $drvBox.Text += "TARGET DRIVE: $targetDriveDisplay`n"
             $drvBox.Text += "Checking for problematic storage controllers first...`n"
         }
         
@@ -2313,8 +4072,8 @@ if ($btnScanDrivers) {
             $output = "`n[SUCCESS] SCAN COMPLETE`n"
             $output += "===============================================================`n"
             $output += "$($scanResult.Message)`n"
-            $output += "Source Location: $($scanResult.SearchPath)`n"
-            $output += "`nFound Drivers (matching missing devices):`n"
+            $output += "===============================================================`n`n"
+            $output += "Found Drivers (matching missing devices):`n"
             $output += "---------------------------------------------------------------`n"
             
             $num = 1
@@ -2351,8 +4110,11 @@ if ($btnScanAllDrivers) {
             }
         }
         
+        $targetDriveDisplay = if ($drive) { $drive } else { "$($env:SystemDrive.TrimEnd(':'))`:" }
+        
         if ($drvBox) {
             $drvBox.Text = "Scanning for ALL available storage drivers...`n`n"
+            $drvBox.Text += "TARGET DRIVE: $targetDriveDisplay`n"
             $drvBox.Text += "This may take a moment...`n"
         }
         
@@ -2362,8 +4124,8 @@ if ($btnScanAllDrivers) {
             $output = "`n[SUCCESS] SCAN COMPLETE`n"
             $output += "===============================================================`n"
             $output += "$($scanResult.Message)`n"
-            $output += "Source Location: $($scanResult.SearchPath)`n"
-            $output += "`nFound Drivers (ALL storage drivers):`n"
+            $output += "===============================================================`n`n"
+            $output += "Found Drivers (ALL storage drivers):`n"
             $output += "---------------------------------------------------------------`n"
             
             $num = 1
@@ -2464,11 +4226,26 @@ if ($btnMissingDrive) {
     $btnMissingDrive.Add_Click({
         $drvBox = Get-Control -Name "DrvBox"
         try {
+            if ($drvBox) {
+                $drvBox.Text = "Analyzing storage/network controllers...`n`n"
+            }
             Update-StatusBar -Message "Analyzing storage/network controllers..." -ShowProgress
+            
+            # Check if function exists
+            if (-not (Get-Command Get-AdvancedStorageControllerInfo -ErrorAction SilentlyContinue)) {
+                $errorMsg = "Get-AdvancedStorageControllerInfo function not found. Please ensure WinRepairCore.ps1 is loaded."
+                if ($drvBox) {
+                    $drvBox.Text = "[ERROR] $errorMsg"
+                }
+                Update-StatusBar -Message "Missing drive helper failed: Function not found" -HideProgress
+                [System.Windows.MessageBox]::Show($errorMsg, "Error", "OK", "Error")
+                return
+            }
+            
             $controllers = Get-AdvancedStorageControllerInfo -IncludeNonCritical
             if (-not $controllers -or $controllers.Count -eq 0) {
                 if ($drvBox) {
-                    $drvBox.Text = "No storage controllers detected or hardware scan unavailable."
+                    $drvBox.Text = "No storage controllers detected or hardware scan unavailable.`n`nThis may indicate:`n- No storage devices present`n- Hardware scan unavailable in current environment`n- Insufficient permissions"
                 }
                 Update-StatusBar -Message "No controller data available" -HideProgress
                 return
@@ -2477,8 +4254,10 @@ if ($btnMissingDrive) {
             $needsDriver = $controllers | Where-Object { $_.NeedsDriver }
             if (-not $needsDriver -or $needsDriver.Count -eq 0) {
                 if ($drvBox) {
-                    $drvBox.Text = "No missing storage controller drivers detected. If a drive is still missing, provide a driver folder to scan."
+                    $drvBox.Text = "No missing storage controller drivers detected.`n`nIf a drive is still missing, you can provide a driver folder to scan for matching drivers.`n`nClick the button again to select a driver folder."
                 }
+                Update-StatusBar -Message "No missing drivers detected" -HideProgress
+                return
             }
 
             $folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog
@@ -2489,18 +4268,40 @@ if ($btnMissingDrive) {
                 return
             }
 
+            if ($drvBox) {
+                $drvBox.Text = "Matching drivers to hardware IDs...`n`nSelected folder: $($folderDialog.SelectedPath)`n`n"
+            }
             Update-StatusBar -Message "Matching drivers to hardware IDs..." -ShowProgress
+            
+            # Check if function exists
+            if (-not (Get-Command Find-MatchingDrivers -ErrorAction SilentlyContinue)) {
+                $errorMsg = "Find-MatchingDrivers function not found. Please ensure WinRepairCore.ps1 is loaded."
+                if ($drvBox) {
+                    $drvBox.Text = "[ERROR] $errorMsg"
+                }
+                Update-StatusBar -Message "Missing drive helper failed: Function not found" -HideProgress
+                [System.Windows.MessageBox]::Show($errorMsg, "Error", "OK", "Error")
+                return
+            }
+            
             $matchResult = Find-MatchingDrivers -ControllerInfo $controllers -DriverPath $folderDialog.SelectedPath
 
             if ($drvBox) {
-                $drvBox.Text = $matchResult.Report
+                if ($matchResult.Report) {
+                    $drvBox.Text = $matchResult.Report
+                } else {
+                    $drvBox.Text = "Driver matching completed, but no report was generated.`n`nMatches found: $($matchResult.Matches.Count)`nErrors: $($matchResult.Errors.Count)"
+                }
             }
             Update-StatusBar -Message "Driver matching complete" -HideProgress
         } catch {
+            $errorMsg = $_.Exception.Message
+            $errorDetails = "Missing drive helper failed: $errorMsg`n`nStack trace: $($_.ScriptStackTrace)"
             Update-StatusBar -Message "Missing drive helper failed" -HideProgress
             if ($drvBox) {
-                $drvBox.Text = "Missing drive helper failed: $_"
+                $drvBox.Text = "[ERROR] $errorDetails"
             }
+            Write-Warning "Missing drive helper error: $errorDetails"
         }
     })
 }
@@ -2524,10 +4325,9 @@ if ($btnDriverResources) {
 
 # Advanced Driver Tools (2025+ Systems) - Handler for advanced storage controller detection
 # Note: Add button to XAML with Name="BtnAdvancedControllerDetection" to enable
-if ($W.FindName("BtnAdvancedControllerDetection")) {
-    $btnAdvancedControllerDetection = Get-Control -Name "BtnAdvancedControllerDetection"
-    if ($btnAdvancedControllerDetection) {
-        $btnAdvancedControllerDetection.Add_Click({
+$btnAdvancedControllerDetection = Get-Control -Name "BtnAdvancedControllerDetection"
+if ($btnAdvancedControllerDetection) {
+    $btnAdvancedControllerDetection.Add_Click({
 
         $drvBox = Get-Control -Name "DrvBox"
         if ($drvBox) {
@@ -2586,15 +4386,13 @@ if ($W.FindName("BtnAdvancedControllerDetection")) {
             Update-StatusBar -Message "Error detecting storage controllers: $_" -HideProgress
         }
         })
-    }
 }
 
 # Advanced Driver Matching & Injection - Handler
 # Note: Add button to XAML with Name="BtnAdvancedDriverInjection" to enable
-if ($W.FindName("BtnAdvancedDriverInjection")) {
-    $btnAdvancedDriverInjection = Get-Control -Name "BtnAdvancedDriverInjection"
-    if ($btnAdvancedDriverInjection) {
-        $btnAdvancedDriverInjection.Add_Click({
+$btnAdvancedDriverInjection = Get-Control -Name "BtnAdvancedDriverInjection"
+if ($btnAdvancedDriverInjection) {
+    $btnAdvancedDriverInjection.Add_Click({
 
         $driveCombo = Get-Control -Name "DriveCombo"
         $selectedDrive = if ($driveCombo) { $driveCombo.SelectedItem } else { $null }
@@ -2646,29 +4444,27 @@ if ($W.FindName("BtnAdvancedDriverInjection")) {
                 
                 if ($result.Success) {
                     Update-StatusBar -Message "Driver injection completed successfully" -HideProgress
-                    [System.Windows.MessageBox]::Show("Successfully injected $($result.DriversInjected.Count) driver(s).", "Success", "OK", "Information")
+                    [System.Windows.MessageBox]::Show("Successfully injected $($result.DriversInjected.Count) driver(s).", "Success", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Information)
                 } else {
                     Update-StatusBar -Message "Driver injection completed with errors" -HideProgress
-                    [System.Windows.MessageBox]::Show("Driver injection completed with $($result.DriversFailed.Count) error(s). Check the output for details.", "Warning", "OK", "Warning")
+                    [System.Windows.MessageBox]::Show("Driver injection completed with $($result.DriversFailed.Count) error(s). Check the output for details.", "Warning", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
                 }
             } catch {
                 if ($drvBox) {
                     $drvBox.Text += "Error: $_`n"
                 }
                 Update-StatusBar -Message "Error: $_" -HideProgress
-                [System.Windows.MessageBox]::Show("Error during driver injection: $_", "Error", "OK", "Error")
+                [System.Windows.MessageBox]::Show("Error during driver injection: $_", "Error", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Error)
             }
         }
         })
     }
-}
 
 # Find Matching Drivers - Handler
 # Note: Add button to XAML with Name="BtnFindMatchingDrivers" to enable
-if ($W.FindName("BtnFindMatchingDrivers")) {
-    $btnFindMatchingDrivers = Get-Control -Name "BtnFindMatchingDrivers"
-    if ($btnFindMatchingDrivers) {
-        $btnFindMatchingDrivers.Add_Click({
+$btnFindMatchingDrivers = Get-Control -Name "BtnFindMatchingDrivers"
+if ($btnFindMatchingDrivers) {
+    $btnFindMatchingDrivers.Add_Click({
 
         $driveCombo = Get-Control -Name "DriveCombo"
         $selectedDrive = if ($driveCombo) { $driveCombo.SelectedItem } else { $null }
@@ -2720,12 +4516,12 @@ if ($W.FindName("BtnFindMatchingDrivers")) {
             }
             Update-StatusBar -Message "Searching for matching drivers..." -ShowProgress
             
-            $matches = Find-MatchingDrivers -ControllerInfo $controllers -SearchPaths $searchPaths -WindowsDrive $drive
+            $driverMatches = Find-MatchingDrivers -ControllerInfo $controllers -SearchPaths $searchPaths -WindowsDrive $drive
             
             $output = "Driver Matching Results:`n"
             $output += "===============================================================`n`n"
             
-            foreach ($match in $matches) {
+            foreach ($match in $driverMatches) {
                 $output += "Controller: $($match.Controller)`n"
                 $output += "  Type: $($match.ControllerType)`n"
                 $output += "  Hardware ID: $($match.HardwareID)`n"
@@ -2758,7 +4554,6 @@ if ($W.FindName("BtnFindMatchingDrivers")) {
             Update-StatusBar -Message "Error: $_" -HideProgress
         }
         })
-    }
 }
 
 # One-Click Repair Handler
@@ -2982,7 +4777,8 @@ if ($btnOneClickRepair) {
 # Boot Fixer Functions - Enhanced with detailed command info
 function Show-CommandPreview {
     param($Command, $Key, $Description)
-    $testMode = $W.FindName("ChkTestMode").IsChecked
+    $chkTestMode = Get-Control -Name "ChkTestMode"
+    $testMode = if ($chkTestMode) { $chkTestMode.IsChecked } else { $false }
     $cmdInfo = Get-DetailedCommandInfo $Key
     
     $output = ">>> ANALYSIS REPORT`n"
@@ -3280,12 +5076,11 @@ if ($btnSetDefaultBoot) {
     $bcdList = Get-Control -Name "BCDList"
     $selected = if ($bcdList) { $bcdList.SelectedItem } else { $null }
     if (-not $selected) {
-        [System.Windows.MessageBox]::Show("Please select a BCD entry first in the BCD Editor tab.", "Warning", "OK", "Warning")
+        [System.Windows.MessageBox]::Show("Please select a BCD entry first in the BCD Editor tab.", "Warning", [System.Windows.MessageBoxButton]::OK, [System.Windows.MessageBoxImage]::Warning)
         return
     }
     
     $command = "bcdedit /default $($selected.Id)"
-    $explanation = "Sets the selected boot entry as the default option that will boot automatically after the timeout period. This is useful when you have multiple Windows installations and want to change which one boots by default."
     $TxtSetDefault = Get-Control -Name "TxtSetDefault"
     if ($TxtSetDefault) {
         $TxtSetDefault.Text = "COMMAND: $command`n"
@@ -3377,16 +5172,6 @@ $btnCreateRestorePoint = Get-Control -Name "BtnCreateRestorePoint"
 if ($btnCreateRestorePoint) {
     $btnCreateRestorePoint.Add_Click({
 
-    $diagDriveCombo = Get-Control -Name "DiagDriveCombo"
-    $selectedDrive = if ($diagDriveCombo) { $diagDriveCombo.SelectedItem } else { $null }
-    $drive = $env:SystemDrive.TrimEnd(':')
-    
-    if ($selectedDrive) {
-        if ($selectedDrive -match '^([A-Z]):') {
-            $drive = $matches[1]
-        }
-    }
-    
     # Use a simple input dialog
     $description = "Miracle Boot Manual Restore Point - $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     
@@ -3781,9 +5566,13 @@ if ($btnInstallFailure) {
 $btnDriverForensics = Get-Control -Name "BtnDriverForensics"
 if ($btnDriverForensics) {
     $btnDriverForensics.Add_Click({
+        $currentDrive = $env:SystemDrive.TrimEnd(':')
         $logAnalysisBox = Get-Control -Name "LogAnalysisBox"
         if ($logAnalysisBox) {
-            $logAnalysisBox.Text = "Running storage driver forensics analysis...`n`nScanning for missing devices and matching to INF files...`n"
+            $logAnalysisBox.Text = "Running storage driver forensics analysis...`n`n"
+            $logAnalysisBox.Text += "TARGET DRIVE: $currentDrive`:\ (Current System)`n"
+            $logAnalysisBox.Text += "STATUS: CURRENT OPERATING SYSTEM`n`n"
+            $logAnalysisBox.Text += "Scanning for missing devices and matching to INF files...`n"
         }
         
         $forensics = Get-MissingDriverForensics
@@ -5010,7 +6799,10 @@ if ($btnRepairTemplates) {
                 
                 Update-StatusBar -Message "Template execution complete" -HideProgress
             } catch {
-                $W.FindName("LogAnalysisBox").Text += "`n`n[ERROR] Failed: $_`n"
+                $logBox = Get-Control -Name "LogAnalysisBox"
+                if ($logBox) {
+                    $logBox.Text += "`n`n[ERROR] Failed: $_`n"
+                }
                 Update-StatusBar -Message "Template execution failed" -HideProgress
                 [System.Windows.MessageBox]::Show(
                     "Error executing template:`n`n$_",
@@ -5037,34 +6829,50 @@ if ($btnRepairTemplates) {
 
 # Repair Install Forcer Handlers
 # Update mode description when radio buttons change
-$W.FindName("RbOnlineMode").Add_Checked({
-    if ($W.FindName("RbOnlineMode").IsChecked) {
-        $W.FindName("RepairModeDescription").Text = "This forces Setup to reinstall system files while keeping apps and data. Requires same edition, architecture, and build family. Must run from inside Windows."
-        $W.FindName("OfflineDrivePanel").Visibility = "Collapsed"
-    }
-})
+$rbOnlineMode = Get-Control -Name "RbOnlineMode"
+if ($rbOnlineMode) {
+    $rbOnlineMode.Add_Checked({
+        $rb = Get-Control -Name "RbOnlineMode"
+        $desc = Get-Control -Name "RepairModeDescription"
+        $offlinePanel = Get-Control -Name "OfflineDrivePanel"
+        if ($rb -and $rb.IsChecked) {
+            if ($desc) { $desc.Text = "This forces Setup to reinstall system files while keeping apps and data. Requires same edition, architecture, and build family. Must run from inside Windows." }
+            if ($offlinePanel) { $offlinePanel.Visibility = "Collapsed" }
+        }
+    })
+}
 
-$W.FindName("RbOfflineMode").Add_Checked({
-    if ($W.FindName("RbOfflineMode").IsChecked) {
-        $W.FindName("RepairModeDescription").Text = "[WARNING] ADVANCED/HACKY METHOD: Forces Setup on non-booting PC by manipulating offline registry hives. Requires WinPE/WinRE environment. This tricks Setup into thinking it's upgrading a running OS. Use with caution."
-        $W.FindName("OfflineDrivePanel").Visibility = "Visible"
+$rbOfflineMode = Get-Control -Name "RbOfflineMode"
+if ($rbOfflineMode) {
+    $rbOfflineMode.Add_Checked({
+        $rb = Get-Control -Name "RbOfflineMode"
+        $desc = Get-Control -Name "RepairModeDescription"
+        $offlinePanel = Get-Control -Name "OfflineDrivePanel"
+        $driveCbo = Get-Control -Name "RepairOfflineDrive"
         
-        # Populate offline drive combo
-        $W.FindName("RepairOfflineDrive").Items.Clear()
-        $volumes = Get-Volume | Where-Object { $_.DriveLetter -and $_.FileSystemLabel } | Sort-Object DriveLetter
-        foreach ($vol in $volumes) {
-            if ($vol.DriveLetter -ne "X") {
-                $testPath = "$($vol.DriveLetter):\Windows"
-                if (Test-Path $testPath) {
-                    $W.FindName("RepairOfflineDrive").Items.Add("$($vol.DriveLetter):")
+        if ($rb -and $rb.IsChecked) {
+            if ($desc) { $desc.Text = "[WARNING] ADVANCED/HACKY METHOD: Forces Setup on non-booting PC by manipulating offline registry hives. Requires WinPE/WinRE environment. This tricks Setup into thinking it's upgrading a running OS. Use with caution." }
+            if ($offlinePanel) { $offlinePanel.Visibility = "Visible" }
+            
+            # Populate offline drive combo
+            if ($driveCbo) {
+                $driveCbo.Items.Clear()
+                $volumes = Get-Volume | Where-Object { $_.DriveLetter -and $_.FileSystemLabel } | Sort-Object DriveLetter
+                foreach ($vol in $volumes) {
+                    if ($vol.DriveLetter -ne "X") {
+                        $testPath = "$($vol.DriveLetter):\Windows"
+                        if (Test-Path $testPath) {
+                            $driveCbo.Items.Add("$($vol.DriveLetter):")
+                        }
+                    }
+                }
+                if ($driveCbo.Items.Count -gt 0) {
+                    $driveCbo.SelectedIndex = 0
                 }
             }
         }
-        if ($W.FindName("RepairOfflineDrive").Items.Count -gt 0) {
-            $W.FindName("RepairOfflineDrive").SelectedIndex = 0
-        }
-    }
-})
+    })
+}
 
 $btnBrowseISO = Get-Control -Name "BtnBrowseISO"
 if ($btnBrowseISO) {
@@ -5279,72 +7087,308 @@ if ($btnStartRepair) {
                      "Command: $($repairResult.Command)`n`n"
         
         if ($isOffline) {
-        $confirmMsg += "This will:`n" +
-                      "  - Manipulate offline registry hives`n" +
-                      "  - Launch Windows Setup against offline OS`n" +
-                      "  - Restart and begin repair process`n`n" +
-                      "Registry backups saved to:`n"
-        foreach ($backup in $repairResult.RegistryBackups) {
-            $confirmMsg += "  - $backup`n"
-        }
-        $confirmMsg += "`n"
-    } else {
-        $confirmMsg += "This will:`n" +
-                      "  - Launch Windows Setup`n" +
-                      "  - Restart your system`n" +
-                      "  - Begin repair process`n`n"
-    }
-    
-    $confirmMsg += "Monitor progress at: $($repairResult.LogPath)`n`n" +
-                  "Do you want to proceed?"
-    
-    $result = [System.Windows.MessageBox]::Show(
-        $confirmMsg,
-        "Confirm Repair Install",
-        "YesNo",
-        "Question"
-    )
-    
-    if ($result -eq "Yes") {
-        Update-StatusBar -Message "Starting repair install..." -ShowProgress
-        
-        $output = "STARTING REPAIR INSTALL`n"
-        $output += "===============================================================`n`n"
-        $output += $repairResult.Output
-        $output += "`n`n[INFO] Launching Windows Setup...`n"
-        $output += "System will restart shortly.`n"
-        $output += "`nMonitor progress at: $($repairResult.LogPath)`n"
-        
-        if ($repairInstallOutput) {
-            $repairInstallOutput.Text = $output
-        }
-        
-        try {
-            # Execute the setup command
-            $commandParts = $repairResult.Command.Split(' ', 2)
-            $exePath = $commandParts[0].Trim('"', '''')
-            $arguments = if ($commandParts.Count -gt 1) { $commandParts[1] } else { "" }
-            Start-Process -FilePath $exePath -ArgumentList $arguments -NoNewWindow -Wait:$false
-            
-            Update-StatusBar -Message "Repair install started - system will restart" -HideProgress
-            
-            [System.Windows.MessageBox]::Show(
-                "Repair install has been started.`n`nWindows Setup will launch and your system will restart.`n`nMonitor progress at:`n$($repairResult.LogPath)",
-                "Repair Install Started",
-                "OK",
-                "Information"
-            )
-        } catch {
-            $repairInstallOutput = Get-Control -Name "RepairInstallOutput"
-            if ($repairInstallOutput) {
-                $repairInstallOutput.Text += "`n`n[ERROR] Failed to start repair install: $_`n"
+            $confirmMsg += "This will:`n" +
+                          "  - Manipulate offline registry hives`n" +
+                          "  - Launch Windows Setup against offline OS`n" +
+                          "  - Restart and begin repair process`n`n" +
+                          "Registry backups saved to:`n"
+            foreach ($backup in $repairResult.RegistryBackups) {
+                $confirmMsg += "  - $backup`n"
             }
-            Update-StatusBar -Message "Failed to start repair install" -HideProgress
+            $confirmMsg += "`n"
+        } else {
+            $confirmMsg += "This will:`n" +
+                          "  - Launch Windows Setup`n" +
+                          "  - Restart your system`n" +
+                          "  - Begin repair process`n`n"
         }
+        
+        $confirmMsg += "Monitor progress at: $($repairResult.LogPath)`n`n" +
+                      "Do you want to proceed?"
+        
+        $result = [System.Windows.MessageBox]::Show(
+            $confirmMsg,
+            "Confirm Repair Install",
+            [System.Windows.MessageBoxButton]::YesNo,
+            [System.Windows.MessageBoxImage]::Question
+        )
+        
+        if ($result -eq "Yes") {
+            Update-StatusBar -Message "Starting repair install..." -ShowProgress
+            
+            $output = "STARTING REPAIR INSTALL`n"
+            $output += "===============================================================`n`n"
+            $output += $repairResult.Output
+            $output += "`n`n[INFO] Launching Windows Setup...`n"
+            $output += "System will restart shortly.`n"
+            $output += "`nMonitor progress at: $($repairResult.LogPath)`n"
+            
+            if ($repairInstallOutput) {
+                $repairInstallOutput.Text = $output
+            }
+            
+            try {
+                # Execute the setup command
+                $commandParts = $repairResult.Command.Split(' ', 2)
+                $exePath = $commandParts[0].Trim('"', '''')
+                $arguments = if ($commandParts.Count -gt 1) { $commandParts[1] } else { "" }
+                Start-Process -FilePath $exePath -ArgumentList $arguments -NoNewWindow -Wait:$false
+                
+                Update-StatusBar -Message "Repair install started - system will restart" -HideProgress
+                
+                [System.Windows.MessageBox]::Show(
+                    "Repair install has been started.`n`nWindows Setup will launch and your system will restart.`n`nMonitor progress at:`n$($repairResult.LogPath)",
+                    "Repair Install Started",
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Information
+                )
+            } catch {
+                $repairInstallOutput = Get-Control -Name "RepairInstallOutput"
+                if ($repairInstallOutput) {
+                    $repairInstallOutput.Text += "`n`n[ERROR] Failed to start repair install: $_`n"
+                }
+                Update-StatusBar -Message "Failed to start repair install" -HideProgress
+            }
         } else {
             Update-StatusBar -Message "Repair install cancelled" -HideProgress
         }
+})
+
+} # end if ($btnStartRepair)
+
+# Set up maximize suggestion banner
+$maximizeBanner = Get-Control -Name "MaximizeBanner" -Silent
+$btnDismissMaximizeTip = Get-Control -Name "BtnDismissMaximizeTip" -Silent
+
+# Function to check window state and show/hide banner
+function Update-MaximizeBanner {
+    if ($maximizeBanner -and $W) {
+        try {
+            if ($W.WindowState -ne [System.Windows.WindowState]::Maximized) {
+                $maximizeBanner.Visibility = [System.Windows.Visibility]::Visible
+            } else {
+                $maximizeBanner.Visibility = [System.Windows.Visibility]::Collapsed
+            }
+        } catch {
+            # Ignore errors
+        }
+    }
+}
+
+# Wire up dismiss button
+if ($btnDismissMaximizeTip) {
+    $btnDismissMaximizeTip.Add_Click({
+        if ($maximizeBanner) {
+            $maximizeBanner.Visibility = [System.Windows.Visibility]::Collapsed
+        }
     })
+}
+
+# Wire up window state changed event to show/hide banner
+if ($W) {
+    # Use SizeChanged event to detect maximize/restore
+    $W.Add_SizeChanged({
+        Update-MaximizeBanner
+    })
+    
+    # Also check on window loaded
+    $W.Add_Loaded({
+        Update-MaximizeBanner
+    })
+    
+    # Check initial state after a short delay to ensure window is fully initialized
+    $W.Dispatcher.InvokeAsync({
+        Update-MaximizeBanner
+    }, [System.Windows.Threading.DispatcherPriority]::Loaded)
+    
+    # Add F11 key handler to maximize/restore window (use PreviewKeyDown to catch even when not focused)
+    $W.Add_PreviewKeyDown({
+        param($sender, $e)
+        if ($e.Key -eq [System.Windows.Input.Key]::F11) {
+            if ($W.WindowState -eq [System.Windows.WindowState]::Maximized) {
+                $W.WindowState = [System.Windows.WindowState]::Normal
+            } else {
+                $W.WindowState = [System.Windows.WindowState]::Maximized
+            }
+            $e.Handled = $true
+            Update-MaximizeBanner
+        }
+    })
+    
+    # Also ensure window gets focus when loaded
+    $W.Add_Loaded({
+        $W.Focus()
+    })
+}
+
+# File menu handlers - Caching functionality
+$script:CacheFile = Join-Path $env:APPDATA "MiracleBoot\cache.json"
+$script:CacheData = @{}
+
+# Load cache on startup
+function Load-Cache {
+    try {
+        $cacheDir = Split-Path -Parent $script:CacheFile
+        if (-not (Test-Path $cacheDir)) {
+            New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+        }
+        if (Test-Path $script:CacheFile) {
+            $jsonData = Get-Content $script:CacheFile -Raw | ConvertFrom-Json
+            $script:CacheData = @{}
+            if ($jsonData) {
+                $jsonData.PSObject.Properties | ForEach-Object {
+                    $script:CacheData[$_.Name] = $_.Value
+                }
+            }
+        }
+    } catch {
+        $script:CacheData = @{}
+    }
+}
+
+# Save cache
+function Save-Cache {
+    try {
+        $script:CacheData | ConvertTo-Json -Depth 10 | Set-Content $script:CacheFile -Force
+    } catch {
+        Write-Warning "Failed to save cache: $_"
+    }
+}
+
+# Initialize cache
+Load-Cache
+
+# File menu handlers
+$btnViewCache = Get-Control -Name "BtnViewCache" -Silent
+if ($btnViewCache) {
+    $btnViewCache.Add_Click({
+        $cacheText = "CACHED LOCATIONS`n" + ("=" * 50) + "`n`n"
+        if ($script:CacheData.Count -eq 0) {
+            $cacheText += "No cached locations found.`n"
+        } else {
+            foreach ($key in $script:CacheData.Keys) {
+                $cacheText += "$key`: $($script:CacheData[$key])`n"
+            }
+        }
+        [System.Windows.MessageBox]::Show($cacheText, "Cached Locations", "OK", "Information")
+    })
+}
+
+$btnClearCache = Get-Control -Name "BtnClearCache" -Silent
+if ($btnClearCache) {
+    $btnClearCache.Add_Click({
+        $result = [System.Windows.MessageBox]::Show("Are you sure you want to clear all cached locations?", "Clear Cache", "YesNo", "Question")
+        if ($result -eq "Yes") {
+            $script:CacheData = @{}
+            Save-Cache
+            Update-StatusBar -Message "Cache cleared" -HideProgress
+            [System.Windows.MessageBox]::Show("All cached locations have been cleared.", "Cache Cleared", "OK", "Information")
+        }
+    })
+}
+
+$btnSetLogLocation = Get-Control -Name "BtnSetLogLocation" -Silent
+if ($btnSetLogLocation) {
+    $btnSetLogLocation.Add_Click({
+        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folderBrowser.Description = "Select default location for exported logs"
+        $folderBrowser.SelectedPath = if ($script:CacheData["LogExportLocation"]) { $script:CacheData["LogExportLocation"] } else { $env:USERPROFILE }
+        if ($folderBrowser.ShowDialog() -eq "OK") {
+            $script:CacheData["LogExportLocation"] = $folderBrowser.SelectedPath
+            Save-Cache
+            Update-StatusBar -Message "Log export location set to: $($folderBrowser.SelectedPath)" -HideProgress
+        }
+    })
+}
+
+$btnSetBCDLocation = Get-Control -Name "BtnSetBCDLocation" -Silent
+if ($btnSetBCDLocation) {
+    $btnSetBCDLocation.Add_Click({
+        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folderBrowser.Description = "Select default location for BCD backups"
+        $folderBrowser.SelectedPath = if ($script:CacheData["BCDBackupLocation"]) { $script:CacheData["BCDBackupLocation"] } else { $env:USERPROFILE }
+        if ($folderBrowser.ShowDialog() -eq "OK") {
+            $script:CacheData["BCDBackupLocation"] = $folderBrowser.SelectedPath
+            Save-Cache
+            Update-StatusBar -Message "BCD backup location set to: $($folderBrowser.SelectedPath)" -HideProgress
+        }
+    })
+}
+
+$btnSetDriverLocation = Get-Control -Name "BtnSetDriverLocation" -Silent
+if ($btnSetDriverLocation) {
+    $btnSetDriverLocation.Add_Click({
+        $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+        $folderBrowser.Description = "Select default location for driver exports"
+        $folderBrowser.SelectedPath = if ($script:CacheData["DriverExportLocation"]) { $script:CacheData["DriverExportLocation"] } else { $env:USERPROFILE }
+        if ($folderBrowser.ShowDialog() -eq "OK") {
+            $script:CacheData["DriverExportLocation"] = $folderBrowser.SelectedPath
+            Save-Cache
+            Update-StatusBar -Message "Driver export location set to: $($folderBrowser.SelectedPath)" -HideProgress
+        }
+    })
+}
+
+# Settings menu handlers (must be after $W is created)
+$btnDarkMode = Get-Control -Name "BtnDarkMode" -Silent
+if ($btnDarkMode) {
+    $btnDarkMode.Add_Click({
+        Apply-DarkMode
+        Update-StatusBar -Message "Dark mode enabled" -HideProgress
+    })
+}
+
+$btnLightMode = Get-Control -Name "BtnLightMode" -Silent
+if ($btnLightMode) {
+    $btnLightMode.Add_Click({
+        Apply-LightMode
+        Update-StatusBar -Message "Light mode enabled" -HideProgress
+    })
+}
+
+$btnCompactUI = Get-Control -Name "BtnCompactUI" -Silent
+if ($btnCompactUI) {
+    $btnCompactUI.Add_Click({
+        Apply-CompactUI
+        Update-StatusBar -Message "Compact UI enabled" -HideProgress
+    })
+}
+
+$btnStandardUI = Get-Control -Name "BtnStandardUI" -Silent
+if ($btnStandardUI) {
+    $btnStandardUI.Add_Click({
+        Apply-StandardUI
+        Update-StatusBar -Message "Standard UI enabled" -HideProgress
+    })
+}
+
+# Zoom functionality handlers (must be after $W is created)
+$zoomLevelControl = Get-Control -Name "ZoomLevel" -Silent
+$btnZoomIn = Get-Control -Name "BtnZoomIn" -Silent
+$btnZoomOut = Get-Control -Name "BtnZoomOut" -Silent
+$btnZoomReset = Get-Control -Name "BtnZoomReset" -Silent
+
+if ($btnZoomIn) {
+    $btnZoomIn.Add_Click({
+        Update-Zoom -NewZoom ($script:ZoomLevel + 0.1)
+    })
+}
+
+if ($btnZoomOut) {
+    $btnZoomOut.Add_Click({
+        Update-Zoom -NewZoom ($script:ZoomLevel - 0.1)
+    })
+}
+
+if ($btnZoomReset) {
+    $btnZoomReset.Add_Click({
+        Update-Zoom -NewZoom 1.0
+    })
+}
+
+# Initialize zoom display
+if ($zoomLevelControl) {
+    $zoomLevelControl.Text = "100%"
 }
 
 # #region agent log
@@ -5381,6 +7425,10 @@ try {
     } catch {}
     # #endregion agent log
 } catch {
+    # Log the failure that could cause TUI fallback
+    $errorDetails = "Failed to show GUI window: $_`n`nStack Trace: $($_.ScriptStackTrace)"
+    Log-GUIFailure -Location "Start-GUI ShowDialog" -Error "Window Display Failed" -Details $errorDetails -Exception $_
+    
     # #region agent log
     try {
         $logPath = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) ".cursor\debug.log"
@@ -5396,6 +7444,9 @@ try {
         Add-Content -Path $logPath -Value $logEntry -ErrorAction SilentlyContinue
     } catch {}
     # #endregion agent log
-    throw
+    
+    # Re-throw to allow MiracleBoot.ps1 to handle fallback to TUI
+    throw "Failed to show GUI window: $_"
 }
+
 } # End of Start-GUI function

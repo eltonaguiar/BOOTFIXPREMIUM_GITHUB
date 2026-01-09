@@ -2170,10 +2170,26 @@ function Get-MissingStorageDevices {
         return "Storage driver scan failed: $($_.Exception.Message)"
     }
     
-    if (!$devices) { return "No missing or errored storage drivers detected.`n`nNote: Devices with non-zero error codes that are not error codes 1, 3, or 28 (missing driver codes) are excluded to reduce false positives." }
+    # Determine target drive context
+    $currentDrive = $env:SystemDrive.TrimEnd(':')
+    $osContext = "CURRENT OPERATING SYSTEM"
+    
+    if (!$devices) { 
+        $noDevicesMsg = "MISSING STORAGE DRIVER SCAN`n"
+        $noDevicesMsg += "===============================================================`n"
+        $noDevicesMsg += "TARGET DRIVE: $currentDrive`:\ (Current System)`n"
+        $noDevicesMsg += "STATUS: $osContext`n"
+        $noDevicesMsg += "===============================================================`n`n"
+        $noDevicesMsg += "No missing or errored storage drivers detected.`n`n"
+        $noDevicesMsg += "Note: Devices with non-zero error codes that are not error codes 1, 3, or 28 (missing driver codes) are excluded to reduce false positives."
+        return $noDevicesMsg
+    }
 
     $report = "MISSING STORAGE DRIVER DEVICES`n"
     $report += "===============================================================`n"
+    $report += "TARGET DRIVE: $currentDrive`:\ (Current System)`n"
+    $report += "STATUS: $osContext`n"
+    $report += "===============================================================`n`n"
     $report += "Note: Only showing devices with error codes indicating missing drivers:`n"
     $report += "  - Error Code 28: Driver not installed`n"
     $report += "  - Error Code 1: Device not configured (often driver issue)`n"
@@ -2194,6 +2210,126 @@ function Get-MissingStorageDevices {
         $report += "   HWID: $($dev.HardwareID -join ', ')`n"
         $report += "----------------------------------------------------------------------`n"
     }
+    return $report
+}
+
+function Get-AllMissingDrivers {
+    <#
+    .SYNOPSIS
+    Gets ALL devices with missing or problematic drivers, regardless of device class.
+    This includes devices with yellow exclamation marks in Device Manager.
+    
+    .DESCRIPTION
+    Scans for all PnP devices with non-zero error codes, not just storage devices.
+    This will catch devices that the storage-only scan might miss.
+    #>
+    
+    if (-not (Get-Command Get-PnpDevice -ErrorAction SilentlyContinue)) {
+        return "Get-PnpDevice is not available in this environment.`n`nThis scan requires the PnpDevice cmdlets (Full Windows or compatible WinPE)."
+    }
+    
+    $devices = @()
+    try {
+        # Get ALL devices with ANY error code (not just 1, 3, 28)
+        # Error code 0 = OK, so we exclude that
+        $rawDevices = Get-PnpDevice | Where-Object {
+            $_.ConfigManagerErrorCode -ne 0 -and $null -ne $_.ConfigManagerErrorCode
+        }
+        
+        foreach ($dev in $rawDevices) {
+            $devices += $dev
+        }
+    } catch {
+        return "Device scan failed: $($_.Exception.Message)"
+    }
+    
+    # Determine target drive context
+    $currentDrive = $env:SystemDrive.TrimEnd(':')
+    $osContext = "CURRENT OPERATING SYSTEM"
+    
+    if (!$devices) { 
+        $noDevicesMsg = "ALL MISSING DRIVERS SCAN`n"
+        $noDevicesMsg += "===============================================================`n"
+        $noDevicesMsg += "TARGET DRIVE: $currentDrive`:\ (Current System)`n"
+        $noDevicesMsg += "STATUS: $osContext`n"
+        $noDevicesMsg += "===============================================================`n`n"
+        $noDevicesMsg += "No devices with driver problems detected.`n`n"
+        $noDevicesMsg += "All devices are functioning properly (error code 0 = OK)."
+        return $noDevicesMsg
+    }
+    
+    # Helper function to get error code description
+    function Get-ErrorCodeDescription {
+        param([int]$ErrorCode)
+        switch ($ErrorCode) {
+            0 { return "OK" }
+            1 { return "Device not configured" }
+            3 { return "Driver may be corrupted" }
+            10 { return "Device cannot start" }
+            12 { return "Device cannot find enough free resources" }
+            14 { return "Device cannot work properly" }
+            18 { return "Reinstall the drivers" }
+            19 { return "Device cannot start (hardware failure)" }
+            21 { return "Windows is removing the device" }
+            22 { return "Device is disabled" }
+            24 { return "Device does not exist" }
+            28 { return "Driver not installed" }
+            29 { return "Device is disabled (hardware failure)" }
+            31 { return "Device cannot start (driver problem)" }
+            32 { return "Driver loader not found" }
+            33 { return "Problem detected with device" }
+            34 { return "Device cannot start (driver problem)" }
+            35 { return "Device failed to start" }
+            36 { return "Device cannot start (driver problem)" }
+            37 { return "Device cannot start (driver problem)" }
+            38 { return "Device cannot start (driver problem)" }
+            39 { return "Device cannot start (driver problem)" }
+            40 { return "Device cannot start (driver problem)" }
+            41 { return "Device cannot start (driver problem)" }
+            42 { return "Device cannot start (driver problem)" }
+            43 { return "Device cannot start (driver problem)" }
+            44 { return "Device cannot start (driver problem)" }
+            45 { return "Device cannot start (driver problem)" }
+            48 { return "Driver software may not be installed correctly" }
+            default { return "Error Code $ErrorCode" }
+        }
+    }
+    
+    $report = "ALL DEVICES WITH DRIVER PROBLEMS`n"
+    $report += "===============================================================`n"
+    $report += "TARGET DRIVE: $currentDrive`:\ (Current System)`n"
+    $report += "STATUS: $osContext`n"
+    $report += "===============================================================`n`n"
+    $report += "This scan shows ALL devices with non-zero error codes,`n"
+    $report += "including those that may not be storage-related.`n"
+    $report += "`nTotal devices with problems: $($devices.Count)`n"
+    $report += "===============================================================`n`n"
+    
+    # Group by error code for summary
+    $errorGroups = $devices | Group-Object -Property ConfigManagerErrorCode | Sort-Object Count -Descending
+    $report += "ERROR CODE SUMMARY:`n"
+    $report += "-------------------`n"
+    foreach ($group in $errorGroups) {
+        $errorDesc = Get-ErrorCodeDescription -ErrorCode $group.Name
+        $report += "  Error Code $($group.Name): $errorDesc - $($group.Count) device(s)`n"
+    }
+    $report += "`n===============================================================`n`n"
+    
+    $report += "DETAILED DEVICE LIST:`n"
+    $report += "-------------------`n"
+    $report += "STATUS      ERROR CODE  DESCRIPTION              CLASS                NAME`n"
+    $report += "------      ----------  -----------              -----                ----`n"
+    
+    foreach ($dev in $devices | Sort-Object Class, FriendlyName) {
+        $errorDesc = Get-ErrorCodeDescription -ErrorCode $dev.ConfigManagerErrorCode
+        $report += "{0,-11} {1,-11} {2,-24} {3,-20} {4}`n" -f $dev.Status, "Code $($dev.ConfigManagerErrorCode)", $errorDesc, $dev.Class, $dev.FriendlyName
+        $report += "   Instance ID: $($dev.InstanceId)`n"
+        if ($dev.HardwareID) {
+            $report += "   Hardware ID: $($dev.HardwareID -join ', ')`n"
+        }
+        $report += "----------------------------------------------------------------------`n"
+    }
+    
     return $report
 }
 
@@ -2302,18 +2438,28 @@ function Scan-ForDrivers {
     if (-not $ShowAll -and $missingDevices.Count -eq 0) {
         $currentOS = if ($SourceDrive) { ($env:SystemDrive.TrimEnd(':') -eq $SourceDrive) } else { $true }
         $osContext = if ($currentOS) { "CURRENT OPERATING SYSTEM" } else { "OFFLINE WINDOWS INSTALLATION" }
-        $driveInfo = if ($SourceDrive) { "Target Windows Installation: $SourceDrive`:\Windows`nStatus: $osContext`n`n" } else { "" }
+        $targetDrive = if ($SourceDrive) { "$SourceDrive`:" } else { "$($env:SystemDrive.TrimEnd(':'))`:" }
+        $driveInfo = if ($SourceDrive) { 
+            "TARGET DRIVE: $SourceDrive`:\`n" +
+            "Windows Path: $SourceDrive`:\Windows`n" +
+            "STATUS: $osContext`n"
+        } else { 
+            "TARGET DRIVE: $targetDrive (Current System)`n" +
+            "Windows Path: $targetDrive\Windows`n" +
+            "STATUS: $osContext`n"
+        }
         
         return @{
             Found = $false
             Message = "DRIVER SCAN - $osContext`n" +
                      "===============================================================`n" +
                      "$driveInfo" +
+                     "===============================================================`n`n" +
                      "No missing storage drivers detected. All storage controllers are functioning properly.`n`n" +
                      "To scan for ALL available drivers (not just missing ones), use the 'Scan All Drivers' option."
             Drivers = @()
             MissingCount = 0
-            TargetDrive = if ($SourceDrive) { "$SourceDrive`:" } else { "Current System" }
+            TargetDrive = $targetDrive
         }
     }
     
@@ -2336,7 +2482,10 @@ function Scan-ForDrivers {
             Found = $false
             Message = "DRIVER SCAN`n" +
                      "===============================================================`n" +
-                     "No Windows drive found. Please specify a drive letter.`n" +
+                     "TARGET DRIVE: Not Specified`n" +
+                     "STATUS: ERROR - No Windows drive found`n" +
+                     "===============================================================`n`n" +
+                     "Please specify a drive letter.`n" +
                      "Example: Scan-ForDrivers -SourceDrive C"
             Drivers = @()
             MissingCount = $missingDevices.Count
@@ -2353,9 +2502,13 @@ function Scan-ForDrivers {
             Found = $false
             Message = "DRIVER SCAN - $osContext`n" +
                      "===============================================================`n" +
-                     "Target Windows Installation: $SourceDrive`:\Windows`n" +
-                     "Status: $osContext`n`n" +
-                     "Driver store not found at: $searchPath"
+                     "TARGET DRIVE: $SourceDrive`:\`n" +
+                     "Windows Path: $SourceDrive`:\Windows`n" +
+                     "STATUS: $osContext`n" +
+                     "===============================================================`n`n" +
+                     "ERROR: Driver store not found at:`n" +
+                     "$searchPath`n`n" +
+                     "This drive may not contain a valid Windows installation."
             Drivers = @()
             MissingCount = $missingDevices.Count
             TargetDrive = "$SourceDrive`:"
@@ -2417,9 +2570,25 @@ function Scan-ForDrivers {
     }
     
     $message = if ($ShowAll) {
-        "Found $count driver file(s) in: $searchPath`n(Showing ALL available storage drivers)"
+        "DRIVER SCAN - $osContext`n" +
+        "===============================================================`n" +
+        "TARGET DRIVE: $SourceDrive`:\`n" +
+        "Windows Path: $SourceDrive`:\Windows`n" +
+        "STATUS: $osContext`n" +
+        "===============================================================`n`n" +
+        "Found $count driver file(s) in:`n" +
+        "$searchPath`n`n" +
+        "(Showing ALL available storage drivers)"
     } else {
-        "Found $count driver file(s) matching missing storage controllers.`nSource: $searchPath`n`nMissing devices detected: $($missingDevices.Count)"
+        "DRIVER SCAN - $osContext`n" +
+        "===============================================================`n" +
+        "TARGET DRIVE: $SourceDrive`:\`n" +
+        "Windows Path: $SourceDrive`:\Windows`n" +
+        "STATUS: $osContext`n" +
+        "===============================================================`n`n" +
+        "Found $count driver file(s) matching missing storage controllers.`n" +
+        "Source Location: $searchPath`n`n" +
+        "Missing devices detected: $($missingDevices.Count)"
     }
     
     return @{
@@ -2429,6 +2598,7 @@ function Scan-ForDrivers {
         SearchPath = $searchPath
         Drivers = $driverPaths
         MissingCount = $missingDevices.Count
+        TargetDrive = "$SourceDrive`:"
     }
 }
 

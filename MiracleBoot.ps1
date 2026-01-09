@@ -29,7 +29,20 @@ param(
     [switch]$SelfTest
 )
 
-Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force -ErrorAction SilentlyContinue
+# Set execution policy with proper error handling
+# Note: In some restricted environments, this may fail - we'll handle it gracefully
+try {
+    $null = Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force -ErrorAction Stop
+} catch {
+    # Execution policy may not be available in all environments (e.g., some WinPE)
+    # This is not critical if we're already running - continue with warning
+    $policyError = $_.Exception.Message
+    if ($policyError -notmatch 'CouldNotAutoloadMatchingModule|module could not be loaded') {
+        # Only warn if it's not a module loading issue (which is expected in some environments)
+        Write-Warning "Could not set execution policy: $policyError (continuing anyway)"
+    }
+}
+
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -132,15 +145,25 @@ function Initialize-LogSystem {
         # Silently fail - log cleanup is not critical
     }
     
-    # Write initialization header
-    Write-ToLog "════════════════════════════════════════════════════════════════" "INFO"
-    Write-ToLog "MiracleBoot v7.2.0 - Session Started" "INFO"
-    Write-ToLog "Timestamp: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" "INFO"
-    Write-ToLog "Environment: $(Get-EnvironmentType)" "INFO"
-    Write-ToLog "Firmware: $(Get-FirmwareType)" "INFO"
-    Write-ToLog "Administrator: $(if (Test-AdminPrivileges) { 'Yes' } else { 'No' })" "INFO"
-    Write-ToLog "PowerShell: $($PSVersionTable.PSVersion)" "INFO"
-    Write-ToLog "════════════════════════════════════════════════════════════════" "INFO"
+    # Write initialization header (functions may not be available yet, so use direct file write)
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $header = @"
+════════════════════════════════════════════════════════════════
+MiracleBoot v7.2.0 - Session Started
+Timestamp: $timestamp
+════════════════════════════════════════════════════════════════
+"@
+    try {
+        Add-Content -LiteralPath $global:LogPath -Value $header -ErrorAction SilentlyContinue
+    } catch {
+        # If Write-ToLog is available, use it; otherwise just continue
+        if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
+            Write-ToLog "════════════════════════════════════════════════════════════════" "INFO"
+            Write-ToLog "MiracleBoot v7.2.0 - Session Started" "INFO"
+            Write-ToLog "Timestamp: $timestamp" "INFO"
+            Write-ToLog "════════════════════════════════════════════════════════════════" "INFO"
+        }
+    }
 }
 
 function Get-LogOrigin {
@@ -1128,15 +1151,26 @@ if (-not (Test-Path -LiteralPath $script:MiracleBootRoot)) {
 # Initialize logging system FIRST (before any other operations)
 try {
     Initialize-LogSystem -ScriptRoot $script:MiracleBootRoot
-    Write-ToLog "Logging system initialized successfully" "SUCCESS"
+    # Now that logging is initialized, add environment details
+    if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
+        Write-ToLog "Logging system initialized successfully" "SUCCESS"
+    }
 } catch {
     Write-Host "WARNING: Could not initialize logging: $_" -ForegroundColor Yellow
 }
 
-# Detect environment
+# Detect environment (after logging is initialized)
 $envType = Get-EnvironmentType
-Write-ToLog "Environment detected: $envType" "INFO"
 $isAdmin = Test-AdminPrivileges
+$firmwareType = Get-FirmwareType
+
+# Log environment details now that all functions are available
+if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
+    Write-ToLog "Environment detected: $envType" "INFO"
+    Write-ToLog "Firmware: $firmwareType" "INFO"
+    Write-ToLog "Administrator: $(if ($isAdmin) { 'Yes' } else { 'No' })" "INFO"
+    Write-ToLog "PowerShell: $($PSVersionTable.PSVersion)" "INFO"
+}
 
 if ($SelfTest) {
     $null = Invoke-SelfTest -EnvironmentType $envType
@@ -1161,13 +1195,36 @@ Write-Host ""
 
 # CRITICAL: Block if not admin
 if (-not $isAdmin) {
-    Write-ErrorLog "This script requires administrator privileges"
-    Write-Host "FATAL ERROR: This script requires administrator privileges." -ForegroundColor Red
-    Write-Host "Please right-click and select 'Run as Administrator'" -ForegroundColor Yellow
+    # Try to log, but don't fail if logging isn't initialized yet
+    try {
+        Write-ErrorLog "This script requires administrator privileges"
+    } catch {
+        # Logging may not be available - continue with console output
+    }
+    
     Write-Host ""
-    Write-Host "Log saved to: $global:LogPath" -ForegroundColor Yellow
-    Write-Host "Press any key to exit..."
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+    Write-Host "║         FATAL ERROR: Administrator Privileges Required         ║" -ForegroundColor Red
+    Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "This script requires administrator privileges to function properly." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "To fix this:" -ForegroundColor Cyan
+    Write-Host "  1. Right-click on 'MiracleBoot.ps1'" -ForegroundColor White
+    Write-Host "  2. Select 'Run with PowerShell' or 'Run as Administrator'" -ForegroundColor White
+    Write-Host "  3. If prompted, click 'Yes' to allow the script to run" -ForegroundColor White
+    Write-Host ""
+    if ($global:LogPath) {
+        Write-Host "Log saved to: $global:LogPath" -ForegroundColor Gray
+    }
+    Write-Host ""
+    Write-Host "Press any key to exit..." -ForegroundColor Yellow
+    try {
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    } catch {
+        # If ReadKey fails, just wait a moment
+        Start-Sleep -Seconds 3
+    }
     exit 1
 }
 
@@ -1253,52 +1310,168 @@ if ($envType -eq 'FullOS') {
     Write-ToLog "FullOS detected - attempting GUI mode..." "INFO"
     Write-Host "[LAUNCH] FullOS detected - attempting GUI mode..." -ForegroundColor Green
     
-    # Try GUI mode
-    Write-ToLog "Loading GUI module..." "INFO"
-    Write-Host "[LAUNCH] Loading GUI module..." -ForegroundColor Gray
+    # Validate GUI prerequisites BEFORE attempting to load
+    Write-Host "[LAUNCH] Validating GUI prerequisites..." -ForegroundColor Gray
+    
+    # Check 1: WPF availability
+    $wpfAvailable = $false
     try {
-        # Load network diagnostics module first (required by GUI)
-        $networkModule = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\NetworkDiagnostics.ps1"
-        if (Test-Path -LiteralPath $networkModule) {
-            . $networkModule
-            Write-ToLog "NetworkDiagnostics loaded for GUI" "DEBUG"
-        }
-
-        $guiModule = Join-Path $script:MiracleBootRoot "WinRepairGUI.ps1"
-        if (-not (Test-Path -LiteralPath $guiModule)) {
-            throw "WinRepairGUI.ps1 not found at $guiModule"
-        }
-
-        Write-ToLog "GUI module file exists and is readable" "DEBUG"
-        . $guiModule
-        
-        if (-not (Get-Command Start-GUI -ErrorAction SilentlyContinue)) {
-            throw "Start-GUI function not found in WinRepairGUI.ps1 - module may not have loaded correctly"
-        }
-        
-        Write-ToLog "GUI module loaded successfully, calling Start-GUI..." "INFO"
-        Write-Host "[LAUNCH] ✓ Starting GUI interface..." -ForegroundColor Green
-        
-        # Initialize GUI fallback flag
-        $global:GUIFallbackToTUI = $false
-        
-        # Launch GUI
-        Start-GUI
-        
-        # Check if user switched to TUI
-        if ($global:GUIFallbackToTUI) {
-            Write-ToLog "User initiated fallback from GUI to TUI mode" "INFO"
-            Write-Host "[LAUNCH] User selected TUI mode, continuing to MS-DOS mode..." -ForegroundColor Yellow
+        Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+        $wpfAvailable = $true
+        Write-ToLog "WPF (PresentationFramework) is available" "INFO"
+        Write-Host "  [CHECK] WPF available: ✓" -ForegroundColor Green
+    } catch {
+        Write-ErrorLog "WPF (PresentationFramework) is NOT available: $($_.Exception.Message)"
+        Write-Host "  [CHECK] WPF available: ✗ - $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host ""
+        Write-Host "GUI cannot launch without WPF support." -ForegroundColor Red
+        Write-Host "Falling back to TUI mode..." -ForegroundColor Yellow
+        Write-Host ""
+    }
+    
+    # Check 2: STA thread requirement
+    $isSta = $false
+    try {
+        $isSta = ([System.Threading.Thread]::CurrentThread.ApartmentState -eq 'STA')
+        if ($isSta) {
+            Write-ToLog "Thread apartment state is STA (required for WPF)" "INFO"
+            Write-Host "  [CHECK] STA thread: ✓" -ForegroundColor Green
         } else {
-            Write-ToLog "GUI closed normally, exiting application" "INFO"
-            exit 0
+            Write-ErrorLog "Thread apartment state is $([System.Threading.Thread]::CurrentThread.ApartmentState) (STA required for WPF)"
+            Write-Host "  [CHECK] STA thread: ✗ - Current: $([System.Threading.Thread]::CurrentThread.ApartmentState)" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "GUI requires STA thread. Attempting to relaunch..." -ForegroundColor Yellow
+            Set-GuiHostForFullOS -EnvironmentType $envType
+            # If we get here, relaunch didn't happen, so continue
         }
     } catch {
-        Write-ErrorLog "GUI launch failed, falling back to TUI mode" -Exception $_
-        Write-Host "[LAUNCH] GUI failed, falling back to TUI..." -ForegroundColor Yellow
-        Write-Host "        Error Details: $_" -ForegroundColor DarkYellow
-        Write-ToLog "GUI fallback reason: $($_.Exception.Message)" "WARNING"
-        Wait-ForUserContinue -Message "GUI failed. Review the error details above, then press any key to continue to TUI..."
+        Write-ErrorLog "Could not check thread apartment state: $($_.Exception.Message)"
+        Write-Host "  [CHECK] STA thread: ✗ - Could not verify" -ForegroundColor Red
+    }
+    
+    # Only proceed if prerequisites are met
+    if ($wpfAvailable -and $isSta) {
+        Write-Host "[LAUNCH] All GUI prerequisites met - proceeding with GUI launch" -ForegroundColor Green
+        Write-Host ""
+        
+        # Try GUI mode
+        Write-ToLog "Loading GUI module..." "INFO"
+        Write-Host "[LAUNCH] Loading GUI module..." -ForegroundColor Gray
+        try {
+            # Load network diagnostics module first (required by GUI)
+            $networkModule = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\NetworkDiagnostics.ps1"
+            if (Test-Path -LiteralPath $networkModule) {
+                . $networkModule
+                Write-ToLog "NetworkDiagnostics loaded for GUI" "DEBUG"
+            }
+
+            # Check for GUI module in both possible locations
+            $guiModule = Join-Path $script:MiracleBootRoot "WinRepairGUI.ps1"
+            if (-not (Test-Path -LiteralPath $guiModule)) {
+                $guiModule = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\WinRepairGUI.ps1"
+                if (-not (Test-Path -LiteralPath $guiModule)) {
+                    throw "WinRepairGUI.ps1 not found in root or HELPER SCRIPTS directory"
+                }
+            }
+
+            Write-ToLog "GUI module found at: $guiModule" "INFO"
+            Write-Host "  [LOAD] GUI module: $guiModule" -ForegroundColor Gray
+            
+            # Check for XAML file
+            $xamlFile = Join-Path $script:MiracleBootRoot "WinRepairGUI.xaml"
+            if (-not (Test-Path -LiteralPath $xamlFile)) {
+                throw "WinRepairGUI.xaml not found at $xamlFile"
+            }
+            Write-ToLog "XAML file found at: $xamlFile" "INFO"
+            Write-Host "  [LOAD] XAML file: $xamlFile" -ForegroundColor Gray
+
+            Write-ToLog "Loading GUI module..." "DEBUG"
+            . $guiModule
+            
+            if (-not (Get-Command Start-GUI -ErrorAction SilentlyContinue)) {
+                throw "Start-GUI function not found in WinRepairGUI.ps1 - module may not have loaded correctly"
+            }
+            
+            Write-ToLog "GUI module loaded successfully, calling Start-GUI..." "INFO"
+            Write-Host "[LAUNCH] ✓ Starting GUI interface..." -ForegroundColor Green
+            Write-Host ""
+            
+            # Initialize GUI fallback flag
+            $global:GUIFallbackToTUI = $false
+            
+            # Set PSScriptRoot for Start-GUI to find XAML
+            $originalPSScriptRoot = $PSScriptRoot
+            if (-not $PSScriptRoot) {
+                $script:PSScriptRoot = $script:MiracleBootRoot
+            }
+            
+            # Verify XAML file exists before calling Start-GUI
+            $xamlCheck = Join-Path $script:MiracleBootRoot "WinRepairGUI.xaml"
+            if (-not (Test-Path -LiteralPath $xamlCheck)) {
+                throw "WinRepairGUI.xaml not found at $xamlCheck"
+            }
+            Write-ToLog "XAML file verified: $xamlCheck" "DEBUG"
+            
+            # Launch GUI with proper error handling
+            try {
+                Start-GUI
+                
+                # Check if user switched to TUI
+                if ($global:GUIFallbackToTUI) {
+                    Write-ToLog "User initiated fallback from GUI to TUI mode" "INFO"
+                    Write-Host "[LAUNCH] User selected TUI mode, continuing to MS-DOS mode..." -ForegroundColor Yellow
+                } else {
+                    Write-ToLog "GUI closed normally, exiting application" "INFO"
+                    exit 0
+                }
+            } catch {
+                Write-ErrorLog "Start-GUI function failed: $($_.Exception.Message)" -Exception $_
+                Write-Host ""
+                Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+                Write-Host "║         GUI LAUNCH FAILED - DETAILED ERROR INFORMATION         ║" -ForegroundColor Red
+                Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+                Write-Host ""
+                Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+                if ($_.Exception.InnerException) {
+                    Write-Host "Inner Exception: $($_.Exception.InnerException.Message)" -ForegroundColor DarkRed
+                }
+                Write-Host ""
+                Write-Host "Stack Trace:" -ForegroundColor Yellow
+                Write-Host $_.ScriptStackTrace -ForegroundColor Gray
+                Write-Host ""
+                Write-Host "Falling back to TUI mode..." -ForegroundColor Yellow
+                Write-Host ""
+                throw  # Re-throw to be caught by outer catch
+            } finally {
+                # Restore original PSScriptRoot
+                if ($originalPSScriptRoot) {
+                    $script:PSScriptRoot = $originalPSScriptRoot
+                }
+            }
+        } catch {
+            # GUI launch failure - show detailed error
+            Write-ErrorLog "GUI launch failed: $($_.Exception.Message)" -Exception $_
+            Write-Host ""
+            Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Red
+            Write-Host "║         GUI LAUNCH FAILED - DETAILED ERROR INFORMATION         ║" -ForegroundColor Red
+            Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor Red
+            Write-Host ""
+            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
+            if ($_.Exception.InnerException) {
+                Write-Host "Inner Exception: $($_.Exception.InnerException.Message)" -ForegroundColor DarkRed
+            }
+            Write-Host ""
+            Write-Host "Location: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "Falling back to TUI mode..." -ForegroundColor Yellow
+            Write-Host ""
+            Write-Host "Log file: $global:LogPath" -ForegroundColor Gray
+            Write-Host ""
+        }
+    } else {
+        Write-Host ""
+        Write-Host "GUI prerequisites not met. Falling back to TUI mode..." -ForegroundColor Yellow
+        Write-Host ""
     }
 } else {
     Write-ToLog "Non-FullOS environment detected ($envType), skipping GUI" "WARNING"

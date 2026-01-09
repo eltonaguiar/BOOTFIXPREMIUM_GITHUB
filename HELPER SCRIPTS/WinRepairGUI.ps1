@@ -1,6 +1,5 @@
 ﻿[xml]
-<Window x:Class="MiracleBoot.WinRepairGUI"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="WinRepairGUI" Height="300" Width="800">
     <Grid>

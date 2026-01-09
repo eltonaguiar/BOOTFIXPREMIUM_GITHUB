@@ -18,6 +18,30 @@ MiracleBoot v7.2.0 is a comprehensive Windows system recovery toolkit. Based on 
 
 ---
 
+## Payworthy UX + Sister Project Integration (Jan 2026)
+
+**Goal:** Make MiracleBoot “worth paying for” by embedding the sister project’s diagnostic brain (MiracleBoot Pro/AutoAnalyzer) into the main GUI/TUI and delivering a clean, guided experience that fixes boot/OS corruption fast without wiping apps.
+
+**Cross-check (what exists vs sister project):**
+- ? Current repo: Stable GUI/TUI, Boot Repair Wizard, One-Click repair, driver detect/inject, log analysis, hardware/partition focus.
+- ? Sister project: Forensic analyzer with boot-chain awareness, confidence-scored explanations, offline registry + Panther log intelligence, advanced 2025+ driver matching/injection, Pro-style dual (human/tech) reports.
+- ?? Gap: Pro triage is not surfaced in the GUI/TUI here; driver automation stops at inject (no acquisition wizard); UI is tab-heavy with limited “do this now” guidance and no premium-grade report output.
+
+**Plan (applies to GUI + TUI):**
+1) **Instant triage on launch (<=30s):** Auto-run the Pro analyzer in read-only mode after environment detection. Show a home dashboard with four cards: Boot Chain, Drivers, OS Integrity (SFC/DISM readiness), Repair Install Readiness. Each card has confidence, severity color, and a single CTA (e.g., “Rebuild boot files”, “Inject matching drivers”, “Run SFC/DISM”, “Fix upgrade blockers”).
+2) **Guided repair tracks vs tab sprawl:** Consolidate into four tracks: Home/Triage, Boot Fix, Driver Rescue, OS/Repair Install. Each track is a short wizard (diagnose → confirm → execute) using existing engine calls (BCD rebuild, boot file repair, advanced driver injection, SFC/DISM, repair-install readiness).
+3) **Clean UI language & feedback:** One dominant action per screen, collapsible “show commands” panel, consistent progress bars with elapsed/ETA/heartbeat text, and visible environment/admin status. Keep utilities and experts-only tools in a secondary drawer to reduce noise.
+4) **Driver + upgrade rescue:** Pair advanced controller detection with a driver acquisition wizard (hardware IDs → suggested sources → extraction via bundled 7-Zip portable) and cache choices for offline reuse. Run upgrade readiness + blocker fixes first, then hand off to repair install with ISO helper; enable offline driver injection before setup to avoid reinstall.
+5) **Safety nets + reporting:** Auto BCD backup and restore-point creation (when in FullOS); in WinRE/WinPE, export rollback script + SAVE_ME.txt. Generate shareable HTML/PDF + text summaries with confidence scores, actions taken, and next steps to justify paid value.
+6) **Monetizable “Pro Fix” bundle:** One-click, opt-in flow that applies the top-ranked fixes from triage with confirmations, produces a branded report, and logs a session timeline (what ran, when, result) for support cases.
+
+**Milestones:**
+- **v7.3:** Surface Pro triage in GUI/TUI home dashboard; wire CTAs to current engine functions; default to read-only, with explicit opt-in to apply fixes.
+- **v7.4:** Ship guided tracks/wizards, unified progress/ETA/command preview, automatic BCD backup/restore-point gating, and report export.
+- **v7.5:** Driver acquisition wizard + optional cloud lookup hook, cached scans/async heartbeats to keep diagnose→fix under 10 minutes for common failures.
+
+---
+
 ## PRIORITY FEATURES FOR 2026
 
 ### 1. Boot Repair Wizard (CLI/MS-DOS Version) - v7.3
