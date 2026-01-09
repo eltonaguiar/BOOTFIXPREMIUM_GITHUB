@@ -1306,9 +1306,9 @@ if ($logSummary.ErrorCount -gt 0 -or $logSummary.WarningCount -gt 0) {
 # SECTION 3: INTERFACE SELECTION & LAUNCH
 # ============================================================================
 
-if ($envType -eq 'FullOS') {
-    Write-ToLog "FullOS detected - attempting GUI mode..." "INFO"
-    Write-Host "[LAUNCH] FullOS detected - attempting GUI mode..." -ForegroundColor Green
+if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
+    Write-ToLog "$envType detected - attempting GUI mode if WPF is available..." "INFO"
+    Write-Host "[LAUNCH] $envType detected - attempting GUI mode..." -ForegroundColor Green
     
     # Validate GUI prerequisites BEFORE attempting to load
     Write-Host "[LAUNCH] Validating GUI prerequisites..." -ForegroundColor Gray
