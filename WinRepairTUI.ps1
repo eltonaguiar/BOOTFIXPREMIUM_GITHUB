@@ -1028,8 +1028,8 @@
                 Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
                 Write-Host ""
                 Write-Host "Describe the boot symptoms (stop codes, recovery loop, missing Start menu, etc.):" -ForegroundColor Gray
-                $description = Read-Host ""
-                if (-not $description) {
+                $description = Read-Host -Prompt "Enter description (required)"
+                if ([string]::IsNullOrWhiteSpace($description)) {
                     Write-Host "No description entered. Returning to menu." -ForegroundColor Yellow
                 } else {
                     $suggestions = Suggest-BootIssueFromDescription $description
