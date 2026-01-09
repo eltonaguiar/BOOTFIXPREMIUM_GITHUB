@@ -1,0 +1,71 @@
+SHIFT+F10 Quick Actions (WinRE)
+================================
+
+Goal: Bring up networking, confirm the target drive, fetch MiracleBoot from GitHub into a chosen folder, and run it (CMD or PowerShell) from WinRE. Use Ethernet when possible; Wi‑Fi in WinRE may need drivers.
+
+1) Identify drives and choose target folder
+------------------------------------------
+CMD:
+  diskpart
+  list volume
+  exit
+PowerShell (if available):
+  Get-Volume | Sort-Object DriveLetter
+Pick a writable volume (e.g., C:, D:, or a USB). Create a folder such as D:\MiracleBoot.
+
+2) Enable networking in WinRE
+-----------------------------
+Initialize network stack:
+  wpeutil InitializeNetwork
+Check interface/IP:
+  ipconfig /all
+If driver missing, load from USB (example):
+  drvload X:\Drivers\Net\netdrv.inf
+For Wi‑Fi (if supported):
+  netsh wlan show profiles
+  netsh wlan connect name="SSID"
+Verify connectivity:
+  ping 1.1.1.1
+
+3) Download MiracleBoot from GitHub to your chosen folder
+---------------------------------------------------------
+Set your target path (replace D:\MiracleBoot with your choice):
+  set TARGET=D:\MiracleBoot
+  mkdir "%TARGET%"
+
+PowerShell zip download (preferred when PowerShell is present):
+  powershell -NoLogo -ExecutionPolicy Bypass -Command ^
+    "[Net.ServicePointManager]::SecurityProtocol='Tls12';" ^
+    "$u='https://github.com/zeroukat/MiracleBoot_v7_1_1/archive/refs/heads/main.zip';" ^
+    "$o=Join-Path $env:TEMP 'miracleboot.zip';" ^
+    "Invoke-WebRequest -Uri $u -OutFile $o;" ^
+    "Expand-Archive -Path $o -DestinationPath '%TARGET%' -Force;"
+
+If PowerShell is unavailable, use curl + tar (Windows 10+):
+  curl.exe -L -o %TEMP%\miracleboot.zip ^
+    https://github.com/zeroukat/MiracleBoot_v7_1_1/archive/refs/heads/main.zip
+  tar.exe -xf %TEMP%\miracleboot.zip -C "%TARGET%"
+
+4) Run MiracleBoot (CMD or PowerShell)
+--------------------------------------
+Change into the extracted folder (it will contain a subfolder named similar to MiracleBoot_v7_1_1-main):
+  cd /d "%TARGET%\MiracleBoot_v7_1_1-main"
+
+CMD launcher (one-click):
+  RunMiracleBoot.cmd
+
+PowerShell launcher (GUI/TUI capable):
+  powershell -NoLogo -ExecutionPolicy Bypass -File .\MiracleBoot.ps1
+
+Prefer PowerShell? Add verbose:
+  powershell -NoLogo -ExecutionPolicy Bypass -File .\MiracleBoot.ps1 -Verbose
+
+5) If PowerShell is missing in WinRE
+------------------------------------
+Use the bundled PowerShell binary (if present in the repo root):
+  .\powershell.exe -NoLogo -ExecutionPolicy Bypass -File .\MiracleBoot.ps1
+
+6) Show live commands / logs
+----------------------------
+Keep CMD window visible. For extra live logging:
+  powershell -NoLogo -ExecutionPolicy Bypass -Command "Get-Content .\LOGS_MIRACLEBOOT\MiracleBoot*.log -Wait"
