@@ -92,13 +92,18 @@ Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName Microsoft.VisualBasic
 
+# Compute and cache a stable script root for all event handlers (UI contexts can null MyInvocation.Path)
+$script:ScriptRootSafe = $PSScriptRoot
+if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = Split-Path -Parent $PSCommandPath -ErrorAction SilentlyContinue }
+if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = Split-Path -Parent $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue }
+if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = (Get-Location).ProviderPath }
+
 # Load centralized logging system
 $script:LoggingAvailable = $false
 try {
-    $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-    if (Test-Path "$scriptRoot\ErrorLogging.ps1") {
-        . "$scriptRoot\ErrorLogging.ps1"
-        $null = Initialize-ErrorLogging -ScriptRoot $scriptRoot -RetentionDays 7
+    if (Test-Path "$script:ScriptRootSafe\ErrorLogging.ps1") {
+        . "$script:ScriptRootSafe\ErrorLogging.ps1"
+        $null = Initialize-ErrorLogging -ScriptRoot $script:ScriptRootSafe -RetentionDays 7
         try { Add-MiracleBootLog -Level "INFO" -Message "WinRepairGUI.ps1 loaded" -Location "WinRepairGUI.ps1" -ErrorAction SilentlyContinue } catch { $script:LoggingAvailable = $false }
         $script:LoggingAvailable = $true
     } else {
@@ -4562,6 +4567,14 @@ if ($btnOneClickRepair) {
     $btnOneClickRepair.Add_Click({
         $txtOneClickStatus = Get-Control -Name "TxtOneClickStatus"
         $fixerOutput = Get-Control -Name "FixerOutput"
+        $chkTestMode = Get-Control -Name "ChkTestMode"
+        $testMode = if ($chkTestMode) { $chkTestMode.IsChecked } else { $false }
+        $script:MB_TestMode = $testMode
+        $summaryBuilder = New-Object System.Text.StringBuilder
+        $null = $summaryBuilder.AppendLine("One-Click Repair (TestMode=$testMode)")
+        $null = $summaryBuilder.AppendLine("Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+        $issuesList = @()
+        $null = $summaryBuilder.AppendLine("Environment drive (SystemDrive): $($env:SystemDrive)")
         
         # Disable button during repair
         $btnOneClickRepair.IsEnabled = $false
@@ -4578,12 +4591,22 @@ if ($btnOneClickRepair) {
                 $txtOneClickStatus.Text = "Step 1/5: Running hardware diagnostics (S.M.A.R.T., disk health)..."
             }
             Update-StatusBar -Message "One-Click Repair: Checking hardware health..." -ShowProgress
+            $null = $summaryBuilder.AppendLine("Step 1/5: Hardware diagnostics...")
             
-            $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-            . "$scriptRoot\WinRepairCore.ps1" -ErrorAction Stop
+            # Resolve script root using cached value; falls back to current location as last resort
+            $scriptRoot = $script:ScriptRootSafe
+            if (-not $scriptRoot) { $scriptRoot = (Get-Location).ProviderPath }
+            . (Join-Path $scriptRoot 'WinRepairCore.ps1') -ErrorAction Stop
             
             $drive = $env:SystemDrive.TrimEnd(':')
             $diskHealth = Test-DiskHealth -WindowsDrive $drive
+            $null = $summaryBuilder.AppendLine("  Disk health: " + ($(if ($diskHealth.DiskHealthy) { "Healthy" } else { "Issues detected" })))
+            if (-not $diskHealth.DiskHealthy -and $diskHealth.Issues) {
+                foreach ($issue in $diskHealth.Issues) {
+                    $null = $summaryBuilder.AppendLine("    - $issue")
+                    $issuesList += "Disk: $issue"
+                }
+            }
             
             if ($fixerOutput) {
                 $fixerOutput.Text = "ONE-CLICK REPAIR - AUTOMATED DIAGNOSIS AND REPAIR`n"
@@ -4615,9 +4638,44 @@ if ($btnOneClickRepair) {
                 $txtOneClickStatus.Text = "Step 2/5: Checking for missing storage drivers..."
             }
             Update-StatusBar -Message "One-Click Repair: Checking storage drivers..." -ShowProgress
+            $null = $summaryBuilder.AppendLine("Step 2/5: Storage driver check...")
             
             $controllers = Get-StorageControllers -WindowsDrive $drive
-            $missingDrivers = $controllers | Where-Object { -not $_.DriverLoaded }
+            $bootCriticalMissing = $controllers | Where-Object {
+                (-not $_.DriverLoaded) -and ($_.ControllerType -match 'VMD|RAID|NVMe|SATA|AHCI|SAS')
+            }
+            # If nothing boot-critical is missing, still show any missing drivers (but less noisy)
+            $missingDrivers = if ($bootCriticalMissing.Count -gt 0) { $bootCriticalMissing } else { @() }
+            if ($missingDrivers.Count -eq 0) {
+                $null = $summaryBuilder.AppendLine("  Storage drivers: OK (no boot-critical drivers missing)")
+            } else {
+                $names = ($missingDrivers | ForEach-Object { $_.FriendlyName }) -join "; "
+                $null = $summaryBuilder.AppendLine("  Missing boot-critical storage drivers: $names")
+                foreach ($md in $missingDrivers) { $issuesList += "Storage driver: $($md.FriendlyName)" }
+
+                # Suggest INF names if available
+                $infHints = @()
+                foreach ($md in $missingDrivers) {
+                    if ($md.RequiredInf) {
+                        $infHints += $md.RequiredInf
+                    }
+                }
+                if ($infHints.Count -gt 0) {
+                    $null = $summaryBuilder.AppendLine("  Suggested driver INF to search: " + ($infHints | Select-Object -Unique -join "; "))
+                } else {
+                    $null = $summaryBuilder.AppendLine("  Tip: Search for VMD/NVMe/RAID storage driver packages from your OEM.")
+                }
+
+                # Offer driver injection path in non-test mode
+                if (-not $testMode) {
+                    $null = $summaryBuilder.AppendLine("  Action (optional): Use DISM to inject storage drivers into the offline OS if needed.")
+                    $null = $summaryBuilder.AppendLine("    Example: dism /Image:C:\\ /Add-Driver /Driver:D:\\Drivers\\storage\\vmd.inf /ForceUnsigned")
+                }
+                # In test mode, suggest user-driven driver updater
+                if ($testMode) {
+                    $null = $summaryBuilder.AppendLine("  Note: No Device Manager yellow bangs observed; these may be benign. Consider OEM/Intel driver updates.")
+                }
+            }
             
             if ($fixerOutput) {
                 $fixerOutput.Text += "Step 2: Storage Driver Check`n"
@@ -4639,10 +4697,17 @@ if ($btnOneClickRepair) {
                 $txtOneClickStatus.Text = "Step 3/5: Checking Boot Configuration Data (BCD)..."
             }
             Update-StatusBar -Message "One-Click Repair: Checking BCD integrity..." -ShowProgress
+            $null = $summaryBuilder.AppendLine("Step 3/5: BCD integrity check...")
             
             try {
-                $bcdCheck = bcdedit /enum all 2>&1 | Out-String
-                if ($bcdCheck -match "The boot configuration data store could not be opened") {
+                if ($testMode) {
+                    $bcdCheck = "[TEST MODE] Would run: bcdedit /enum all"
+                    $null = $summaryBuilder.AppendLine("  Command: bcdedit /enum all (simulated)")
+                } else {
+                    $bcdCheck = bcdedit /enum all 2>&1 | Out-String
+                    $null = $summaryBuilder.AppendLine("  Command: bcdedit /enum all (executed)")
+                }
+                if (-not $testMode -and $bcdCheck -match "The boot configuration data store could not be opened") {
                     if ($fixerOutput) {
                         $fixerOutput.Text += "Step 3: BCD Integrity Check`n"
                         $fixerOutput.Text += "---------------------------------------------------------------`n"
@@ -4655,16 +4720,29 @@ if ($btnOneClickRepair) {
                         $txtOneClickStatus.Text = "Step 3/5: Rebuilding BCD..."
                     }
                     Update-StatusBar -Message "One-Click Repair: Rebuilding BCD..." -ShowProgress
-                    $bcdRebuild = bootrec /rebuildbcd 2>&1 | Out-String
+                    $null = $summaryBuilder.AppendLine("  BCD: rebuilding...")
+                    if ($testMode) {
+                        $bcdRebuild = "[TEST MODE] Would run: bootrec /rebuildbcd"
+                        $null = $summaryBuilder.AppendLine("  Command: bootrec /rebuildbcd (simulated)")
+                    } else {
+                        $bcdRebuild = bootrec /rebuildbcd 2>&1 | Out-String
+                        $null = $summaryBuilder.AppendLine("  Command: bootrec /rebuildbcd (executed)")
+                    }
                     if ($fixerOutput) {
                         $fixerOutput.Text += "BCD Rebuild Output:`n$bcdRebuild`n`n"
                     }
+                    $null = $summaryBuilder.AppendLine("  BCD rebuild output captured.")
                 } else {
                     if ($fixerOutput) {
                         $fixerOutput.Text += "Step 3: BCD Integrity Check`n"
                         $fixerOutput.Text += "---------------------------------------------------------------`n"
-                        $fixerOutput.Text += "[OK] BCD is accessible and appears healthy`n`n"
+                        if ($testMode) {
+                            $fixerOutput.Text += "[TEST MODE] Would run: bcdedit /enum all (skipped)`n`n"
+                        } else {
+                            $fixerOutput.Text += "[OK] BCD is accessible and appears healthy`n`n"
+                        }
                     }
+                    $null = $summaryBuilder.AppendLine("  BCD: check complete" + $(if ($testMode) { " (test mode, no execution)" } else { " (healthy/accessible)" }))
                 }
             } catch {
                 if ($fixerOutput) {
@@ -4672,6 +4750,8 @@ if ($btnOneClickRepair) {
                     $fixerOutput.Text += "---------------------------------------------------------------`n"
                     $fixerOutput.Text += "[WARNING] Could not verify BCD: $_`n`n"
                 }
+                $null = $summaryBuilder.AppendLine("  BCD: error -> $($_.Exception.Message)")
+                $issuesList += "BCD check error: $($_.Exception.Message)"
             }
             
             # Step 4: Boot File Check
@@ -4679,22 +4759,111 @@ if ($btnOneClickRepair) {
                 $txtOneClickStatus.Text = "Step 4/5: Checking boot files..."
             }
             Update-StatusBar -Message "One-Click Repair: Checking boot files..." -ShowProgress
+            $null = $summaryBuilder.AppendLine("Step 4/5: Boot file check...")
+            $null = $summaryBuilder.AppendLine("  Target Windows drive: $drive`:")
             
+            # Capture BCD bootmgr device/path for context (read-only, even in test mode)
+            try {
+                $bcdBootMgr = bcdedit /enum {bootmgr} 2>&1 | Out-String
+                $null = $summaryBuilder.AppendLine("  BCD {bootmgr}:")
+                $suppressed = $false
+                $captured = @()
+                foreach ($line in ($bcdBootMgr -split "`n")) {
+                    $trimmed = $line.Trim()
+                    if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+                    if ($trimmed -match 'Invalid command line switch|\bencodedCommand\b|\bnoninteractive\b|^Run "bcdedit /\\?"|^The parameter is incorrect') {
+                        $suppressed = $true
+                        continue
+                    }
+                    if ($trimmed -match '^\s*(device|path|description)\s+') {
+                        $captured += $trimmed
+                    }
+                }
+                if ($captured.Count -gt 0) {
+                    foreach ($c in $captured) { $null = $summaryBuilder.AppendLine("    $c") }
+                } else {
+                    $null = $summaryBuilder.AppendLine("    [INFO] BCDEdit output contained no device/path fields (likely Test Mode shell noise). Continuing.")
+                }
+                if ($suppressed) {
+                    $null = $summaryBuilder.AppendLine("    [INFO] BCDEdit emitted helper/error text; non-critical lines suppressed. Command was: bcdedit /enum {bootmgr}")
+                }
+            } catch {
+                $null = $summaryBuilder.AppendLine("  BCD {bootmgr} read failed: $($_.Exception.Message)")
+            }
+
+            # Build candidate roots for boot files: Windows drive + any mounted ESP volumes (FAT32 with drive letter)
+            $candidateRoots = @("$drive`:\EFI\Microsoft\Boot", "$drive`:\Windows\System32")
+            try {
+                $espVolumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.FileSystem -eq "FAT32" -and $_.DriveLetter }
+                foreach ($v in $espVolumes) {
+                    $candidateRoots += "$($v.DriveLetter):\EFI\Microsoft\Boot"
+                }
+            } catch {
+                # ignore volume enumeration errors
+            }
+            $candidateRoots = $candidateRoots | Select-Object -Unique
+            if ($candidateRoots) {
+                $null = $summaryBuilder.AppendLine("  Boot file search roots: " + ($candidateRoots -join "; "))
+            }
+
             $bootFiles = @("bootmgfw.efi", "winload.efi", "winload.exe")
             $missingFiles = @()
             foreach ($file in $bootFiles) {
-                $efiPath = "$drive`:\EFI\Microsoft\Boot\$file"
-                $winPath = "$drive`:\Windows\System32\$file"
-                if (-not (Test-Path $efiPath) -and -not (Test-Path $winPath)) {
-                    $missingFiles += $file
+                $found = $false
+                foreach ($root in $candidateRoots) {
+                    $p = Join-Path $root $file
+                    if (Test-Path $p) { $found = $true; break }
                 }
+                if (-not $found) { $missingFiles += $file }
             }
             
+            # If anything missing, attempt a temporary ESP mount to widen search, then re-check
+            if ($missingFiles.Count -gt 0) {
+                $tempLetter = @('Z','Y','X','W','V') | Where-Object { -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
+                if ($tempLetter) {
+                    try {
+                        $null = $summaryBuilder.AppendLine("  Command: mountvol $tempLetter`: /S (attempting temporary ESP mount)")
+                        $mv = mountvol "$tempLetter`:\" /S 2>&1
+                        if ($mv) { $null = $summaryBuilder.AppendLine("    mountvol output: $mv") }
+                        $candidateRoots += "$tempLetter`:\EFI\Microsoft\Boot"
+                        $candidateRoots = $candidateRoots | Select-Object -Unique
+                        $null = $summaryBuilder.AppendLine("  Boot file search roots (after ESP mount): " + ($candidateRoots -join "; "))
+
+                        # re-check
+                        $missingFiles = @()
+                        foreach ($file in $bootFiles) {
+                            $found = $false
+                            foreach ($root in $candidateRoots) {
+                                $p = Join-Path $root $file
+                                if (Test-Path $p) { $found = $true; break }
+                            }
+                            if (-not $found) { $missingFiles += $file }
+                        }
+                    } catch {
+                        $null = $summaryBuilder.AppendLine("  ESP mount attempt failed: $($_.Exception.Message)")
+                    } finally {
+                        try {
+                            $null = $summaryBuilder.AppendLine("  Command: mountvol $tempLetter`: /D (unmount temporary ESP)")
+                            mountvol "$tempLetter`:\" /D 2>&1 | Out-Null
+                        } catch {
+                            $null = $summaryBuilder.AppendLine("  ESP unmount failed: $($_.Exception.Message)")
+                        }
+                    }
+                } else {
+                    $null = $summaryBuilder.AppendLine("  Skipping ESP mount: no free drive letters available.")
+                }
+            }
+
             if ($fixerOutput) {
                 $fixerOutput.Text += "Step 4: Boot File Check`n"
                 $fixerOutput.Text += "---------------------------------------------------------------`n"
                 if ($missingFiles.Count -eq 0) {
-                    $fixerOutput.Text += "[OK] All critical boot files are present`n"
+                    if ($testMode) {
+                        $fixerOutput.Text += "[TEST MODE] Boot file presence check completed (no missing files detected).`n"
+                    } else {
+                        $fixerOutput.Text += "[OK] All critical boot files are present`n"
+                    }
+                    $null = $summaryBuilder.AppendLine("  Boot files: present")
                 } else {
                     $fixerOutput.Text += "[WARNING] Missing boot files:`n"
                     foreach ($file in $missingFiles) {
@@ -4707,10 +4876,19 @@ if ($btnOneClickRepair) {
                         $txtOneClickStatus.Text = "Step 4/5: Repairing boot files..."
                     }
                     Update-StatusBar -Message "One-Click Repair: Repairing boot files..." -ShowProgress
-                    $bootFix = bootrec /fixboot 2>&1 | Out-String
+                    $null = $summaryBuilder.AppendLine("  Boot files: repair attempt...")
+                    if ($testMode) {
+                        $bootFix = "[TEST MODE] Would run: bootrec /fixboot"
+                        $null = $summaryBuilder.AppendLine("  Command: bootrec /fixboot (simulated)")
+                    } else {
+                        $bootFix = bootrec /fixboot 2>&1 | Out-String
+                        $null = $summaryBuilder.AppendLine("  Command: bootrec /fixboot (executed)")
+                    }
                     if ($fixerOutput) {
                         $fixerOutput.Text += "Boot File Repair Output:`n$bootFix`n"
                     }
+                    $null = $summaryBuilder.AppendLine("  Boot file repair output captured.")
+                    foreach ($mf in $missingFiles) { $issuesList += "Missing boot file: $mf" }
                 }
                 $fixerOutput.Text += "`n"
             }
@@ -4740,6 +4918,7 @@ if ($btnOneClickRepair) {
                     if ($txtOneClickStatus) {
                         $txtOneClickStatus.Text = "✅ Repair complete! No critical issues found."
                     }
+                    $null = $summaryBuilder.AppendLine("Step 5/5: Summary -> no critical issues detected.")
                 } else {
                     $fixerOutput.Text += "[INFO] Found $issuesFound issue(s). Repairs have been attempted.`n"
                     $fixerOutput.Text += "`nNEXT STEPS:`n"
@@ -4750,6 +4929,13 @@ if ($btnOneClickRepair) {
                     $fixerOutput.Text += "   - Injecting missing storage drivers`n"
                     if ($txtOneClickStatus) {
                         $txtOneClickStatus.Text = "✅ Repair complete! Found $issuesFound issue(s) and attempted fixes."
+                    }
+                    $null = $summaryBuilder.AppendLine("Step 5/5: Summary -> issues found ($issuesFound), attempted fixes.")
+                    if ($issuesList.Count -gt 0) {
+                        $null = $summaryBuilder.AppendLine("Issues detail:")
+                        foreach ($issue in $issuesList) {
+                            $null = $summaryBuilder.AppendLine("  - $issue")
+                        }
                     }
                 }
                 
@@ -4767,9 +4953,27 @@ if ($btnOneClickRepair) {
                 $fixerOutput.Text += "Stack trace: $($_.ScriptStackTrace)`n"
             }
             Update-StatusBar -Message "One-Click Repair: Failed - $($_.Exception.Message)" -HideProgress
+            $null = $summaryBuilder.AppendLine("ERROR: $($_.Exception.Message)")
         } finally {
             # Re-enable button
             $btnOneClickRepair.IsEnabled = $true
+
+            # Emit summary to file and open in Notepad
+            $null = $summaryBuilder.AppendLine("Finished: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+            $finalScriptRoot = if ($scriptRoot) { $scriptRoot } elseif ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { (Get-Location).ProviderPath }
+            $summaryDir = Join-Path $finalScriptRoot 'LOGS_MIRACLEBOOT'
+            if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Path $summaryDir -Force | Out-Null }
+            $summaryPath = Join-Path $summaryDir ("OneClick_Summary_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
+            $summaryContent = $summaryBuilder.ToString()
+            Set-Content -Path $summaryPath -Value $summaryContent -Encoding UTF8 -Force
+            try {
+                Start-Process notepad.exe -ArgumentList "`"$summaryPath`""
+            } catch {
+                # If Notepad cannot be launched, at least keep the summary file
+                if ($fixerOutput) {
+                    $fixerOutput.Text += "`n[INFO] Summary saved to: $summaryPath (Notepad launch failed)`n"
+                }
+            }
         }
     })
 }

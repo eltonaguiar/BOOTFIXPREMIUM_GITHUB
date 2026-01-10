@@ -16,6 +16,60 @@ function Get-WindowsVolumes {
         Select DriveLetter, FileSystemLabel, Size, HealthStatus
 }
 
+# Lightweight disk health probe (non-destructive). In Test Mode, always returns healthy.
+function Test-DiskHealth {
+    param([string]$WindowsDrive = $env:SystemDrive.TrimEnd(':'))
+
+    # Normalize drive letter
+    if ($WindowsDrive -match '^([A-Z]):?$') {
+        $WindowsDrive = $matches[1]
+    }
+
+    $result = [pscustomobject]@{
+        DiskHealthy                  = $true
+        Issues                       = @()
+        CanProceedWithSoftwareRepair = $true
+        Details                      = @()
+        Source                       = "Default"
+    }
+
+    # Honor test mode (set by GUI)
+    if ($script:MB_TestMode) {
+        $result.Details += "Test Mode: Disk health check skipped; treating as healthy."
+        $result.Source   = "TestMode"
+        return $result
+    }
+
+    # Try to use Get-PhysicalDisk if available
+    if (Get-Command Get-PhysicalDisk -ErrorAction SilentlyContinue) {
+        try {
+            $disks = Get-PhysicalDisk -ErrorAction Stop
+            foreach ($d in $disks) {
+                if ($d.HealthStatus -notin @("Healthy","Unknown")) {
+                    $result.DiskHealthy = $false
+                    $result.Issues += "Disk '$($d.FriendlyName)' health: $($d.HealthStatus)"
+                }
+            }
+            if (-not $disks) {
+                $result.Details += "No physical disks returned by Get-PhysicalDisk; assuming healthy."
+            } else {
+                $result.Details += "Get-PhysicalDisk completed."
+            }
+        } catch {
+            $result.Details += "Physical disk query failed: $($_.Exception.Message)"
+        }
+    } else {
+        $result.Details += "Get-PhysicalDisk not available; skipping detailed health probe."
+    }
+
+    # If we found issues, decide whether to proceed
+    if (-not $result.DiskHealthy) {
+        $result.CanProceedWithSoftwareRepair = $false
+    }
+
+    return $result
+}
+
 function Get-BCDEntries {
     # Returns raw objects for the GUI to parse
     bcdedit /enum /v
