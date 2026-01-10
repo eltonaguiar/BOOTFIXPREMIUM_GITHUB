@@ -2018,27 +2018,44 @@ try {
 
 # Populate drive combo (with null checks)
 try {
-    $volumes = Get-Volume | Where-Object { $_.DriveLetter -and $_.FileSystemLabel } | Sort-Object DriveLetter
+    $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Sort-Object DriveLetter
     $driveCombo = Get-Control "DriveCombo"
     if ($driveCombo) {
         $driveCombo.Items.Clear()
         $driveCombo.Items.Add("Auto-detect")
         foreach ($vol in $volumes) {
-            $driveCombo.Items.Add("$($vol.DriveLetter): - $($vol.FileSystemLabel)")
+            $label = if ($vol.FileSystemLabel) { $vol.FileSystemLabel } else { "(no label)" }
+            $driveCombo.Items.Add("$($vol.DriveLetter): - $label")
         }
         $driveCombo.SelectedIndex = 0
+    }
+    
+    # Populate One-Click drive combo
+    $oneClickDriveCombo = Get-Control "OneClickDriveCombo"
+    if ($oneClickDriveCombo) {
+        $oneClickDriveCombo.Items.Clear()
+        foreach ($vol in $volumes) {
+            $label = if ($vol.FileSystemLabel) { $vol.FileSystemLabel } else { "(no label)" }
+            $oneClickDriveCombo.Items.Add("$($vol.DriveLetter): - $label")
+        }
+        # default to system drive if present
+        $defaultIndex = 0
+        for ($i = 0; $i -lt $oneClickDriveCombo.Items.Count; $i++) {
+            if ($oneClickDriveCombo.Items[$i] -match "^${currentSystemDrive}:") { $defaultIndex = $i; break }
+        }
+        $oneClickDriveCombo.SelectedIndex = $defaultIndex
     }
     
     # Populate log drive combo (for Diagnostics & Logs tab)
     $logDriveCombo = Get-Control "LogDriveCombo"
     if ($logDriveCombo) {
         $logDriveCombo.Items.Clear()
-        $logDriveCombo.Items.Add("C:")
+        $seen = New-Object System.Collections.Generic.HashSet[string]
         foreach ($vol in $volumes) {
-            if ($vol.DriveLetter -ne "C") {
-                $logDriveCombo.Items.Add("$($vol.DriveLetter):")
-            }
+            $item = "$($vol.DriveLetter):"
+            if ($seen.Add($item)) { $logDriveCombo.Items.Add($item) }
         }
+        if ($logDriveCombo.Items.Count -eq 0) { $logDriveCombo.Items.Add("C:") }
         $logDriveCombo.SelectedIndex = 0
     }
     
@@ -2067,6 +2084,41 @@ try {
             }
         }
         $summaryDriveCombo.SelectedIndex = 0
+    }
+
+    # Footer buttons: resize toggle and summary shortcut
+    $btnResizeWindow = Get-Control -Name "BtnResizeWindow"
+    if ($btnResizeWindow) {
+        $btnResizeWindow.Add_Click({
+            try {
+                $mainWin = [System.Windows.Application]::Current.MainWindow
+                if ($mainWin.WindowState -eq "Maximized") {
+                    $mainWin.WindowState = "Normal"
+                } else {
+                    $mainWin.WindowState = "Maximized"
+                }
+            } catch {
+                Write-Warning "Resize toggle failed: $_"
+            }
+        })
+    }
+    $btnSummaryShortcut = Get-Control -Name "BtnSummaryShortcut"
+    if ($btnSummaryShortcut) {
+        $btnSummaryShortcut.Add_Click({
+            try {
+                $tabs = Get-Control -Name "MainTabs"
+                if ($tabs) {
+                    foreach ($item in $tabs.Items) {
+                        if ($item.Header -eq "Summary") {
+                            $tabs.SelectedItem = $item
+                            break
+                        }
+                    }
+                }
+            } catch {
+                Write-Warning "Summary shortcut failed: $_"
+            }
+        })
     }
     
     # Update current OS label
@@ -4570,11 +4622,35 @@ if ($btnOneClickRepair) {
         $chkTestMode = Get-Control -Name "ChkTestMode"
         $testMode = if ($chkTestMode) { $chkTestMode.IsChecked } else { $false }
         $script:MB_TestMode = $testMode
+        $oneClickDriveCombo = Get-Control -Name "OneClickDriveCombo"
+        $targetDrive = $env:SystemDrive.TrimEnd(':')
+        if ($oneClickDriveCombo -and $oneClickDriveCombo.SelectedItem) {
+            $sel = $oneClickDriveCombo.SelectedItem
+            if ($sel -match '^([A-Z]):') { $targetDrive = $matches[1] }
+        }
+        $confirm = [System.Windows.MessageBox]::Show("Run One-Click Repair on drive $targetDrive`: ?","Confirm Target Drive","YesNo","Question")
+        if ($confirm -eq "No") {
+            $driveList = @()
+            if ($oneClickDriveCombo) {
+                foreach ($item in $oneClickDriveCombo.Items) { $driveList += $item }
+            }
+            $drivePrompt = "Select drive letter from list:`n" + ($driveList -join "`n")
+            $input = [Microsoft.VisualBasic.Interaction]::InputBox($drivePrompt, "Select Drive", "$targetDrive`:")
+            if ([string]::IsNullOrWhiteSpace($input)) { return }
+            if ($input -match '^([A-Z]):') { $targetDrive = $matches[1] } else { return }
+            if ($oneClickDriveCombo) {
+                for ($i=0; $i -lt $oneClickDriveCombo.Items.Count; $i++) {
+                    if ($oneClickDriveCombo.Items[$i] -match "^${targetDrive}:") { $oneClickDriveCombo.SelectedIndex = $i; break }
+                }
+            }
+        }
+        
         $summaryBuilder = New-Object System.Text.StringBuilder
         $null = $summaryBuilder.AppendLine("One-Click Repair (TestMode=$testMode)")
         $null = $summaryBuilder.AppendLine("Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
         $issuesList = @()
         $null = $summaryBuilder.AppendLine("Environment drive (SystemDrive): $($env:SystemDrive)")
+        $null = $summaryBuilder.AppendLine("Target drive: $targetDrive`: (user-confirmed)")
         
         # Disable button during repair
         $btnOneClickRepair.IsEnabled = $false
@@ -4598,7 +4674,7 @@ if ($btnOneClickRepair) {
             if (-not $scriptRoot) { $scriptRoot = (Get-Location).ProviderPath }
             . (Join-Path $scriptRoot 'WinRepairCore.ps1') -ErrorAction Stop
             
-            $drive = $env:SystemDrive.TrimEnd(':')
+            $drive = $targetDrive
             $diskHealth = Test-DiskHealth -WindowsDrive $drive
             $null = $summaryBuilder.AppendLine("  Disk health: " + ($(if ($diskHealth.DiskHealthy) { "Healthy" } else { "Issues detected" })))
             if (-not $diskHealth.DiskHealthy -and $diskHealth.Issues) {
@@ -4793,9 +4869,10 @@ if ($btnOneClickRepair) {
 
             # Build candidate roots for boot files: Windows drive + any mounted ESP volumes (FAT32 with drive letter)
             $candidateRoots = @("$drive`:\EFI\Microsoft\Boot", "$drive`:\Windows\System32")
+            $esp = $null
             try {
-                $espVolumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.FileSystem -eq "FAT32" -and $_.DriveLetter }
-                foreach ($v in $espVolumes) {
+                $esp = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.FileSystem -eq "FAT32" -and $_.DriveLetter }
+                foreach ($v in $esp) {
                     $candidateRoots += "$($v.DriveLetter):\EFI\Microsoft\Boot"
                 }
             } catch {
@@ -4838,6 +4915,27 @@ if ($btnOneClickRepair) {
                                 if (Test-Path $p) { $found = $true; break }
                             }
                             if (-not $found) { $missingFiles += $file }
+                        }
+
+                        # If winload/bootmgfw still missing, attempt bcdboot repair (non-test executes, test logs)
+                        if ($missingFiles -contains "winload.efi" -or $missingFiles -contains "bootmgfw.efi") {
+                            $espTarget = "$tempLetter`:"
+                            $null = $summaryBuilder.AppendLine("  EFI mount/repair steps (auto-run when not in Test Mode):")
+                            $null = $summaryBuilder.AppendLine("    1) mountvol $tempLetter`: /S   (mount EFI)")
+                            $null = $summaryBuilder.AppendLine("    2) bcdboot $env:SystemRoot /s $espTarget /f ALL   (restore boot files)")
+                            $null = $summaryBuilder.AppendLine("    3) mountvol $tempLetter`: /D   (unmount EFI)")
+                            $bcdBootCmd = "bcdboot $env:SystemRoot /s $espTarget /f ALL"
+                            if ($testMode) {
+                                $null = $summaryBuilder.AppendLine("  Command: $bcdBootCmd (simulated to restore boot files)")
+                            } else {
+                                $null = $summaryBuilder.AppendLine("  Command: $bcdBootCmd (executing to restore boot files)")
+                                try {
+                                    $bcdOut = bcdboot $env:SystemRoot /s $espTarget /f ALL 2>&1 | Out-String
+                                    $null = $summaryBuilder.AppendLine("  bcdboot output: $bcdOut")
+                                } catch {
+                                    $null = $summaryBuilder.AppendLine("  bcdboot failed: $($_.Exception.Message)")
+                                }
+                            }
                         }
                     } catch {
                         $null = $summaryBuilder.AppendLine("  ESP mount attempt failed: $($_.Exception.Message)")
@@ -4973,6 +5071,16 @@ if ($btnOneClickRepair) {
                 if ($fixerOutput) {
                     $fixerOutput.Text += "`n[INFO] Summary saved to: $summaryPath (Notepad launch failed)`n"
                 }
+            }
+            try {
+                [System.Windows.MessageBox]::Show(
+                    "One-Click Repair completed on drive $drive`: (Test Mode = $testMode).`n`nSummary saved to:`n$summaryPath",
+                    "One-Click Repair",
+                    "OK",
+                    "Information"
+                )
+            } catch {
+                # ignore message box failures
             }
         }
     })

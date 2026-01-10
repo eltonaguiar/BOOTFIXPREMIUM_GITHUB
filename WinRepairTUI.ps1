@@ -50,6 +50,117 @@
     if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
         Write-ToLog "Environment: $envDisplay" "INFO"
     }
+
+    function Invoke-OneClickRepairTUI {
+        param(
+            [string]$TargetDrive = $env:SystemDrive.TrimEnd(':'),
+            [switch]$TestMode
+        )
+
+        $summary = New-Object System.Text.StringBuilder
+        $null = $summary.AppendLine("One-Click Repair (TUI)")
+        $null = $summary.AppendLine("Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+        $null = $summary.AppendLine("Target drive: $TargetDrive`:")
+        $null = $summary.AppendLine("Test Mode: $($TestMode.IsPresent)")
+
+        # Step 1: Disk health
+        try { $diskHealth = Test-DiskHealth -WindowsDrive $TargetDrive } catch { $diskHealth = $null }
+        if ($diskHealth) {
+            $null = $summary.AppendLine("Disk health: " + ($(if ($diskHealth.DiskHealthy) { "Healthy" } else { "Issues detected" })))
+            foreach ($i in $diskHealth.Issues) { $null = $summary.AppendLine("  - $i") }
+        } else { $null = $summary.AppendLine("Disk health: unavailable") }
+
+        # Step 2: Storage drivers (boot-critical)
+        try {
+            $controllers = Get-StorageControllers -WindowsDrive $TargetDrive
+            $missing = $controllers | Where-Object { -not $_.DriverLoaded -and $_.ControllerType -match 'VMD|RAID|NVMe|SATA|AHCI|SAS' }
+        } catch { $missing = @() }
+        if ($missing.Count -gt 0) {
+            $null = $summary.AppendLine("Missing boot-critical storage drivers:")
+            foreach ($m in $missing) { $null = $summary.AppendLine("  - $($m.FriendlyName) ($($m.ControllerType))") }
+        } else { $null = $summary.AppendLine("Boot-critical storage drivers: OK") }
+
+        # Step 3: BCD info (read-only)
+        try {
+            $bcdRaw = bcdedit /enum {bootmgr} 2>&1
+            $null = $summary.AppendLine("BCD {bootmgr}:")
+            $captured = $bcdRaw | Where-Object { $_ -match '^\s*(device|path|description)\s+' }
+            if ($captured) { foreach ($c in $captured) { $null = $summary.AppendLine("  $c") } }
+            else { $null = $summary.AppendLine("  (No device/path fields captured; continuing)") }
+        } catch { $null = $summary.AppendLine("BCD read failed: $($_.Exception.Message)") }
+
+        # Step 4: Boot files
+        $bootFiles = @("bootmgfw.efi","winload.efi","winload.exe")
+        $candidateRoots = @("$TargetDrive`:\EFI\Microsoft\Boot", "$TargetDrive`:\Windows\System32")
+        try {
+            $esp = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.FileSystem -eq "FAT32" -and $_.DriveLetter }
+            foreach ($v in $esp) { $candidateRoots += "$($v.DriveLetter):\EFI\Microsoft\Boot" }
+        } catch {}
+        $candidateRoots = $candidateRoots | Select-Object -Unique
+        $null = $summary.AppendLine("Boot file search roots (before mount): " + ($candidateRoots -join "; "))
+
+        $temp = @('Z','Y','X','W','V') | Where-Object { -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
+        $mountedTemp = $false
+        if ($temp) {
+            try {
+                $null = $summary.AppendLine("mountvol $temp`: /S (attempt)")
+                $mv = mountvol "$temp`:\" /S 2>&1
+                $mountedTemp = $true
+                if ($mv) { foreach ($line in $mv) { $null = $summary.AppendLine("  $line") } }
+                $candidateRoots += "$temp`:\EFI\Microsoft\Boot"
+            } catch { $null = $summary.AppendLine("ESP mount failed: $($_.Exception.Message)") }
+        }
+        $candidateRoots = $candidateRoots | Select-Object -Unique
+        $null = $summary.AppendLine("Boot file search roots (after mount): " + ($candidateRoots -join "; "))
+
+        $missingFiles = @()
+        foreach ($f in $bootFiles) {
+            $found = $false
+            foreach ($r in $candidateRoots) {
+                if (Test-Path (Join-Path $r $f)) { $found = $true; break }
+            }
+            if (-not $found) { $missingFiles += $f }
+        }
+        if ($missingFiles.Count -gt 0) {
+            $null = $summary.AppendLine("Missing boot files: " + ($missingFiles -join ", "))
+            if ($temp) {
+                $bcdCmd = "bcdboot $env:SystemRoot /s $temp`: /f ALL"
+                $null = $summary.AppendLine("EFI mount/repair steps:")
+                $null = $summary.AppendLine("  1) mountvol $temp`: /S   (mount EFI)")
+                $null = $summary.AppendLine("  2) $bcdCmd   (restore boot files)")
+                $null = $summary.AppendLine("  3) mountvol $temp`: /D   (unmount EFI)")
+                if ($TestMode.IsPresent) {
+                    $null = $summary.AppendLine("Repair (simulated): $bcdCmd")
+                } else {
+                    $null = $summary.AppendLine("Repair: $bcdCmd")
+                    try {
+                        $out = bcdboot $env:SystemRoot /s "$temp`:" /f ALL 2>&1 | Out-String
+                        $null = $summary.AppendLine("bcdboot output: $out")
+                    } catch {
+                        $null = $summary.AppendLine("bcdboot failed: $($_.Exception.Message)")
+                    }
+                }
+            }
+        } else { $null = $summary.AppendLine("Boot files present.") }
+
+        if ($temp -and $mountedTemp) {
+            try { $null = $summary.AppendLine("mountvol $temp`: /D (unmount)"); mountvol "$temp`:\\" /D 2>&1 | Out-Null }
+            catch { $null = $summary.AppendLine("ESP unmount failed: $($_.Exception.Message)") }
+        }
+
+        $null = $summary.AppendLine("Finished: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+
+        $summaryDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+        if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Path $summaryDir -Force | Out-Null }
+        $summaryPath = Join-Path $summaryDir ("OneClick_TUI_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
+        Set-Content -Path $summaryPath -Value $summary.ToString() -Encoding UTF8 -Force
+
+        Clear-Host
+        Write-Host $summary.ToString() -ForegroundColor Cyan
+        Write-Host "`nSummary saved to: $summaryPath" -ForegroundColor Yellow
+        Write-Host "Press any key to continue..." -ForegroundColor Gray
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    }
     
     do {
         Clear-Host
@@ -69,6 +180,7 @@
         Write-Host "8) Utilities & Tools" -ForegroundColor Magenta
         Write-Host "9) Network & Internet Help" -ForegroundColor Cyan
         Write-Host "B) Boot Issue Mapping" -ForegroundColor Cyan
+        Write-Host "A) One-Click Repair (TUI - defaults to Test Mode)" -ForegroundColor Green
         Write-Host "Q) Quit" -ForegroundColor Yellow
         Write-Host ""
 
@@ -193,6 +305,13 @@
                     }
                     default { }
                 }
+            }
+            "A" {
+                $target = Read-Host "Target Windows drive letter (default: $($env:SystemDrive))"
+                if (-not $target) { $target = $env:SystemDrive.TrimEnd(':') }
+                $tm = Read-Host "Run in Test Mode? (Y/N, default Y)"
+                $isTest = if (-not $tm -or $tm -match '^[Yy]') { $true } else { $false }
+                Invoke-OneClickRepairTUI -TargetDrive $target -TestMode:$isTest
             }
             "6" {
                 Clear-Host
