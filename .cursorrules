@@ -130,3 +130,75 @@ This is the kill switch.
 If you cannot guarantee correctness, you MUST say:
 
 "I cannot verify this without executing the code."
+🛡️ LAYER 8 — THE ROLLBACK INVARIANT (NO "POINT OF NO RETURN")
+Rule: Every modification must include an automated "Reverse" command generated before the fix is applied.
+
+Enforced Prompt Snippet
+
+For the identified fix, you must generate a Rollback Script.
+
+The Rollback must:
+
+Restore the original BCD entry (via backup export).
+
+Revert file attributes (attrib).
+
+Move replaced binaries back from a .bak location.
+
+You are forbidden from applying the fix until the Rollback Script passes Syntax Validation (Layer 2).
+
+🔒 Why this works It forces the model to think about the "undo" state. If the model can't figure out how to undo a change, it shouldn't be making it.
+
+📉 LAYER 9 — THE SIDE-EFFECT MATRIX (BLAST RADIUS ANALYSIS)
+Rule: The model must map how a change in one file (e.g., Core.ps1) impacts every other file and the physical hardware.
+
+Enforced Prompt Snippet
+
+Perform a Blast Radius Analysis for this fix.
+
+Map the impact on:
+
+GUI/TUI: Will it break the progress bar or variable naming?
+
+Environment: Will this command work differently in WinRE vs. Full Windows?
+
+Security: Will this trigger a BitLocker Recovery Key prompt (TPM change)?
+
+If the impact score is > Medium, you must propose a mitigation before proceeding.
+
+🧠 Why this works This catches the "BitLocker Trap" you encountered earlier. It forces the model to realize that fixing the BCD might change the boot signature and trigger a lock.
+
+🔍 LAYER 10 — THE "EVIDENCE-BASED" CITATION (ANTI-HALLUCINATION)
+Rule: The model must cite the specific MS documentation logic or internal variable state that justifies the repair.
+
+Enforced Prompt Snippet
+
+You must justify the repair using Evidence-Based Logic.
+
+CITE the specific BCD element (e.g., {default} device) being changed.
+
+CITE the internal variable (e.g., $TargetOSDrive) being used.
+
+PROVE that the target path exists using the last known 'Truth Engine' scan.
+
+Do NOT use "Standard Best Practices" as a justification. Use physical disk state ONLY.
+
+💣 Why this works It stops the model from using "generic" fixes (like bootrec /fixmbr) that are irrelevant to modern UEFI systems.
+
+🚀 Updated Execution Order (The Final Protocol)
+Layer 1-3: Understand, Parse, Enumerate Failures.
+
+Layer 8: Generate the Rollback script.
+
+Layer 9: Calculate the Blast Radius (Will this trigger BitLocker?).
+
+Layer 10: Cite the Physical Evidence (Is winload.efi actually there?).
+
+Layer 4-6: Atomic Fix, Adversarial Audit, Simulation.
+
+Layer 7: The Kill Switch (Admission of uncertainty).
+
+Verification: The "Paste-Back" Test
+Before you commit the final code for MiracleBoot, I want to see a Layer 6 (Execution Trace) simulation for a BitLocker-Locked Drive.
+
+Command for the LLM: "Simulate a repair attempt on a drive where manage-bde -status reports 'Locked'. Use the 10-Layer Strategy. Show me the point where Layer 9 (Blast Radius) triggers a HALT."

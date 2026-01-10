@@ -339,7 +339,16 @@
                             <TextBlock Text="Target drive:" VerticalAlignment="Center" Foreground="#2E7D32" Margin="0,0,8,0"/>
                             <ComboBox Name="OneClickDriveCombo" Width="160" Height="30" VerticalContentAlignment="Center" />
                         </StackPanel>
-                        <Button Content="REPAIR MY PC" Name="BtnOneClickRepair" Height="50" Background="#4CAF50" Foreground="White" FontSize="16" FontWeight="Bold" Cursor="Hand" Margin="0,5"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0" VerticalAlignment="Center" >
+                            <Button Content="REPAIR MY PC" Name="BtnOneClickRepair" Height="50" Background="#4CAF50" Foreground="White" FontSize="16" FontWeight="Bold" Cursor="Hand" Margin="0,0,10,0"/>
+                            <ComboBox Name="SimulateIssueCombo" Width="200" Height="50" VerticalContentAlignment="Center" Margin="0,0,10,0">
+                                <ComboBoxItem Content="None" IsSelected="True"/>
+                                <ComboBoxItem Content="winload_missing"/>
+                                <ComboBoxItem Content="bcd_missing"/>
+                                <ComboBoxItem Content="storage_driver_missing"/>
+                            </ComboBox>
+                            <CheckBox Name="ChkDryRun" Content="Dry Run (plan only)" IsChecked="True" VerticalAlignment="Center" FontWeight="Bold" Foreground="#d78700"/>
+                        </StackPanel>
                         <TextBlock Name="TxtOneClickStatus" Text="Click the button above to start automated repair" TextWrapping="Wrap" Foreground="#2E7D32" Margin="0,5,0,0" FontStyle="Italic"/>
                     </StackPanel>
                 </Border>

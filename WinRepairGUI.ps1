@@ -92,6 +92,12 @@ Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName Microsoft.VisualBasic
 
+# Load Defensive Boot Core
+try {
+    $corePath = Join-Path $PSScriptRoot "DefensiveBootCore.ps1"
+    if (Test-Path $corePath) { . $corePath }
+} catch { }
+
 # Compute and cache a stable script root for all event handlers (UI contexts can null MyInvocation.Path)
 $script:ScriptRootSafe = $PSScriptRoot
 if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = Split-Path -Parent $PSCommandPath -ErrorAction SilentlyContinue }
@@ -2019,6 +2025,7 @@ try {
 # Populate drive combo (with null checks)
 try {
     $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Sort-Object DriveLetter
+    $currentSystemDrive = $env:SystemDrive.TrimEnd(':')
     $driveCombo = Get-Control "DriveCombo"
     if ($driveCombo) {
         $driveCombo.Items.Clear()
@@ -4619,9 +4626,8 @@ if ($btnOneClickRepair) {
     $btnOneClickRepair.Add_Click({
         $txtOneClickStatus = Get-Control -Name "TxtOneClickStatus"
         $fixerOutput = Get-Control -Name "FixerOutput"
-        $chkTestMode = Get-Control -Name "ChkTestMode"
-        $testMode = if ($chkTestMode) { $chkTestMode.IsChecked } else { $false }
-        $script:MB_TestMode = $testMode
+        $chkDryRun = Get-Control -Name "ChkDryRun"
+        $simulateCombo = Get-Control -Name "SimulateIssueCombo"
         $oneClickDriveCombo = Get-Control -Name "OneClickDriveCombo"
         $targetDrive = $env:SystemDrive.TrimEnd(':')
         if ($oneClickDriveCombo -and $oneClickDriveCombo.SelectedItem) {
@@ -4644,13 +4650,95 @@ if ($btnOneClickRepair) {
                 }
             }
         }
-        
-        $summaryBuilder = New-Object System.Text.StringBuilder
-        $null = $summaryBuilder.AppendLine("One-Click Repair (TestMode=$testMode)")
-        $null = $summaryBuilder.AppendLine("Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
-        $issuesList = @()
-        $null = $summaryBuilder.AppendLine("Environment drive (SystemDrive): $($env:SystemDrive)")
-        $null = $summaryBuilder.AppendLine("Target drive: $targetDrive`: (user-confirmed)")
+
+        $simulationScenario = $null
+        if ($simulateCombo -and $simulateCombo.SelectedItem) {
+            $val = $simulateCombo.SelectedItem.ToString()
+            if ($val -and $val -ne "None") { $simulationScenario = $val }
+        }
+        $dryRunFlag = $false
+        if ($chkDryRun) { $dryRunFlag = [bool]$chkDryRun.IsChecked }
+
+        try {
+            $result = Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag
+            if ($fixerOutput) {
+                $fixerOutput.Text = $result.Output + "`n`n" + $result.Bundle
+                $fixerOutput.ScrollToEnd()
+            }
+            $summaryDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+            if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Path $summaryDir -Force | Out-Null }
+            $summaryPath = Join-Path $summaryDir ("OneClick_GUI_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
+            Set-Content -Path $summaryPath -Value ($result.Output + "`n`n" + $result.Bundle) -Encoding UTF8 -Force
+            if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Completed. Verdict: " + $(if ($result.Bootable) { "Likely bootable" } else { "Will not boot" }) }
+            Update-StatusBar -Message "One-Click Repair: Complete" -HideProgress
+        } catch {
+            if ($txtOneClickStatus) { $txtOneClickStatus.Text = "❌ Error: $($_.Exception.Message)" }
+            if ($fixerOutput) { $fixerOutput.Text = "Error: $($_.Exception.Message)" }
+            Update-StatusBar -Message "One-Click Repair: Error" -HideProgress
+        } finally {
+            $btnOneClickRepair.IsEnabled = $true
+        }
+        return
+<# LEGACY ONE-CLICK BLOCK (deprecated; superseded by DefensiveBootCore) 
+        # BitLocker status check
+        $bitlockerLocked = $false
+        try {
+            if (Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue) {
+                $bl = Get-BitLockerVolume -MountPoint "$targetDrive`:" -ErrorAction SilentlyContinue
+                if ($bl) {
+                    $null = $summaryBuilder.AppendLine("BitLocker: $($bl.ProtectionStatus) on $targetDrive`:")
+                    if ($bl.LockStatus -eq 'Locked') {
+                        $bitlockerLocked = $true
+                        $issuesList += "BitLocker locked on $targetDrive`:"
+                        $null = $summaryBuilder.AppendLine("  [WARNING] Drive is locked. Repairs may fail until unlocked.")
+                        $ask = [System.Windows.MessageBox]::Show("Drive $targetDrive`: appears BitLocker-locked. Provide recovery key to unlock now?","BitLocker Unlock","YesNo","Warning")
+                        if ($ask -eq "Yes") {
+                            $key = [Microsoft.VisualBasic.Interaction]::InputBox("Enter 48-digit BitLocker recovery key for $targetDrive`:", "BitLocker Recovery Key", "")
+                            if ([string]::IsNullOrWhiteSpace($key)) {
+                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = "BitLocker unlock canceled."; $btnOneClickRepair.IsEnabled = $true }
+                                Update-StatusBar -Message "One-Click Repair: canceled (BitLocker locked)" -HideProgress
+                                return
+                            }
+                            if ($testMode) {
+                                $null = $summaryBuilder.AppendLine("  BitLocker unlock simulated (Test Mode): manage-bde -unlock $targetDrive`: -RecoveryPassword <key>")
+                            } else {
+                                try {
+                                    $unlockOut = manage-bde -unlock "$targetDrive`:" -RecoveryPassword $key 2>&1 | Out-String
+                                    $null = $summaryBuilder.AppendLine("  manage-bde unlock output: $unlockOut")
+                                    $bl2 = Get-BitLockerVolume -MountPoint "$targetDrive`:" -ErrorAction SilentlyContinue
+                                    if ($bl2 -and $bl2.LockStatus -eq 'Unlocked') {
+                                        $bitlockerLocked = $false
+                                        $null = $summaryBuilder.AppendLine("  BitLocker: unlocked successfully.")
+                                    } else {
+                                        $issuesList += "BitLocker still locked on $targetDrive`:"
+                                        $null = $summaryBuilder.AppendLine("  BitLocker unlock failed or still locked.")
+                                        if ($txtOneClickStatus) { $txtOneClickStatus.Text = "BitLocker locked; unlock failed."; $btnOneClickRepair.IsEnabled = $true }
+                                        Update-StatusBar -Message "One-Click Repair: BitLocker locked" -HideProgress
+                                        return
+                                    }
+                                } catch {
+                                    $issuesList += "BitLocker unlock error on $targetDrive`:"
+                                    $null = $summaryBuilder.AppendLine("  BitLocker unlock error: $($_.Exception.Message)")
+                                    if ($txtOneClickStatus) { $txtOneClickStatus.Text = "BitLocker unlock error."; $btnOneClickRepair.IsEnabled = $true }
+                                    Update-StatusBar -Message "One-Click Repair: BitLocker unlock error" -HideProgress
+                                    return
+                                }
+                            }
+                        } else {
+                            if ($txtOneClickStatus) { $txtOneClickStatus.Text = "BitLocker locked; user declined unlock."; $btnOneClickRepair.IsEnabled = $true }
+                            Update-StatusBar -Message "One-Click Repair: canceled (BitLocker locked)" -HideProgress
+                            return
+                        }
+                    }
+                } else {
+                    $null = $summaryBuilder.AppendLine("BitLocker: status unavailable for $targetDrive`:")
+                }
+            } else {
+                $null = $summaryBuilder.AppendLine("BitLocker: Get-BitLockerVolume not available; skipping check.")
+            }
+        } catch {
+            $null = $summaryBuilder.AppendLine("BitLocker check failed: $($_.Exception.Message)")
+        }
         
         # Disable button during repair
         $btnOneClickRepair.IsEnabled = $false
@@ -4897,14 +4985,21 @@ if ($btnOneClickRepair) {
             # If anything missing, attempt a temporary ESP mount to widen search, then re-check
             if ($missingFiles.Count -gt 0) {
                 $tempLetter = @('Z','Y','X','W','V') | Where-Object { -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) } | Select-Object -First 1
+                $mountedTemp = $false
                 if ($tempLetter) {
                     try {
                         $null = $summaryBuilder.AppendLine("  Command: mountvol $tempLetter`: /S (attempting temporary ESP mount)")
                         $mv = mountvol "$tempLetter`:\" /S 2>&1
+                        $exit = $LASTEXITCODE
                         if ($mv) { $null = $summaryBuilder.AppendLine("    mountvol output: $mv") }
-                        $candidateRoots += "$tempLetter`:\EFI\Microsoft\Boot"
-                        $candidateRoots = $candidateRoots | Select-Object -Unique
-                        $null = $summaryBuilder.AppendLine("  Boot file search roots (after ESP mount): " + ($candidateRoots -join "; "))
+                        if ($exit -eq 0 -and ($mv -notmatch "parameter is incorrect")) {
+                            $mountedTemp = $true
+                            $candidateRoots += "$tempLetter`:\EFI\Microsoft\Boot"
+                            $candidateRoots = $candidateRoots | Select-Object -Unique
+                            $null = $summaryBuilder.AppendLine("  Boot file search roots (after ESP mount): " + ($candidateRoots -join "; "))
+                        } else {
+                            $null = $summaryBuilder.AppendLine("  mountvol failed or parameter incorrect (exit $exit); skipping temp ESP.")
+                        }
 
                         # re-check
                         $missingFiles = @()
@@ -4937,12 +5032,41 @@ if ($btnOneClickRepair) {
                                 }
                             }
                         }
+
+                        # Re-check boot files after repair attempt
+                        $postMissing = @()
+                        foreach ($file in $bootFiles) {
+                            $found = $false
+                            foreach ($root in $candidateRoots) {
+                                $p = Join-Path $root $file
+                                if (Test-Path $p) { $found = $true; break }
+                            }
+                            if (-not $found) { $postMissing += $file }
+                        }
+                        if ($postMissing.Count -eq 0) {
+                            $null = $summaryBuilder.AppendLine("  Boot file re-check: OK (all present after repair).")
+                        } else {
+                            $null = $summaryBuilder.AppendLine("  Boot file re-check: still missing -> " + ($postMissing -join ', '))
+                            foreach ($mf in $postMissing) { $issuesList += "Missing boot file (post-repair): $mf" }
+                            $null = $summaryBuilder.AppendLine("  Next steps if still missing:")
+                            $null = $summaryBuilder.AppendLine("    - Check source template: dir $env:SystemRoot\\System32\\Boot\\winload.efi")
+                            $null = $summaryBuilder.AppendLine("    - If source missing: extract from install media (install.wim/esd):")
+                            $null = $summaryBuilder.AppendLine("      mkdir C:\\Repair")
+                            $null = $summaryBuilder.AppendLine("      dism /apply-image /imagefile:<ISO>\\sources\\install.wim /index:1 /applydir:C:\\Repair /swmfile:winload.efi")
+                            $null = $summaryBuilder.AppendLine("      copy C:\\Repair\\Windows\\System32\\winload.efi $env:SystemRoot\\System32\\winload.efi /y")
+                            $null = $summaryBuilder.AppendLine("    - If destination EFI is corrupted or write-protected:")
+                            $null = $summaryBuilder.AppendLine("      format <ESP> /fs:FAT32 /q   (WARNING: wipes ESP)")
+                            $null = $summaryBuilder.AppendLine("      bcdboot $env:SystemRoot /s <ESP> /f UEFI")
+                            $null = $summaryBuilder.AppendLine("    - Ensure attributes cleared: attrib -s -h -r $env:SystemRoot\\System32\\winload.efi")
+                        }
                     } catch {
                         $null = $summaryBuilder.AppendLine("  ESP mount attempt failed: $($_.Exception.Message)")
                     } finally {
                         try {
-                            $null = $summaryBuilder.AppendLine("  Command: mountvol $tempLetter`: /D (unmount temporary ESP)")
-                            mountvol "$tempLetter`:\" /D 2>&1 | Out-Null
+                            if ($tempLetter -and $mountedTemp) {
+                                $null = $summaryBuilder.AppendLine("  Command: mountvol $tempLetter`: /D (unmount temporary ESP)")
+                                mountvol "$tempLetter`:\" /D 2>&1 | Out-Null
+                            }
                         } catch {
                             $null = $summaryBuilder.AppendLine("  ESP unmount failed: $($_.Exception.Message)")
                         }
@@ -5040,8 +5164,61 @@ if ($btnOneClickRepair) {
                 $fixerOutput.ScrollToEnd()
             }
             
+            # Post-fix truth engine: physical/logical/security checks
+            $winloadPath = "$drive`:\Windows\System32\winload.efi"
+            $bootFilesFound = Test-Path $winloadPath
+            $bcdPathMatch = $false
+            $bitLockerLocked = $null
+            try {
+                $bcdOut = bcdedit /enum {default} 2>&1 | Out-String
+                if ($bcdOut -match "winload\.efi") { $bcdPathMatch = $true }
+            } catch { }
+            try {
+                $blOut = manage-bde -status "$drive`:" 2>&1 | Out-String
+                if ($blOut -match "Lock Status:\s*Locked") { $bitLockerLocked = $true } else { $bitLockerLocked = $false }
+            } catch { $bitLockerLocked = $null }
+
+            $null = $summaryBuilder.AppendLine("--- FINAL REPAIR REPORT ---")
+            if ($bootFilesFound -and $bcdPathMatch -and -not $bitLockerLocked) {
+                $null = $summaryBuilder.AppendLine("BOOT STATUS: LIKELY BOOTABLE ✅")
+                $null = $summaryBuilder.AppendLine("✔ winload.efi present at $winloadPath")
+                $null = $summaryBuilder.AppendLine("✔ BCD references winload.efi")
+                if ($bitLockerLocked -eq $false) { $null = $summaryBuilder.AppendLine("✔ BitLocker: Unlocked") }
+            } else {
+                $null = $summaryBuilder.AppendLine("BOOT STATUS: WILL NOT BOOT ❌")
+                $null = $summaryBuilder.AppendLine("REASONS:")
+                if (-not $bootFilesFound) {
+                    $null = $summaryBuilder.AppendLine("  - PHYSICAL MISSING: winload.efi not found at $winloadPath")
+                    $null = $summaryBuilder.AppendLine("    Fix: Extract winload.efi from install.wim/esd and copy to source.")
+                }
+                if (-not $bcdPathMatch) {
+                    $null = $summaryBuilder.AppendLine("  - BCD MISMATCH: BCD does not reference winload.efi correctly.")
+                    $null = $summaryBuilder.AppendLine("    Fix: bcdedit /set {default} path \\Windows\\system32\\winload.efi (use correct /store if needed).")
+                }
+                if ($bitLockerLocked) {
+                    $null = $summaryBuilder.AppendLine("  - BITLOCKER LOCKED: Drive appears locked; repairs may not have applied.")
+                    $null = $summaryBuilder.AppendLine("    Fix: manage-bde -unlock $drive`: -RecoveryPassword <48-digit-key>")
+                } elseif ($bitLockerLocked -eq $null) {
+                    $null = $summaryBuilder.AppendLine("  - BitLocker status unknown (manage-bde unavailable in this environment).")
+                }
+            }
+
+            if ($fixerOutput) {
+                $fixerOutput.Text += "`n--- FINAL REPAIR REPORT ---`n"
+                if ($bootFilesFound -and $bcdPathMatch -and -not $bitLockerLocked) {
+                    $fixerOutput.Text += "BOOT STATUS: LIKELY BOOTABLE`n"
+                } else {
+                    $fixerOutput.Text += "BOOT STATUS: WILL NOT BOOT`n"
+                    if (-not $bootFilesFound) { $fixerOutput.Text += "  - winload.efi missing at $winloadPath`n" }
+                    if (-not $bcdPathMatch) { $fixerOutput.Text += "  - BCD not referencing winload.efi`n" }
+                    if ($bitLockerLocked) { $fixerOutput.Text += "  - BitLocker locked; unlock required`n" }
+                    if ($bitLockerLocked -eq $null) { $fixerOutput.Text += "  - BitLocker status unknown (manage-bde unavailable)`n" }
+                }
+            }
+
             Update-StatusBar -Message "One-Click Repair: Complete" -HideProgress
             
+        #> 
         } catch {
             if ($txtOneClickStatus) {
                 $txtOneClickStatus.Text = "❌ Error: $($_.Exception.Message)"
