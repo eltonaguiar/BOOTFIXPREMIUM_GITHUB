@@ -2417,9 +2417,6 @@ try {
             }
         })
     }
-} catch {
-    Write-Warning "Error initializing drive combo boxes: $_"
-}
 
 # Store BCD entries globally for real-time updates
 $script:BCDEntriesCache = $null
