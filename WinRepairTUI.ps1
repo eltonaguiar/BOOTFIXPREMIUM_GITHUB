@@ -10,7 +10,9 @@
     try {
         $corePath = Join-Path $PSScriptRoot "DefensiveBootCore.ps1"
         if (Test-Path $corePath) {
-            . $corePath
+            # Load with explicit UTF-8 encoding to prevent character corruption
+            $coreContent = Get-Content $corePath -Raw -Encoding UTF8
+            Invoke-Expression $coreContent
             if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
                 Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-DefensiveBootRepair function not found"
             }
