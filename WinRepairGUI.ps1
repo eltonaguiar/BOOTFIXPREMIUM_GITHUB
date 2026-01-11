@@ -88,6 +88,12 @@
           gate actions if certain capabilities are missing (e.g. network, browser).
 #>
 
+# Initialize window variable early to prevent "variable not set" errors
+# This satisfies PowerShell's strict mode and prevents race conditions
+# The variable will be assigned the actual window object in Start-GUI function
+$script:W = $null
+$W = $null
+
 try { Add-Type -AssemblyName PresentationFramework -ErrorAction Stop } catch {}
 try { Add-Type -AssemblyName PresentationCore -ErrorAction Stop } catch {}
 try { Add-Type -AssemblyName WindowsBase -ErrorAction Stop } catch {}
