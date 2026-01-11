@@ -440,7 +440,7 @@ function Invoke-BCDCommandWithTimeout {
         
         # Properly escape arguments for ProcessStartInfo
         # ProcessStartInfo.Arguments expects a single string with properly escaped arguments
-        # Arguments with spaces must be quoted, and quotes within arguments must be escaped
+        # Use a StringBuilder-like approach to avoid PowerShell string interpretation issues
         $escapedArgs = @()
         foreach ($arg in $Arguments) {
             if ($null -eq $arg) { continue }
@@ -448,10 +448,11 @@ function Invoke-BCDCommandWithTimeout {
             
             # If argument contains spaces, quotes, or special characters, quote it
             if ($argStr -match '\s|"|[{}\(\)]') {
-                # Escape any existing quotes by doubling them
+                # Escape any existing quotes by doubling them (Windows command line standard)
                 $escapedArg = $argStr -replace '"', '""'
-                # Then wrap in quotes
-                $escapedArgs += "`"$escapedArg`""
+                # Build quoted argument using string concatenation to avoid backtick interpretation
+                $quotedArg = '"' + $escapedArg + '"'
+                $escapedArgs += $quotedArg
             } else {
                 $escapedArgs += $argStr
             }
