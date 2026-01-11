@@ -8514,53 +8514,9 @@ if ($btnBootOpsNotepad) {
     })
 }
 
-    # Wire up window state changed event to show/hide banner
-    # This must be done inside Start-GUI after $W is created
-    # Safe check: use Get-Variable to verify $W exists before accessing
-    $wExists = (Get-Variable -Name "W" -Scope Script -ErrorAction SilentlyContinue) -and $null -ne $script:W
-    if ($wExists) {
-        $W = $script:W  # Use local variable for consistency
-        # Use SizeChanged event to detect maximize/restore
-        $W.Add_SizeChanged({
-            Update-MaximizeBanner
-        })
-        
-        # Also check on window loaded
-        $W.Add_Loaded({
-            Update-MaximizeBanner
-        })
-        
-        # Check initial state after a short delay to ensure window is fully initialized
-        $W.Dispatcher.InvokeAsync({
-            Update-MaximizeBanner
-        }, [System.Windows.Threading.DispatcherPriority]::Loaded)
-        
-        # Add F11 key handler to maximize/restore window (use PreviewKeyDown to catch even when not focused)
-        $W.Add_PreviewKeyDown({
-            param($sender, $e)
-            if ($e.Key -eq [System.Windows.Input.Key]::F11) {
-                if ($W.WindowState -eq [System.Windows.WindowState]::Maximized) {
-                    $W.WindowState = [System.Windows.WindowState]::Normal
-                } else {
-                    $W.WindowState = [System.Windows.WindowState]::Maximized
-                }
-                $e.Handled = $true
-                Update-MaximizeBanner
-            }
-        })
-        
-        # Also ensure window gets focus when loaded
-        $W.Add_Loaded({
-            $W.Focus()
-        })
-    }
-
-    # Show the GUI window - this must be inside Start-GUI function
-    try {
-        # Safe check: use Get-Variable to verify $W exists before accessing
-        $wExists = (Get-Variable -Name "W" -Scope Script -ErrorAction SilentlyContinue) -and $null -ne $script:W
-        if (-not $wExists) { throw "Window object not initialized" }
-        $script:W.ShowDialog() | Out-Null
+# NOTE: All code below this point is at script level and executes when module loads
+# Button handlers use Get-Control which safely returns null if $W doesn't exist yet
+# Window event wiring and ShowDialog are handled INSIDE Start-GUI function
     
     # #region agent log
     try {
