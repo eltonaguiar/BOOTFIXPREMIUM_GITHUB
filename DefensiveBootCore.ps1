@@ -3165,11 +3165,14 @@ function Invoke-BruteForceBootRepair {
     $bcdBackup = Join-Path $logDir "BCD_BRUTEFORCE_BACKUP_$(Get-Date -Format 'yyyyMMdd_HHmmss').bak"
     $bcdStore = if ($espLetter) { "$espLetter\EFI\Microsoft\Boot\BCD" } else { "$targetDrive`:\Boot\BCD" }
     if (Test-Path $bcdStore) {
-        $backupOut = bcdedit /export $bcdBackup 2>&1 | Out-String
-        if ($LASTEXITCODE -eq 0) {
+        $backupResult = Invoke-BCDCommandWithTimeout -Command "bcdedit" -Arguments @("/export", $bcdBackup) -TimeoutSeconds 30 -Description "BCD backup creation"
+        if ($backupResult.Success) {
             $actions += "✓ BCD backed up to $bcdBackup"
         } else {
             $actions += "⚠ BCD backup failed but continuing"
+            if ($backupResult.Error) {
+                $actions += "  Error: $($backupResult.Error)"
+            }
         }
     }
     
@@ -3543,17 +3546,20 @@ function Invoke-DefensiveBootRepair {
         $shouldWrite = (-not $diagOnly -and -not $DryRun -and -not $simulate -and (-not $runningOnline -or $AllowOnlineRepair))
         if ($shouldWrite -and -not $blocker) {
             try {
-                $exportOut = bcdedit /export "$backupPath" 2>&1 | Out-String
-                $exitCode = $LASTEXITCODE
-                Track-Command -Command "bcdedit /export `"$backupPath`"" -Description "BCD backup creation" -ExitCode $exitCode -ErrorOutput $exportOut -TargetDrive $TargetDrive
+                $exportResult = Invoke-BCDCommandWithTimeout -Command "bcdedit" -Arguments @("/export", $backupPath) -TimeoutSeconds 30 -Description "BCD backup creation"
+                Track-Command -Command "bcdedit /export `"$backupPath`"" -Description "BCD backup creation" -ExitCode $exportResult.ExitCode -ErrorOutput $exportResult.Output -TargetDrive $TargetDrive
                 
-                if ($exitCode -eq 0) {
+                if ($exportResult.Success) {
                     $script:LastBackupPath = $backupPath
                     $rollbackPlan[0] = "Restore BCD from backup at $backupPath"
                     $actions += "BCD backup created at $backupPath"
                 } else {
-                    $blocker = "Failed to export BCD backup (exit $exitCode). Aborting repair."
+                    $errorMsg = if ($exportResult.Error) { $exportResult.Error } else { $exportResult.Output }
+                    $blocker = "Failed to export BCD backup (exit $($exportResult.ExitCode)). Aborting repair."
                     $actions += "BCD backup failed; repair aborted."
+                    if ($errorMsg) {
+                        $actions += "  Error: $errorMsg"
+                    }
                 }
             } catch {
                 $errorMsg = $_.Exception.Message
