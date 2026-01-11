@@ -2855,7 +2855,26 @@ function Test-BootabilityComprehensive {
     }
     
     # 3. Verify BCD (with permission handling)
-    $bcdStore = if ($EspLetter) { "$EspLetter\EFI\Microsoft\Boot\BCD" } else { "$TargetDrive`:\Boot\BCD" }
+    # CRITICAL: On UEFI systems, BCD is ALWAYS in ESP, not in C:\Boot\BCD
+    # Try to detect/mount ESP if not provided
+    $actualEspLetter = $EspLetter
+    if (-not $actualEspLetter) {
+        # Try to detect ESP
+        $esp = Get-EspCandidate
+        if ($esp -and $esp.DriveLetter) {
+            $actualEspLetter = "$($esp.DriveLetter):"
+            $verification.Actions += "✓ ESP detected at $actualEspLetter (auto-detected for BCD verification)"
+        } else {
+            # Try to mount ESP temporarily for verification
+            $mount = Mount-EspTemp -PreferredLetter "S"
+            if ($mount) {
+                $actualEspLetter = "$($mount.Letter):"
+                $verification.Actions += "✓ ESP mounted at $actualEspLetter (temporarily mounted for BCD verification)"
+            }
+        }
+    }
+    
+    $bcdStore = if ($actualEspLetter) { "$actualEspLetter\EFI\Microsoft\Boot\BCD" } else { "$TargetDrive`:\Boot\BCD" }
     if (Test-Path $bcdStore) {
         $verification.BCDExists = $true
         $verification.Actions += "✓ BCD exists at $bcdStore"
@@ -2927,7 +2946,18 @@ function Test-BootabilityComprehensive {
             $verification.Issues += "BCD exists but not readable: $($_.Exception.Message)"
         }
     } else {
+        # BCD is missing - provide actionable solution
         $verification.Issues += "BCD MISSING at $bcdStore"
+        if ($actualEspLetter) {
+            $verification.Actions += "❌ BCD MISSING - Solution: Run this command to create it:"
+            $verification.Actions += "   bcdboot $TargetDrive`:\Windows /s $actualEspLetter /f UEFI"
+            $verification.Actions += "   Or use the 'Rebuild BCD' option in the repair menu"
+        } else {
+            $verification.Actions += "❌ BCD MISSING - ESP not detected. Solution:"
+            $verification.Actions += "   1. Mount ESP: mountvol S: /S"
+            $verification.Actions += "   2. Create BCD: bcdboot $TargetDrive`:\Windows /s S: /f UEFI"
+            $verification.Actions += "   Or use the 'Rebuild BCD' option in the repair menu"
+        }
     }
     
     # 4. Check all critical boot files
@@ -3203,10 +3233,46 @@ function Invoke-BruteForceBootRepair {
     $actions += "STEP 5: BRUTE FORCE BCD REPAIR"
     $actions += "───────────────────────────────────────────────────────────────────────────────"
     
-    # Backup BCD first
-    $bcdBackup = Join-Path $logDir "BCD_BRUTEFORCE_BACKUP_$(Get-Date -Format 'yyyyMMdd_HHmmss').bak"
+    # Ensure ESP is mounted for BCD operations
+    if (-not $espLetter) {
+        $actions += "⚠ ESP not mounted - attempting to mount..."
+        $mount = Mount-EspTemp -PreferredLetter "S"
+        if ($mount) {
+            $espLetter = "$($mount.Letter):"
+            $actions += "✓ ESP mounted to $espLetter"
+        } else {
+            $actions += "❌ Failed to mount ESP - BCD repair may fail"
+        }
+    }
+    
     $bcdStore = if ($espLetter) { "$espLetter\EFI\Microsoft\Boot\BCD" } else { "$targetDrive`:\Boot\BCD" }
-    if (Test-Path $bcdStore) {
+    
+    # Check if BCD exists - if not, CREATE it first
+    $bcdExists = Test-Path $bcdStore
+    if (-not $bcdExists) {
+        $actions += "❌ BCD MISSING at $bcdStore"
+        $actions += "Creating BCD with bcdboot..."
+        
+        if ($espLetter) {
+            $createResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$targetDrive`:\Windows", "/s", $espLetter, "/f", "UEFI", "/addlast") -TimeoutSeconds 60 -Description "Create BCD with bcdboot"
+            if ($createResult.Success) {
+                $actions += "✓ BCD created successfully"
+                $bcdExists = $true
+                # Wait for file system sync
+                Start-Sleep -Milliseconds 1000
+            } else {
+                $actions += "❌ Failed to create BCD: $($createResult.Output)"
+                $actions += "   Error details: $($createResult.Error)"
+            }
+        } else {
+            $actions += "❌ Cannot create BCD - ESP not available"
+            $actions += "   Solution: Mount ESP first with: mountvol S: /S"
+        }
+    }
+    
+    # Backup BCD if it exists
+    $bcdBackup = Join-Path $logDir "BCD_BRUTEFORCE_BACKUP_$(Get-Date -Format 'yyyyMMdd_HHmmss').bak"
+    if ($bcdExists -and (Test-Path $bcdStore)) {
         $backupResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/export", $bcdBackup) -TimeoutSeconds 30 -Description "BCD backup creation"
         if ($backupResult.Success) {
             $actions += "✓ BCD backed up to $bcdBackup"
