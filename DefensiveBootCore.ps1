@@ -401,6 +401,92 @@ function Unmount-EspTemp {
 }
 
 # ============================================================================
+# TIMEOUT WRAPPER FOR BCD OPERATIONS
+# ============================================================================
+
+function Invoke-BCDCommandWithTimeout {
+    <#
+    .SYNOPSIS
+    Executes bcdedit or bcdboot commands with a timeout to prevent hanging.
+    
+    .DESCRIPTION
+    Wraps bcdedit/bcdboot commands in a job with timeout to prevent indefinite hangs.
+    Returns output and exit code, or timeout error if command takes too long.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Command,
+        
+        [Parameter(Mandatory=$false)]
+        [string[]]$Arguments = @(),
+        
+        [Parameter(Mandatory=$false)]
+        [int]$TimeoutSeconds = 30,
+        
+        [Parameter(Mandatory=$false)]
+        [string]$Description = "BCD operation"
+    )
+    
+    $result = @{
+        Success = $false
+        Output = ""
+        ExitCode = -1
+        TimedOut = $false
+        Error = $null
+    }
+    
+    try {
+        # Build full command
+        $fullCommand = "$Command " + ($Arguments -join " ")
+        
+        # Use Start-Process with timeout to prevent hanging
+        $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $processInfo.FileName = $Command
+        $processInfo.Arguments = ($Arguments | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join " "
+        $processInfo.UseShellExecute = $false
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        $processInfo.CreateNoWindow = $true
+        
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $processInfo
+        
+        # Start process
+        $process.Start() | Out-Null
+        
+        # Wait for completion with timeout
+        $completed = $process.WaitForExit($TimeoutSeconds * 1000)
+        
+        if (-not $completed) {
+            # Timeout - kill the process
+            try {
+                $process.Kill()
+            } catch {
+                # Process may have already exited
+            }
+            $result.TimedOut = $true
+            $result.Error = "Command timed out after $TimeoutSeconds seconds: $fullCommand"
+            return $result
+        }
+        
+        # Get output
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $result.Output = $stdout + $stderr
+        $result.ExitCode = $process.ExitCode
+        $result.Success = ($process.ExitCode -eq 0)
+        
+        $process.Dispose()
+        
+    } catch {
+        $result.Error = $_.Exception.Message
+        $result.Output = $_.Exception.Message
+    }
+    
+    return $result
+}
+
+# ============================================================================
 # ULTIMATE HARDENING FUNCTIONS
 # ============================================================================
 
@@ -2701,12 +2787,18 @@ function Test-BootabilityComprehensive {
         
         $bcdPermissionsModified = $false
         try {
-            # Try to enumerate BCD
-            $bcdEnum = bcdedit /store $bcdStore /enum {default} 2>&1 | Out-String
-            $bcdExitCode = $LASTEXITCODE
+            # Try to enumerate BCD with timeout to prevent hanging
+            $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Enumerate BCD entries"
+            $bcdEnum = $bcdResult.Output
+            $bcdExitCode = $bcdResult.ExitCode
             
+            # Check for timeout
+            if ($bcdResult.TimedOut) {
+                $verification.Issues += "BCD enumeration timed out after 15 seconds - BCD may be locked or corrupted"
+                $verification.Actions += "⚠ bcdedit enumeration timed out (BCD may be locked)"
+            }
             # If enumeration failed, try taking ownership of BCD file
-            if ($bcdExitCode -ne 0) {
+            elseif ($bcdExitCode -ne 0) {
                 $verification.Actions += "⚠ bcdedit enumeration failed (exit code $bcdExitCode), attempting permission fix..."
                 try {
                     $takeownResult = Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$bcdStore`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
@@ -2716,9 +2808,14 @@ function Test-BootabilityComprehensive {
                         $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$bcdStore`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
                         $verification.Actions += "  ✓ Took ownership and fixed permissions on BCD file"
                         
-                        # Try enumeration again
-                        $bcdEnum = bcdedit /store $bcdStore /enum {default} 2>&1 | Out-String
-                        $bcdExitCode = $LASTEXITCODE
+                        # Try enumeration again with timeout
+                        $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Re-enumerate BCD after permission fix"
+                        $bcdEnum = $bcdResult.Output
+                        $bcdExitCode = $bcdResult.ExitCode
+                        
+                        if ($bcdResult.TimedOut) {
+                            $verification.Issues += "BCD enumeration still timed out after permission fix"
+                        }
                     }
                 } catch {
                     $verification.Actions += "  ⚠ Could not fix BCD permissions: $($_.Exception.Message)"
@@ -3637,35 +3734,65 @@ function Invoke-DefensiveBootRepair {
             # Auto-fix BCD path if winload.efi now exists but BCD doesn't point to it
             if ($winloadExists -and -not $bcdPathMatch) {
                 try {
-                    $bcdOut = bcdedit /set {default} path \Windows\system32\winload.efi 2>&1 | Out-String
-                    $exitCode = $LASTEXITCODE
-                    Track-Command -Command "bcdedit /set {default} path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi" -ExitCode $exitCode -ErrorOutput $bcdOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    # Use timeout wrapper to prevent hanging
+                    $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/set", "{default}", "path", "\Windows\system32\winload.efi") -TimeoutSeconds 15 -Description "Set BCD path to winload.efi"
+                    $bcdOut = $bcdResult.Output
+                    $exitCode = $bcdResult.ExitCode
                     
-                    if ($exitCode -eq 0) {
+                    if ($bcdResult.TimedOut) {
+                        $actions += "⚠ BCD path set command timed out - BCD may be locked"
+                        Track-Command -Command "bcdedit /set {default} path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi (TIMED OUT)" -ExitCode -1 -ErrorOutput "Command timed out after 15 seconds" -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    } else {
+                        Track-Command -Command "bcdedit /set {default} path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi" -ExitCode $exitCode -ErrorOutput $bcdOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    }
+                    
+                    if ($exitCode -eq 0 -and -not $bcdResult.TimedOut) {
                         $actions += "BCD path set to \\Windows\\system32\\winload.efi"
                         
-                        # Set device and osdevice
+                        # Set device and osdevice with timeout
                         $driveLetter = $selectedOS.Drive.TrimEnd(':')
-                        $deviceOut = bcdedit /set {default} device partition=$driveLetter`: 2>&1 | Out-String
-                        $osdeviceOut = bcdedit /set {default} osdevice partition=$driveLetter`: 2>&1 | Out-String
-                        Track-Command -Command "bcdedit /set {default} device partition=$driveLetter`:" -Description "Set BCD device partition" -ExitCode $LASTEXITCODE -ErrorOutput $deviceOut -TargetDrive $driveLetter
-                        Track-Command -Command "bcdedit /set {default} osdevice partition=$driveLetter`:" -Description "Set BCD osdevice partition" -ExitCode $LASTEXITCODE -ErrorOutput $osdeviceOut -TargetDrive $driveLetter
-                        $actions += "BCD device/osdevice set to partition=$driveLetter`:"
+                        $deviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/set", "{default}", "device", "partition=$driveLetter`:") -TimeoutSeconds 15 -Description "Set BCD device partition"
+                        $osdeviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/set", "{default}", "osdevice", "partition=$driveLetter`:") -TimeoutSeconds 15 -Description "Set BCD osdevice partition"
+                        
+                        $deviceOut = $deviceResult.Output
+                        $osdeviceOut = $osdeviceResult.Output
+                        
+                        if ($deviceResult.TimedOut) {
+                            $actions += "⚠ BCD device set command timed out"
+                        }
+                        if ($osdeviceResult.TimedOut) {
+                            $actions += "⚠ BCD osdevice set command timed out"
+                        }
+                        
+                        Track-Command -Command "bcdedit /set {default} device partition=$driveLetter`:" -Description "Set BCD device partition" -ExitCode $deviceResult.ExitCode -ErrorOutput $deviceOut -TargetDrive $driveLetter
+                        Track-Command -Command "bcdedit /set {default} osdevice partition=$driveLetter`:" -Description "Set BCD osdevice partition" -ExitCode $osdeviceResult.ExitCode -ErrorOutput $osdeviceOut -TargetDrive $driveLetter
+                        
+                        if ($deviceResult.ExitCode -eq 0 -and $osdeviceResult.ExitCode -eq 0 -and -not $deviceResult.TimedOut -and -not $osdeviceResult.TimedOut) {
+                            $actions += "BCD device/osdevice set to partition=$driveLetter`:"
+                        }
                         
                         # Verify the fix (check exit code and use strict regex, with permission handling)
                         $bcdPermissionsModified = $false
                         $bcdStorePath = if ($espLetter) { "$espLetter\EFI\Microsoft\Boot\BCD" } else { "$driveLetter`:\Boot\BCD" }
                         
+                        # Use timeout wrapper to prevent hanging
                         if ($espLetter -and (Test-Path $bcdStorePath)) {
-                            $bcdCheck = bcdedit /store $bcdStorePath /enum {default} 2>&1 | Out-String
+                            $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStorePath, "/enum", "{default}") -TimeoutSeconds 15 -Description "Verify BCD path fix"
                         } else {
-                            $bcdCheck = bcdedit /enum {default} 2>&1 | Out-String
+                            $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Verify BCD path fix"
                         }
-                        $bcdCheckExitCode = $LASTEXITCODE
+                        $bcdCheck = $bcdResult.Output
+                        $bcdCheckExitCode = $bcdResult.ExitCode
+                        
+                        if ($bcdResult.TimedOut) {
+                            $actions += "⚠ BCD verification timed out - BCD may be locked or corrupted"
+                            $bcdCheckExitCode = -1
+                        }
+                        
                         Track-Command -Command "bcdedit /enum {default}" -Description "Verify BCD path fix" -ExitCode $bcdCheckExitCode -ErrorOutput $null -TargetDrive $driveLetter
                         
                         # If enumeration failed, try taking ownership of BCD file
-                        if ($bcdCheckExitCode -ne 0 -and (Test-Path $bcdStorePath)) {
+                        if ($bcdCheckExitCode -ne 0 -and (Test-Path $bcdStorePath) -and -not $bcdResult.TimedOut) {
                             try {
                                 $takeownResult = Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$bcdStorePath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
                                 if ($takeownResult.ExitCode -eq 0) {
@@ -3673,13 +3800,18 @@ function Invoke-DefensiveBootRepair {
                                     $icaclsResult = Start-Process -FilePath "icacls.exe" -ArgumentList "`"$bcdStorePath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
                                     $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$bcdStorePath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
                                     
-                                    # Try enumeration again
+                                    # Try enumeration again with timeout
                                     if ($espLetter) {
-                                        $bcdCheck = bcdedit /store $bcdStorePath /enum {default} 2>&1 | Out-String
+                                        $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStorePath, "/enum", "{default}") -TimeoutSeconds 15 -Description "Re-verify BCD after permission fix"
                                     } else {
-                                        $bcdCheck = bcdedit /enum {default} 2>&1 | Out-String
+                                        $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Re-verify BCD after permission fix"
                                     }
-                                    $bcdCheckExitCode = $LASTEXITCODE
+                                    $bcdCheck = $bcdResult.Output
+                                    $bcdCheckExitCode = $bcdResult.ExitCode
+                                    
+                                    if ($bcdResult.TimedOut) {
+                                        $actions += "⚠ BCD verification still timed out after permission fix"
+                                    }
                                 }
                             } catch {
                                 # Continue with original result
@@ -3750,15 +3882,24 @@ function Invoke-DefensiveBootRepair {
                     }
                     
                     try {
-                        $bcdbootOut = bcdboot "$($selectedOS.Drive)\Windows" /s $espLetter /f UEFI /addlast 2>&1 | Out-String
-                        $exitCode = $LASTEXITCODE
-                        Track-Command -Command "bcdboot `"$($selectedOS.Drive)\Windows`" /s $espLetter /f UEFI /addlast" -Description "Rebuild boot files using bcdboot" -ExitCode $exitCode -ErrorOutput $bcdbootOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                        # Use timeout wrapper to prevent bcdboot from hanging (bcdboot can take a long time)
+                        $bcdbootResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$($selectedOS.Drive)\Windows", "/s", $espLetter, "/f", "UEFI", "/addlast") -TimeoutSeconds 60 -Description "Rebuild boot files using bcdboot"
+                        $bcdbootOut = $bcdbootResult.Output
+                        $exitCode = $bcdbootResult.ExitCode
                         
-                        if ($exitCode -eq 0) {
-                            $actions += "Boot files rebuilt using bcdboot"
-                            $repairExecuted = $true
+                        if ($bcdbootResult.TimedOut) {
+                            $actions += "⚠ bcdboot rebuild timed out after 60 seconds - operation may still be in progress"
+                            $actions += "  This can happen if the BCD store is locked or corrupted"
+                            Track-Command -Command "bcdboot `"$($selectedOS.Drive)\Windows`" /s $espLetter /f UEFI /addlast" -Description "Rebuild boot files using bcdboot (TIMED OUT)" -ExitCode -1 -ErrorOutput "Command timed out after 60 seconds" -TargetDrive $selectedOS.Drive.TrimEnd(':')
                         } else {
-                            $actions += "bcdboot rebuild failed: $bcdbootOut"
+                            Track-Command -Command "bcdboot `"$($selectedOS.Drive)\Windows`" /s $espLetter /f UEFI /addlast" -Description "Rebuild boot files using bcdboot" -ExitCode $exitCode -ErrorOutput $bcdbootOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                            
+                            if ($exitCode -eq 0) {
+                                $actions += "Boot files rebuilt using bcdboot"
+                                $repairExecuted = $true
+                            } else {
+                                $actions += "bcdboot rebuild failed: $bcdbootOut"
+                            }
                         }
                     } catch {
                         $errorMsg = $_.Exception.Message
