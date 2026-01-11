@@ -2650,6 +2650,145 @@ function Repair-BCDDeepRepair {
     }
 }
 
+function Restore-BCDFromWinPE {
+    <#
+    .SYNOPSIS
+    Attempts to restore BCD from WinPE X: drive if available.
+    #>
+    param(
+        [string]$TargetBcdPath,
+        [string]$EspLetter
+    )
+    
+    $actions = @()
+    $restored = $false
+    
+    # Check if we're in WinPE or if X: drive exists
+    $winpeBcdPath = $null
+    if ($env:SystemDrive -eq "X:" -and (Test-Path "X:\EFI\Microsoft\Boot\BCD" -ErrorAction SilentlyContinue)) {
+        $winpeBcdPath = "X:\EFI\Microsoft\Boot\BCD"
+        $actions += "✓ Found BCD on WinPE X: drive: $winpeBcdPath"
+    } elseif (Test-Path "X:\EFI\Microsoft\Boot\BCD" -ErrorAction SilentlyContinue) {
+        $winpeBcdPath = "X:\EFI\Microsoft\Boot\BCD"
+        $actions += "✓ Found BCD on X: drive: $winpeBcdPath"
+    }
+    
+    if ($winpeBcdPath -and (Test-Path $winpeBcdPath)) {
+        try {
+            # Ensure target directory exists
+            $targetDir = Split-Path -Path $TargetBcdPath -Parent
+            if (-not (Test-Path $targetDir)) {
+                New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+                $actions += "✓ Created target directory: $targetDir"
+            }
+            
+            # Copy BCD from WinPE
+            Copy-Item -Path $winpeBcdPath -Destination $TargetBcdPath -Force -ErrorAction Stop
+            $actions += "✓ Restored BCD from WinPE X: drive to: $TargetBcdPath"
+            $restored = $true
+            
+            # Verify the copied BCD is readable
+            Start-Sleep -Milliseconds 500
+            $verifyResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $TargetBcdPath, "/enum", "all") -TimeoutSeconds 15 -Description "Verify restored BCD"
+            if ($verifyResult.ExitCode -eq 0) {
+                $actions += "✓ Verified restored BCD is readable"
+            } else {
+                $actions += "⚠ Restored BCD may be corrupted: $($verifyResult.Output)"
+            }
+        } catch {
+            $actions += "❌ Failed to restore BCD from WinPE: $($_.Exception.Message)"
+        }
+    } else {
+        $actions += "ℹ No BCD found on WinPE X: drive (this is normal if not in WinPE)"
+    }
+    
+    return @{
+        Restored = $restored
+        Actions = $actions
+    }
+}
+
+function Create-BCDDefaultEntry {
+    <#
+    .SYNOPSIS
+    Creates a {default} boot entry in BCD if it doesn't exist.
+    #>
+    param(
+        [string]$BcdStore,
+        [string]$TargetDrive
+    )
+    
+    $actions = @()
+    
+    # First, enumerate all entries to see what exists
+    $enumAllResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $BcdStore, "/enum", "all") -TimeoutSeconds 15 -Description "Enumerate all BCD entries"
+    
+    if ($enumAllResult.ExitCode -eq 0) {
+        # Check if {default} exists
+        if ($enumAllResult.Output -match '\{default\}') {
+            $actions += "✓ {default} entry already exists"
+            return @{
+                Success = $true
+                Actions = $actions
+            }
+        }
+        
+        # Try to find any Windows boot entry
+        $windowsEntryGuid = $null
+        if ($enumAllResult.Output -match '\{([a-f0-9\-]{36})\}.*Windows') {
+            $windowsEntryGuid = $matches[1]
+            $actions += "✓ Found existing Windows boot entry: {$windowsEntryGuid}"
+        }
+        
+        # If we found an entry, set it as default
+        if ($windowsEntryGuid) {
+            $setDefaultResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $BcdStore, "/default", "{$windowsEntryGuid}") -TimeoutSeconds 15 -Description "Set default entry"
+            if ($setDefaultResult.ExitCode -eq 0) {
+                $actions += "✓ Set existing entry as default"
+                return @{
+                    Success = $true
+                    Actions = $actions
+                }
+            }
+        }
+    }
+    
+    # If no entry exists, create a new {default} entry
+    $actions += "Creating new {default} boot entry..."
+    
+    # Create a boot entry using bcdedit /create
+    $createResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $BcdStore, "/create", "{default}", "/d", "Windows Boot Manager") -TimeoutSeconds 15 -Description "Create default entry"
+    
+    if ($createResult.ExitCode -eq 0) {
+        $actions += "✓ Created {default} entry"
+        
+        # Set it as a Windows boot entry
+        $setTypeResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $BcdStore, "/set", "{default}", "device", "partition=$TargetDrive") -TimeoutSeconds 15 -Description "Set device"
+        $setOsResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $BcdStore, "/set", "{default}", "osdevice", "partition=$TargetDrive") -TimeoutSeconds 15 -Description "Set osdevice"
+        $setPathResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $BcdStore, "/set", "{default}", "path", "\Windows\system32\winload.efi") -TimeoutSeconds 15 -Description "Set path"
+        
+        if ($setTypeResult.ExitCode -eq 0 -and $setOsResult.ExitCode -eq 0 -and $setPathResult.ExitCode -eq 0) {
+            $actions += "✓ Configured {default} entry properties"
+            return @{
+                Success = $true
+                Actions = $actions
+            }
+        } else {
+            $actions += "⚠ Created entry but some properties failed to set"
+            return @{
+                Success = $true
+                Actions = $actions
+            }
+        }
+    } else {
+        $actions += "❌ Failed to create {default} entry: $($createResult.Output)"
+        return @{
+            Success = $false
+            Actions = $actions
+        }
+    }
+}
+
 function Repair-BCDBruteForce {
     param(
         [string]$TargetDrive,
@@ -2661,6 +2800,7 @@ function Repair-BCDBruteForce {
     
     $actions = @()
     $bcdStore = if ($EspLetter) { "$EspLetter\EFI\Microsoft\Boot\BCD" } else { "BCD" }
+    $bcdPath = if ($EspLetter) { "$EspLetter`:\EFI\Microsoft\Boot\BCD" } else { "$TargetDrive`:\Boot\BCD" }
     
     # Pre-flight: Check BitLocker
     $bitlockerUnlocked = Test-BitLockerUnlocked -TargetDrive $TargetDrive
@@ -2699,40 +2839,92 @@ function Repair-BCDBruteForce {
     
     # CRITICAL FIX: Check if BCD EXISTS before trying to modify it
     # If BCD is missing, we MUST use bcdboot to CREATE it first
+    # NEW: Also try to recover from WinPE X: drive
     $actions += "Step 1: Checking if BCD exists..."
     $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD existence"
     
-    $bcdExists = $enumCheckResult.ExitCode -eq 0 -and -not ($enumCheckResult.Output -match "could not be opened|cannot find|No bootable entries")
+    # Check for various error conditions
+    $bcdExists = $enumCheckResult.ExitCode -eq 0 -and -not ($enumCheckResult.Output -match "could not be opened|cannot find|No bootable entries|specified entry type is invalid")
+    $invalidEntryType = $enumCheckResult.Output -match "specified entry type is invalid|The parameter is incorrect"
     
     if (-not $bcdExists) {
-        # BCD is MISSING - must create it with bcdboot FIRST
-        $actions += "❌ BCD missing or corrupted: $($enumCheckResult.Output)"
+        # BCD is MISSING or {default} entry doesn't exist
+        $actions += "❌ BCD missing, corrupted, or {default} entry invalid: $($enumCheckResult.Output)"
         $actions += ""
-        $actions += "Step 2: Creating BCD with bcdboot (recovery mode)..."
         
-        if ($EspLetter) {
-            # Try bcdboot first to CREATE the BCD
-            $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows", "/s", $EspLetter, "/f", "UEFI", "/addlast") -TimeoutSeconds 30 -Description "Create BCD with bcdboot"
-            
-            if ($rebuildResult.ExitCode -eq 0) {
-                $actions += "✓ BCD created by bcdboot"
-            } else {
-                $actions += "❌ bcdboot failed to create BCD: $($rebuildResult.Output)"
-                # Continue anyway and try bcdedit commands
-                $actions += "   Attempting manual BCD creation..."
-            }
-        } else {
-            # No ESP letter - try bcdboot to system BCD
-            $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows") -TimeoutSeconds 30 -Description "Recreate system BCD"
-            if ($rebuildResult.ExitCode -eq 0) {
-                $actions += "✓ System BCD recreated"
-            } else {
-                $actions += "❌ Failed to recreate system BCD: $($rebuildResult.Output)"
+        # NEW: Try to restore from WinPE X: drive first
+        if ($EspLetter -and (Test-Path $bcdPath -ErrorAction SilentlyContinue)) {
+            $actions += "Step 1a: Attempting to restore BCD from WinPE X: drive..."
+            $restoreResult = Restore-BCDFromWinPE -TargetBcdPath $bcdPath -EspLetter $EspLetter
+            $actions += $restoreResult.Actions
+            if ($restoreResult.Restored) {
+                # Re-check after restore
+                Start-Sleep -Milliseconds 500
+                $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Re-check BCD after restore"
+                $bcdExists = $enumCheckResult.ExitCode -eq 0 -and -not ($enumCheckResult.Output -match "could not be opened|cannot find|No bootable entries|specified entry type is invalid")
+                $invalidEntryType = $enumCheckResult.Output -match "specified entry type is invalid|The parameter is incorrect"
             }
         }
         
-        # After attempting bcdboot, pause briefly for file system sync
-        Start-Sleep -Milliseconds 500
+        # If BCD file exists but {default} entry is invalid, create it
+        if ($invalidEntryType -and (Test-Path $bcdPath -ErrorAction SilentlyContinue)) {
+            $actions += ""
+            $actions += "Step 1b: BCD file exists but {default} entry is invalid - creating entry..."
+            $createEntryResult = Create-BCDDefaultEntry -BcdStore $bcdStore -TargetDrive $TargetDrive
+            $actions += $createEntryResult.Actions
+            if ($createEntryResult.Success) {
+                # Re-check after creating entry
+                Start-Sleep -Milliseconds 500
+                $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Re-check BCD after creating entry"
+                $bcdExists = $enumCheckResult.ExitCode -eq 0 -and -not ($enumCheckResult.Output -match "could not be opened|cannot find|No bootable entries|specified entry type is invalid")
+            }
+        }
+        
+        # If BCD still doesn't exist, create it with bcdboot
+        if (-not $bcdExists) {
+            $actions += ""
+            $actions += "Step 2: Creating BCD with bcdboot (recovery mode)..."
+            
+            if ($EspLetter) {
+                # Try bcdboot first to CREATE the BCD
+                $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows", "/s", $EspLetter, "/f", "UEFI", "/addlast") -TimeoutSeconds 30 -Description "Create BCD with bcdboot"
+                
+                if ($rebuildResult.ExitCode -eq 0) {
+                    $actions += "✓ BCD created by bcdboot"
+                    # After bcdboot, check if {default} entry exists
+                    Start-Sleep -Milliseconds 500
+                    $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD after bcdboot"
+                    if ($enumCheckResult.Output -match "specified entry type is invalid") {
+                        $actions += "⚠ bcdboot created BCD but {default} entry missing - creating it..."
+                        $createEntryResult = Create-BCDDefaultEntry -BcdStore $bcdStore -TargetDrive $TargetDrive
+                        $actions += $createEntryResult.Actions
+                    }
+                } else {
+                    $actions += "❌ bcdboot failed to create BCD: $($rebuildResult.Output)"
+                    # Continue anyway and try bcdedit commands
+                    $actions += "   Attempting manual BCD creation..."
+                }
+            } else {
+                # No ESP letter - try bcdboot to system BCD
+                $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows") -TimeoutSeconds 30 -Description "Recreate system BCD"
+                if ($rebuildResult.ExitCode -eq 0) {
+                    $actions += "✓ System BCD recreated"
+                    # After bcdboot, check if {default} entry exists
+                    Start-Sleep -Milliseconds 500
+                    $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD after bcdboot"
+                    if ($enumCheckResult.Output -match "specified entry type is invalid") {
+                        $actions += "⚠ bcdboot created BCD but {default} entry missing - creating it..."
+                        $createEntryResult = Create-BCDDefaultEntry -BcdStore "BCD" -TargetDrive $TargetDrive
+                        $actions += $createEntryResult.Actions
+                    }
+                } else {
+                    $actions += "❌ Failed to recreate system BCD: $($rebuildResult.Output)"
+                }
+            }
+            
+            # After attempting bcdboot, pause briefly for file system sync
+            Start-Sleep -Milliseconds 500
+        }
     }
     
     # Step 2/3: Now try to set BCD properties (whether we just created it or it existed)
@@ -2746,6 +2938,38 @@ function Repair-BCDBruteForce {
     $setPathResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments $pathArgs -TimeoutSeconds 15 -Description "Set BCD path"
     $setDeviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments $deviceArgs -TimeoutSeconds 15 -Description "Set BCD device"
     $setOsDeviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments $osdeviceArgs -TimeoutSeconds 15 -Description "Set BCD osdevice"
+    
+    # Check for "invalid entry type" errors and retry with entry creation
+    $needsRetry = $false
+    if ($setPathResult.ExitCode -ne 0 -and $setPathResult.Output -match "specified entry type is invalid|The parameter is incorrect") {
+        $actions += "⚠ BCD path set failed - {default} entry may not exist: $($setPathResult.Output)"
+        $needsRetry = $true
+    }
+    if ($setDeviceResult.ExitCode -ne 0 -and $setDeviceResult.Output -match "specified entry type is invalid|The parameter is incorrect") {
+        $actions += "⚠ BCD device set failed - {default} entry may not exist: $($setDeviceResult.Output)"
+        $needsRetry = $true
+    }
+    if ($setOsDeviceResult.ExitCode -ne 0 -and $setOsDeviceResult.Output -match "specified entry type is invalid|The parameter is incorrect") {
+        $actions += "⚠ BCD osdevice set failed - {default} entry may not exist: $($setOsDeviceResult.Output)"
+        $needsRetry = $true
+    }
+    
+    # If we got "invalid entry type" errors, create the entry and retry
+    if ($needsRetry) {
+        $actions += ""
+        $actions += "Step 3a: Creating {default} entry and retrying..."
+        $createEntryResult = Create-BCDDefaultEntry -BcdStore $bcdStore -TargetDrive $TargetDrive
+        $actions += $createEntryResult.Actions
+        
+        if ($createEntryResult.Success) {
+            Start-Sleep -Milliseconds 500
+            # Retry setting properties
+            $actions += "Step 3b: Retrying BCD property settings..."
+            $setPathResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments $pathArgs -TimeoutSeconds 15 -Description "Set BCD path (retry)"
+            $setDeviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments $deviceArgs -TimeoutSeconds 15 -Description "Set BCD device (retry)"
+            $setOsDeviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments $osdeviceArgs -TimeoutSeconds 15 -Description "Set BCD osdevice (retry)"
+        }
+    }
     
     if ($setPathResult.ExitCode -eq 0 -and $setDeviceResult.ExitCode -eq 0 -and $setOsDeviceResult.ExitCode -eq 0) {
         $actions += "✓ BCD path, device, and osdevice set successfully"
