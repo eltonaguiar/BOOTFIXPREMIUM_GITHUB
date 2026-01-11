@@ -2843,6 +2843,16 @@ function Repair-BCDBruteForce {
     # If BCD is missing, we MUST use bcdboot to CREATE it first
     # NEW: Also try to recover from WinPE X: drive
     $actions += "Step 1: Checking if BCD exists..."
+    
+    # First check if the BCD file actually exists on disk
+    $bcdFileExists = Test-Path $bcdPath -ErrorAction SilentlyContinue
+    if (-not $bcdFileExists) {
+        $actions += "❌ BCD file missing at: $bcdPath"
+    } else {
+        $actions += "✓ BCD file exists at: $bcdPath"
+    }
+    
+    # Then try to enumerate it to see if it's readable and has {default} entry
     $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD existence"
     
     # Check for various error conditions
@@ -2907,20 +2917,51 @@ function Repair-BCDBruteForce {
                     $actions += "   Attempting manual BCD creation..."
                 }
             } else {
-                # No ESP letter - try bcdboot to system BCD
+                # No ESP letter - try bcdboot to system BCD (creates C:\Boot\BCD)
+                $actions += "No ESP detected - creating system BCD at $bcdPath"
                 $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows") -TimeoutSeconds 30 -Description "Recreate system BCD"
                 if ($rebuildResult.ExitCode -eq 0) {
-                    $actions += "✓ System BCD recreated"
+                    $actions += "✓ System BCD recreated at $bcdPath"
+                    # Verify file was created
+                    Start-Sleep -Milliseconds 1000
+                    if (Test-Path $bcdPath -ErrorAction SilentlyContinue) {
+                        $actions += "✓ Verified BCD file exists at $bcdPath"
+                    } else {
+                        $actions += "⚠ bcdboot reported success but BCD file not found at $bcdPath"
+                    }
                     # After bcdboot, check if {default} entry exists
-                    Start-Sleep -Milliseconds 500
                     $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD after bcdboot"
                     if ($enumCheckResult.Output -match "specified entry type is invalid") {
                         $actions += "⚠ bcdboot created BCD but {default} entry missing - creating it..."
                         $createEntryResult = Create-BCDDefaultEntry -BcdStore "BCD" -TargetDrive $TargetDrive
                         $actions += $createEntryResult.Actions
+                    } elseif ($enumCheckResult.ExitCode -eq 0) {
+                        $actions += "✓ BCD is readable and {default} entry exists"
+                        $bcdExists = $true
                     }
                 } else {
                     $actions += "❌ Failed to recreate system BCD: $($rebuildResult.Output)"
+                    $actions += "   Error details: $($rebuildResult.Error)"
+                    # Try alternative: ensure Boot directory exists and try again
+                    $bootDir = "$TargetDrive`:\Boot"
+                    if (-not (Test-Path $bootDir -ErrorAction SilentlyContinue)) {
+                        try {
+                            New-Item -ItemType Directory -Path $bootDir -Force | Out-Null
+                            $actions += "✓ Created Boot directory: $bootDir"
+                            # Retry bcdboot
+                            $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows") -TimeoutSeconds 30 -Description "Retry recreate system BCD"
+                            if ($rebuildResult.ExitCode -eq 0) {
+                                $actions += "✓ System BCD recreated after creating Boot directory"
+                                Start-Sleep -Milliseconds 1000
+                                if (Test-Path $bcdPath -ErrorAction SilentlyContinue) {
+                                    $actions += "✓ Verified BCD file exists at $bcdPath"
+                                    $bcdExists = $true
+                                }
+                            }
+                        } catch {
+                            $actions += "❌ Failed to create Boot directory: $($_.Exception.Message)"
+                        }
+                    }
                 }
             }
             
@@ -3499,8 +3540,40 @@ function Invoke-BruteForceBootRepair {
                 $actions += "   Error details: $($createResult.Error)"
             }
         } else {
-            $actions += "❌ Cannot create BCD - ESP not available"
-            $actions += "   Solution: Mount ESP first with: mountvol S: /S"
+            # No ESP - try to create system BCD at C:\Boot\BCD
+            $actions += "No ESP detected - attempting to create system BCD at $bcdStore"
+            $createResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$targetDrive`:\Windows") -TimeoutSeconds 60 -Description "Create system BCD"
+            if ($createResult.Success) {
+                $actions += "✓ System BCD created successfully"
+                $bcdExists = $true
+                # Verify file was created
+                Start-Sleep -Milliseconds 1000
+                if (Test-Path $bcdStore -ErrorAction SilentlyContinue) {
+                    $actions += "✓ Verified BCD file exists at $bcdStore"
+                } else {
+                    $actions += "⚠ bcdboot reported success but BCD file not found at $bcdStore"
+                    # Try to ensure Boot directory exists
+                    $bootDir = "$targetDrive`:\Boot"
+                    if (-not (Test-Path $bootDir -ErrorAction SilentlyContinue)) {
+                        try {
+                            New-Item -ItemType Directory -Path $bootDir -Force | Out-Null
+                            $actions += "✓ Created Boot directory: $bootDir"
+                            # Retry bcdboot
+                            $createResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$targetDrive`:\Windows") -TimeoutSeconds 60 -Description "Retry create system BCD")
+                            if ($createResult.Success -and (Test-Path $bcdStore -ErrorAction SilentlyContinue)) {
+                                $actions += "✓ System BCD created after creating Boot directory"
+                                $bcdExists = $true
+                            }
+                        } catch {
+                            $actions += "❌ Failed to create Boot directory: $($_.Exception.Message)"
+                        }
+                    }
+                }
+            } else {
+                $actions += "❌ Failed to create system BCD: $($createResult.Output)"
+                $actions += "   Error details: $($createResult.Error)"
+                $actions += "   Solution: Try manually: bcdboot $targetDrive`:\Windows"
+            }
         }
     }
     
