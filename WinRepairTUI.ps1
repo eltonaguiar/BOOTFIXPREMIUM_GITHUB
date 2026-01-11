@@ -80,6 +80,11 @@
             [string]$SimulationScenario = $null
         )
 
+        # Verify function is available before calling
+        if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
+            throw "Invoke-DefensiveBootRepair function not found. Please ensure DefensiveBootCore.ps1 is loaded."
+        }
+
         $result = Invoke-DefensiveBootRepair -TargetDrive $TargetDrive -Mode "Auto" -DryRun:$DryRun -SimulationScenario $SimulationScenario
         
         # Defensive checks for result properties
