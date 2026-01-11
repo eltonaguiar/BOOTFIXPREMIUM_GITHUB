@@ -543,6 +543,303 @@ function ConvertTo-SafeJson {
     return ConvertToJsonInternal $InputObject $Depth
 }
 
+function New-GUIFailureDiagnosticReport {
+    param(
+        [string]$FailureReason,
+        [string]$ErrorMessage,
+        [string]$InnerException,
+        [string]$StackTrace,
+        [string]$Location,
+        [string]$WpfAvailable = "Unknown",
+        [string]$StaThread = "Unknown",
+        [string]$EnvironmentType = "Unknown"
+    )
+    
+    $logDir = Join-Path $script:MiracleBootRoot "LOGS_MIRACLEBOOT"
+    if (-not (Test-Path $logDir)) { 
+        try { 
+            New-Item -ItemType Directory -Path $logDir -Force | Out-Null 
+        } catch { 
+            $logDir = $env:TEMP
+        }
+    }
+    
+    $reportPath = Join-Path $logDir "GUI_FAILURE_DIAGNOSTIC_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    $report = @()
+    
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "GUI LAUNCH FAILURE - DIAGNOSTIC REPORT"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    $report += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    $report += "This report contains information to help investigate why the GUI failed to launch."
+    $report += ""
+    
+    # SHORT SUMMARY (for quick typing)
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "SHORT SUMMARY (Quick Copy-Paste)"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    $report += "GUI failed: $FailureReason"
+    $report += "Error: $ErrorMessage"
+    if ($Location) {
+        $report += "Location: $Location"
+    }
+    $report += "Environment: $EnvironmentType | WPF: $WpfAvailable | STA: $StaThread"
+    $report += ""
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    
+    # DETAILED INFORMATION
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "DETAILED FAILURE INFORMATION"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    $report += "FAILURE REASON:"
+    $report += "  $FailureReason"
+    $report += ""
+    $report += "ERROR MESSAGE:"
+    $report += "  $ErrorMessage"
+    $report += ""
+    
+    if ($InnerException) {
+        $report += "INNER EXCEPTION:"
+        $report += "  $InnerException"
+        $report += ""
+    }
+    
+    if ($Location) {
+        $report += "FAILURE LOCATION:"
+        $report += "  $Location"
+        $report += ""
+    }
+    
+    if ($StackTrace) {
+        $report += "STACK TRACE:"
+        $report += "  $StackTrace"
+        $report += ""
+    }
+    
+    # SYSTEM INFORMATION
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "SYSTEM INFORMATION"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    
+    try {
+        $report += "Operating System:"
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+        if ($os) {
+            $report += "  Name: $($os.Caption)"
+            $report += "  Version: $($os.Version)"
+            $report += "  Build: $($os.BuildNumber)"
+            $report += "  Architecture: $($os.OSArchitecture)"
+        } else {
+            $report += "  (Could not retrieve OS information)"
+        }
+        $report += ""
+    } catch {
+        $report += "  (OS information retrieval failed: $($_.Exception.Message))"
+        $report += ""
+    }
+    
+    try {
+        $report += "PowerShell Version:"
+        $report += "  $($PSVersionTable.PSVersion)"
+        $report += "  Edition: $($PSVersionTable.PSEdition)"
+        $report += "  Execution Policy: $(Get-ExecutionPolicy -ErrorAction SilentlyContinue)"
+        $report += ""
+    } catch {
+        $report += "  (PowerShell version retrieval failed)"
+        $report += ""
+    }
+    
+    $report += "Environment Type: $EnvironmentType"
+    $report += "WPF Available: $WpfAvailable"
+    $report += "STA Thread: $StaThread"
+    $report += ""
+    
+    try {
+        $report += "System Drive: $env:SystemDrive"
+        $report += "User Profile: $env:USERPROFILE"
+        $report += "Temp Directory: $env:TEMP"
+        $report += ""
+    } catch {
+        $report += "  (Environment variable retrieval failed)"
+        $report += ""
+    }
+    
+    # FILE SYSTEM CHECKS
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "FILE SYSTEM CHECKS"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    
+    $guiFile = Join-Path $script:MiracleBootRoot "WinRepairGUI.ps1"
+    $xamlFile = Join-Path $script:MiracleBootRoot "WinRepairGUI.xaml"
+    
+    $report += "WinRepairGUI.ps1:"
+    if (Test-Path $guiFile) {
+        $guiInfo = Get-Item $guiFile -ErrorAction SilentlyContinue
+        if ($guiInfo) {
+            $report += "  ✓ Found at: $guiFile"
+            $report += "  Size: $($guiInfo.Length) bytes"
+            $report += "  Last Modified: $($guiInfo.LastWriteTime)"
+        } else {
+            $report += "  ✗ File exists but cannot read properties"
+        }
+    } else {
+        $report += "  ✗ NOT FOUND at: $guiFile"
+    }
+    $report += ""
+    
+    $report += "WinRepairGUI.xaml:"
+    if (Test-Path $xamlFile) {
+        $xamlInfo = Get-Item $xamlFile -ErrorAction SilentlyContinue
+        if ($xamlInfo) {
+            $report += "  ✓ Found at: $xamlFile"
+            $report += "  Size: $($xamlInfo.Length) bytes"
+            $report += "  Last Modified: $($xamlInfo.LastWriteTime)"
+        } else {
+            $report += "  ✗ File exists but cannot read properties"
+        }
+    } else {
+        $report += "  ✗ NOT FOUND at: $xamlFile"
+    }
+    $report += ""
+    
+    # WPF ASSEMBLY CHECKS
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "WPF ASSEMBLY CHECKS"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    
+    $wpfAssemblies = @(
+        "PresentationFramework",
+        "PresentationCore",
+        "WindowsBase",
+        "System.Xaml"
+    )
+    
+    foreach ($assembly in $wpfAssemblies) {
+        try {
+            $asm = [System.Reflection.Assembly]::LoadWithPartialName($assembly)
+            if ($asm) {
+                $report += "  ✓ $assembly - Loaded (Version: $($asm.GetName().Version))"
+            } else {
+                $report += "  ✗ $assembly - NOT LOADED"
+            }
+        } catch {
+            $report += "  ✗ $assembly - ERROR: $($_.Exception.Message)"
+        }
+    }
+    $report += ""
+    
+    # LOG FILE LOCATION
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "LOG FILES"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    
+    if ($global:LogPath -and (Test-Path $global:LogPath)) {
+        $report += "Main Log File:"
+        $report += "  $global:LogPath"
+        $logInfo = Get-Item $global:LogPath -ErrorAction SilentlyContinue
+        if ($logInfo) {
+            $report += "  Size: $($logInfo.Length) bytes"
+            $report += "  Last Modified: $($logInfo.LastWriteTime)"
+        }
+    } else {
+        $report += "Main Log File: Not found or not set"
+    }
+    $report += ""
+    
+    $report += "This Diagnostic Report:"
+    $report += "  $reportPath"
+    $report += ""
+    
+    # TROUBLESHOOTING SUGGESTIONS
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "TROUBLESHOOTING SUGGESTIONS"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    
+    if ($WpfAvailable -eq "No") {
+        $report += "WPF is not available. Possible causes:"
+        $report += "  • Running PowerShell Core (pwsh) instead of Windows PowerShell"
+        $report += "  • Missing .NET Framework 4.x or later"
+        $report += "  • Corrupted WPF assemblies"
+        $report += ""
+        $report += "Solutions:"
+        $report += "  1. Try running with: powershell.exe (not pwsh.exe)"
+        $report += "  2. Install/repair .NET Framework 4.8 or later"
+        $report += "  3. Run: sfc /scannow to repair system files"
+        $report += ""
+    }
+    
+    if ($StaThread -eq "No") {
+        $report += "STA thread requirement not met. Possible causes:"
+        $report += "  • Running PowerShell without -Sta parameter"
+        $report += "  • PowerShell Core doesn't support STA mode"
+        $report += ""
+        $report += "Solutions:"
+        $report += "  1. Run with: powershell.exe -Sta -File MiracleBoot.ps1"
+        $report += "  2. Use Windows PowerShell (not PowerShell Core)"
+        $report += ""
+    }
+    
+    if (-not (Test-Path $guiFile)) {
+        $report += "WinRepairGUI.ps1 not found. Possible causes:"
+        $report += "  • File was moved or deleted"
+        $report += "  • Running from wrong directory"
+        $report += ""
+        $report += "Solutions:"
+        $report += "  1. Verify file exists in: $script:MiracleBootRoot"
+        $report += "  2. Re-download MiracleBoot if file is missing"
+        $report += ""
+    }
+    
+    if (-not (Test-Path $xamlFile)) {
+        $report += "WinRepairGUI.xaml not found. Possible causes:"
+        $report += "  • File was moved or deleted"
+        $report += "  • Running from wrong directory"
+        $report += ""
+        $report += "Solutions:"
+        $report += "  1. Verify file exists in: $script:MiracleBootRoot"
+        $report += "  2. Re-download MiracleBoot if file is missing"
+        $report += ""
+    }
+    
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "HOW TO REPORT THIS ISSUE"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    $report += "Please provide the following information when reporting this issue:"
+    $report += ""
+    $report += "1. Copy the 'SHORT SUMMARY' section above (for quick reporting)"
+    $report += "2. OR attach this entire file: $reportPath"
+    $report += "3. Include any additional context about:"
+    $report += "   • What you were trying to do when this happened"
+    $report += "   • Any recent system changes (updates, software installs, etc.)"
+    $report += "   • Whether this is the first time or a recurring issue"
+    $report += ""
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "END OF DIAGNOSTIC REPORT"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    
+    Set-Content -Path $reportPath -Value ($report -join "`r`n") -Encoding UTF8 -Force
+    
+    # Open in Notepad
+    try {
+        Start-Process notepad.exe -ArgumentList "`"$reportPath`""
+    } catch {
+        # If Notepad fails, at least show the path
+        Write-Host "Could not open Notepad. Report saved to: $reportPath" -ForegroundColor Yellow
+    }
+    
+    return $reportPath
+}
+
 function New-DiagnosticReport {
     <#
     .SYNOPSIS
@@ -1315,17 +1612,47 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
     
     # Check 1: WPF availability
     $wpfAvailable = $false
-    try {
-        Add-Type -AssemblyName PresentationFramework -ErrorAction Stop
+    $wpfAvailable = $false
+    $wpfErrors = @()
+    foreach ($asm in @("PresentationFramework","PresentationCore","WindowsBase")) {
+        try {
+            Add-Type -AssemblyName $asm -ErrorAction Stop
+        } catch {
+            $wpfErrors += "${asm}: $($_.Exception.Message)"
+        }
+    }
+    if ($wpfErrors.Count -eq 0) {
         $wpfAvailable = $true
-        Write-ToLog "WPF (PresentationFramework) is available" "INFO"
-        Write-Host "  [CHECK] WPF available: ✓" -ForegroundColor Green
-    } catch {
-        Write-ErrorLog "WPF (PresentationFramework) is NOT available: $($_.Exception.Message)"
-        Write-Host "  [CHECK] WPF available: ✗ - $($_.Exception.Message)" -ForegroundColor Red
+        Write-ToLog "WPF assemblies loaded: PresentationFramework, PresentationCore, WindowsBase" "INFO"
+        Write-Host "  [CHECK] WPF assemblies: ✓" -ForegroundColor Green
+    } else {
+        Write-ErrorLog ("WPF assemblies missing: " + ($wpfErrors -join "; "))
+        Write-Host "  [CHECK] WPF assemblies: ✗ - $($wpfErrors -join '; ')" -ForegroundColor Red
+        # Attempt one-time relaunch into Windows PowerShell STA if currently in pwsh/Core
+        if ($envType -eq 'FullOS' -and $env:MIRACLEBOOT_GUI_RELAUNCH -ne '1') {
+            Write-Host "  [ACTION] Attempting to relaunch in Windows PowerShell (STA) for WPF support..." -ForegroundColor Yellow
+            $env:MIRACLEBOOT_GUI_RELAUNCH = '1'
+            $scriptPath = $PSCommandPath
+            if ([string]::IsNullOrEmpty($scriptPath)) { $scriptPath = $MyInvocation.MyCommand.Path }
+            if (-not [string]::IsNullOrEmpty($scriptPath)) {
+                try {
+                    Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-Sta","-File","`"$scriptPath`"") -WorkingDirectory $script:MiracleBootRoot | Out-Null
+                    exit 0
+                } catch {
+                    Write-ErrorLog "Relaunch to Windows PowerShell (STA) failed: $($_.Exception.Message)"
+                }
+            } else {
+                Write-ErrorLog "Cannot determine script path for relaunch after WPF failure"
+            }
+        }
         Write-Host ""
         Write-Host "GUI cannot launch without WPF support." -ForegroundColor Red
         Write-Host "Falling back to TUI mode..." -ForegroundColor Yellow
+        Write-Host ""
+        
+        # Generate diagnostic report for WPF failure
+        New-GUIFailureDiagnosticReport -FailureReason "WPF assemblies missing or unavailable" -ErrorMessage ($wpfErrors -join "; ") -InnerException $null -StackTrace $null -Location "MiracleBoot.ps1:WPF Check" -WpfAvailable "No" -StaThread $(if ($isSta) { "Yes" } else { "No" }) -EnvironmentType $envType
+        Write-Host "A diagnostic report has been opened in Notepad with full details." -ForegroundColor Cyan
         Write-Host ""
     }
     
@@ -1377,13 +1704,14 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
             Write-ToLog "GUI module found at: $guiModule" "INFO"
             Write-Host "  [LOAD] GUI module: $guiModule" -ForegroundColor Gray
             
-            # Check for XAML file
+            # Check for XAML file (resolve explicitly from root to avoid cwd issues)
             $xamlFile = Join-Path $script:MiracleBootRoot "WinRepairGUI.xaml"
             if (-not (Test-Path -LiteralPath $xamlFile)) {
                 throw "WinRepairGUI.xaml not found at $xamlFile"
             }
             Write-ToLog "XAML file found at: $xamlFile" "INFO"
             Write-Host "  [LOAD] XAML file: $xamlFile" -ForegroundColor Gray
+            $global:LastResolvedXamlPath = $xamlFile
 
             Write-ToLog "Loading GUI module..." "DEBUG"
             . $guiModule
@@ -1426,6 +1754,11 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
                 }
             } catch {
                 Write-ErrorLog "Start-GUI function failed: $($_.Exception.Message)" -Exception $_
+                
+                # Generate and open diagnostic report
+                $innerExMsg = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $null }
+                New-GUIFailureDiagnosticReport -FailureReason "Start-GUI function failed" -ErrorMessage $_.Exception.Message -InnerException $innerExMsg -StackTrace $_.ScriptStackTrace -Location "$($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -WpfAvailable $(if ($wpfAvailable) { "Yes" } else { "No" }) -StaThread $(if ($isSta) { "Yes" } else { "No" }) -EnvironmentType $envType
+                
                 Write-Host ""
                 Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Red
                 Write-Host "║         GUI LAUNCH FAILED - DETAILED ERROR INFORMATION         ║" -ForegroundColor Red
@@ -1439,6 +1772,9 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
                 Write-Host "Stack Trace:" -ForegroundColor Yellow
                 Write-Host $_.ScriptStackTrace -ForegroundColor Gray
                 Write-Host ""
+                Write-Host "A diagnostic report has been opened in Notepad with full details." -ForegroundColor Cyan
+                Write-Host "Please review it and provide the information when reporting this issue." -ForegroundColor Cyan
+                Write-Host ""
                 Write-Host "Falling back to TUI mode..." -ForegroundColor Yellow
                 Write-Host ""
                 throw  # Re-throw to be caught by outer catch
@@ -1451,6 +1787,11 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
         } catch {
             # GUI launch failure - show detailed error
             Write-ErrorLog "GUI launch failed: $($_.Exception.Message)" -Exception $_
+            
+            # Generate and open diagnostic report
+            $innerExMsg = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $null }
+            New-GUIFailureDiagnosticReport -FailureReason "GUI module loading failed" -ErrorMessage $_.Exception.Message -InnerException $innerExMsg -StackTrace $_.ScriptStackTrace -Location "$($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -WpfAvailable $(if ($wpfAvailable) { "Yes" } else { "No" }) -StaThread $(if ($isSta) { "Yes" } else { "No" }) -EnvironmentType $envType
+            
             Write-Host ""
             Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Red
             Write-Host "║         GUI LAUNCH FAILED - DETAILED ERROR INFORMATION         ║" -ForegroundColor Red
@@ -1463,6 +1804,9 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
             Write-Host ""
             Write-Host "Location: $($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -ForegroundColor Yellow
             Write-Host ""
+            Write-Host "A diagnostic report has been opened in Notepad with full details." -ForegroundColor Cyan
+            Write-Host "Please review it and provide the information when reporting this issue." -ForegroundColor Cyan
+            Write-Host ""
             Write-Host "Falling back to TUI mode..." -ForegroundColor Yellow
             Write-Host ""
             Write-Host "Log file: $global:LogPath" -ForegroundColor Gray
@@ -1471,6 +1815,15 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
     } else {
         Write-Host ""
         Write-Host "GUI prerequisites not met. Falling back to TUI mode..." -ForegroundColor Yellow
+        Write-Host ""
+        
+        # Generate diagnostic report for prerequisites failure
+        $prereqFailure = "GUI prerequisites not met"
+        if (-not $wpfAvailable) { $prereqFailure += " - WPF not available" }
+        if (-not $isSta) { $prereqFailure += " - STA thread not available" }
+        
+        New-GUIFailureDiagnosticReport -FailureReason $prereqFailure -ErrorMessage "One or more GUI prerequisites were not met" -InnerException $null -StackTrace $null -Location "MiracleBoot.ps1:Prerequisites Check" -WpfAvailable $(if ($wpfAvailable) { "Yes" } else { "No" }) -StaThread $(if ($isSta) { "Yes" } else { "No" }) -EnvironmentType $envType
+        Write-Host "A diagnostic report has been opened in Notepad with full details." -ForegroundColor Cyan
         Write-Host ""
     }
 } else {

@@ -68,7 +68,21 @@
         Write-Host $result.Output -ForegroundColor Cyan
         Write-Host "`n--- PASTE-BACK BUNDLE ---`n" -ForegroundColor Yellow
         Write-Host $result.Bundle -ForegroundColor Gray
+        
+        # Open comprehensive report in Notepad (if available)
+        if ($result.ReportPath -and (Test-Path $result.ReportPath)) {
+            Write-Host "`nOpening comprehensive repair report in Notepad..." -ForegroundColor Green
+            try {
+                Start-Process notepad.exe -ArgumentList "`"$($result.ReportPath)`""
+            } catch {
+                Write-Host "Could not open Notepad. Report saved to: $($result.ReportPath)" -ForegroundColor Yellow
+            }
+        }
+        
         Write-Host "`nSummary saved to: $summaryPath" -ForegroundColor Yellow
+        if ($result.ReportPath) {
+            Write-Host "Comprehensive report: $($result.ReportPath)" -ForegroundColor Yellow
+        }
         Write-Host "Press any key to continue..." -ForegroundColor Gray
         $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
     }

@@ -1,27 +1,61 @@
-# Backup folders - Local development only
-LAST_KNOWN_WORKING*/
-LAST_KNOWN_WORKING/
-
-# Test logs and temporary files
+# Logs
+LOGS/
+LOGS_MIRACLEBOOT/
 TEST_LOGS/
-test_run.txt
 *.log
+*.txt
+!README*.txt
+!DETAILED_CHANGELOG.txt
+!DOCUMENTATION_INDEX.txt
+
+# Archives
+ARCHIVE/
+
+# Test outputs
+TEST_REPORTS/
+LOG_ANALYSIS/
 
 # Temporary files
 *.tmp
 *.bak
 *.swp
+*~
 
-# IDE and editor files
-.vscode/
-.idea/
-*.code-workspace
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files (keep .vscode if needed, but exclude large extensions)
+.vscode/extensions/
+.cursor/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.egg-info/
+
+# PowerShell
+*.ps1.bak
 
 # System files
-Thumbs.db
-.DS_Store
+NTUSER.DAT*
+ntuser.dat*
+*.regtrans-ms
+*.blf
 
-# Archive files (if any)
-*.zip
-*.tar.gz
-*.rar
+# User-specific
+.lmstudio/
+.pinokio/
+.cache/
+.codex/
+.copilot/
+.gemini/
+
+# Long path issues
+.vscode/extensions/**/node_modules/

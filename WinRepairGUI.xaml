@@ -65,6 +65,21 @@
                 <Separator/>
                 <MenuItem Header="Compact UI" Name="BtnCompactUI" ToolTip="Switch to compact layout for smaller screens"/>
                 <MenuItem Header="Standard UI" Name="BtnStandardUI" ToolTip="Switch to standard layout"/>
+                <Separator/>
+                <MenuItem Name="InterfaceScaleMenuItem">
+                    <MenuItem.Header>
+                        <TextBlock Text="Interface Scale"/>
+                    </MenuItem.Header>
+                    <StackPanel Width="300" Margin="10" Background="White">
+                        <TextBlock Text="Make interface elements bigger or smaller" TextWrapping="Wrap" Margin="0,0,0,10" Foreground="Gray" FontSize="11"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <TextBlock Text="Small" VerticalAlignment="Center" Margin="0,0,10,0" FontSize="11" Foreground="Gray"/>
+                            <Slider Name="InterfaceScaleSlider" Width="200" Minimum="0.5" Maximum="2.0" Value="1.0" TickFrequency="0.1" IsSnapToTickEnabled="True" VerticalAlignment="Center"/>
+                            <TextBlock Text="Big" VerticalAlignment="Center" Margin="10,0,0,0" FontSize="11" Foreground="Gray"/>
+                        </StackPanel>
+                        <Button Name="BtnInterfaceScaleReset" Content="Reset" Width="80" Height="30" HorizontalAlignment="Right" Background="#6c757d" Foreground="White" ToolTip="Reset interface scale to 100%"/>
+                    </StackPanel>
+                </MenuItem>
             </MenuItem>
         </Menu>
         <Button Name="BtnSwitchToTUI" Width="35" Height="25" Margin="2" ToolTip="Switch to Command Line Mode (TUI)" Background="#2D2D30" Foreground="White" FontFamily="Consolas" FontSize="12" Padding="0" VerticalAlignment="Center">
@@ -320,7 +335,18 @@
             </DockPanel>
         </TabItem>
 
-        <TabItem Header="Boot Fixer">
+        <TabItem>
+            <TabItem.Header>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Boot Fixer"/>
+                    <Button Name="BtnBootFixerInfo" Width="20" Height="20" Margin="5,0,0,0" Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Click for detailed information about Boot Fixer options">
+                        <TextBlock Text="ⓘ" FontSize="14" Foreground="#0078D7" FontWeight="Bold"/>
+                    </Button>
+                    <Button Name="BtnBootFixerNotepad" Width="20" Height="20" Margin="2,0,0,0" Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Open help in Notepad (useful for low resolution screens)">
+                        <TextBlock Text="📄" FontSize="12" Foreground="#28a745"/>
+                    </Button>
+                </StackPanel>
+            </TabItem.Header>
             <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
             <Grid Margin="10">
                 <Grid.RowDefinitions>
@@ -333,7 +359,15 @@
                 <!-- One-Click Repair Button -->
                 <Border Grid.Row="0" Margin="0,0,0,15" Background="#E8F5E9" BorderBrush="#4CAF50" BorderThickness="2">
                     <StackPanel Margin="15">
-                        <TextBlock Text="ONE-CLICK REPAIR" FontSize="18" FontWeight="Bold" Foreground="#2E7D32" Margin="0,0,0,5"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                            <TextBlock Text="ONE-CLICK REPAIR" FontSize="18" FontWeight="Bold" Foreground="#2E7D32"/>
+                            <Button Name="BtnOneClickInfo" Width="20" Height="20" Margin="5,0,0,0" Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Click for information about One-Click Repair options">
+                                <TextBlock Text="ⓘ" FontSize="14" Foreground="#2E7D32" FontWeight="Bold"/>
+                            </Button>
+                            <Button Name="BtnOneClickNotepad" Width="20" Height="20" Margin="2,0,0,0" Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Open help in Notepad">
+                                <TextBlock Text="📄" FontSize="12" Foreground="#28a745"/>
+                            </Button>
+                        </StackPanel>
                         <TextBlock Text="Automatically diagnose and repair common boot issues. Perfect for non-technical users." TextWrapping="Wrap" Foreground="#1B5E20" Margin="0,0,0,10"/>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,5" VerticalAlignment="Center">
                             <TextBlock Text="Target drive:" VerticalAlignment="Center" Foreground="#2E7D32" Margin="0,0,8,0"/>
@@ -347,18 +381,28 @@
                                 <ComboBoxItem Content="bcd_missing"/>
                                 <ComboBoxItem Content="storage_driver_missing"/>
                             </ComboBox>
-                            <CheckBox Name="ChkDryRun" Content="Dry Run (plan only)" IsChecked="True" VerticalAlignment="Center" FontWeight="Bold" Foreground="#d78700"/>
+                            <ComboBox Name="RepairModeCombo" Width="220" Height="50" VerticalContentAlignment="Center" Margin="0,0,10,0">
+                                <ComboBoxItem Content="Preview Only (Dry Run)" IsSelected="True" Tag="DryRun"/>
+                                <ComboBoxItem Content="Execute Repairs" Tag="Execute"/>
+                                <ComboBoxItem Content="Brute Force Mode" Tag="BruteForce"/>
+                            </ComboBox>
                         </StackPanel>
                         <TextBlock Name="TxtOneClickStatus" Text="Click the button above to start automated repair" TextWrapping="Wrap" Foreground="#2E7D32" Margin="0,5,0,0" FontStyle="Italic"/>
                     </StackPanel>
                 </Border>
                 
-                <StackPanel Grid.Row="1" Margin="0,0,0,10">
-                    <CheckBox Name="ChkTestMode" Content="Test Mode (Preview commands only - will not execute)" IsChecked="True" FontWeight="Bold" Foreground="#d78700" Margin="5"/>
-                    <TextBlock Text="When Test Mode is enabled, commands are displayed but not executed. Uncheck to apply fixes." Foreground="Gray" Margin="5,0,0,5" TextWrapping="Wrap"/>
-                </StackPanel>
-                
-                <GroupBox Grid.Row="1" Header="Boot Repair Operations" Margin="5">
+                <GroupBox Grid.Row="1" Margin="5">
+                    <GroupBox.Header>
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="Boot Repair Operations"/>
+                            <Button Name="BtnBootOpsInfo" Width="20" Height="20" Margin="5,0,0,0" Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Click for information about Boot Repair Operations">
+                                <TextBlock Text="ⓘ" FontSize="14" Foreground="#0078D7" FontWeight="Bold"/>
+                            </Button>
+                            <Button Name="BtnBootOpsNotepad" Width="20" Height="20" Margin="2,0,0,0" Background="Transparent" BorderThickness="0" Cursor="Hand" ToolTip="Open help in Notepad">
+                                <TextBlock Text="📄" FontSize="12" Foreground="#28a745"/>
+                            </Button>
+                        </StackPanel>
+                    </GroupBox.Header>
                     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
 <StackPanel Margin="10">
                             <Button Content="1. Rebuild BCD from Windows Installation" Height="40" Name="BtnRebuildBCD" Background="#0078D7" Foreground="White" FontWeight="Bold" Margin="0,5"/>

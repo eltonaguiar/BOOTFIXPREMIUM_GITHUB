@@ -1,4 +1,4 @@
-<#
+﻿<#
     MIRACLE BOOT – WPF GRAPHICAL USER INTERFACE (GUI)
     ==================================================
 
@@ -88,15 +88,26 @@
           gate actions if certain capabilities are missing (e.g. network, browser).
 #>
 
-Add-Type -AssemblyName PresentationFramework
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName Microsoft.VisualBasic
+try { Add-Type -AssemblyName PresentationFramework -ErrorAction Stop } catch {}
+try { Add-Type -AssemblyName PresentationCore -ErrorAction Stop } catch {}
+try { Add-Type -AssemblyName WindowsBase -ErrorAction Stop } catch {}
+try { Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop } catch {}
+try { Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop } catch {}
 
 # Load Defensive Boot Core
 try {
     $corePath = Join-Path $PSScriptRoot "DefensiveBootCore.ps1"
-    if (Test-Path $corePath) { . $corePath }
-} catch { }
+    if (Test-Path $corePath) { 
+        . $corePath 
+        if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
+            Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-DefensiveBootRepair function not found"
+        }
+    } else {
+        Write-Warning "DefensiveBootCore.ps1 not found at $corePath - One-Click Repair may not work"
+    }
+} catch { 
+    Write-Warning "Failed to load DefensiveBootCore.ps1: $_ - One-Click Repair may not work"
+}
 
 # Compute and cache a stable script root for all event handlers (UI contexts can null MyInvocation.Path)
 $script:ScriptRootSafe = $PSScriptRoot
@@ -1901,6 +1912,12 @@ function Update-Zoom {
                 if ($zoomLevelControl) {
                     $zoomLevelControl.Text = "{0}%" -f [math]::Round($script:ZoomLevel * 100)
                 }
+                
+                # Sync interface scale slider if it exists
+                $interfaceScaleSlider = Get-Control -Name "InterfaceScaleSlider" -Silent
+                if ($interfaceScaleSlider) {
+                    $interfaceScaleSlider.Value = $script:ZoomLevel
+                }
             }
         } catch {
             Write-Warning "Error applying zoom: $_"
@@ -2025,6 +2042,9 @@ try {
 # Populate drive combo (with null checks)
 try {
     $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Sort-Object DriveLetter
+    # Ensure $volumes is always an array
+    if ($null -eq $volumes) { $volumes = @() }
+    if ($volumes -isnot [array]) { $volumes = @($volumes) }
     $currentSystemDrive = $env:SystemDrive.TrimEnd(':')
     $driveCombo = Get-Control "DriveCombo"
     if ($driveCombo) {
@@ -2874,7 +2894,7 @@ function Invoke-BCDRefresh {
         }
 
         # Check for duplicates
-        $duplicates = Find-DuplicateBCEEntries
+        $duplicates = @() + (Find-DuplicateBCEEntries)
         if ($duplicates) {
             $dupNames = ($duplicates | ForEach-Object { "'$($_.Name)'" }) -join ", "
             $result = Show-MessageBoxSafe -Message (
@@ -2882,8 +2902,8 @@ function Invoke-BCDRefresh {
             ) -Title "Duplicate Entries Detected" -Button ([System.Windows.MessageBoxButton]::YesNo) -Icon ([System.Windows.MessageBoxImage]::Question)
             if ($result -eq [System.Windows.MessageBoxResult]::Yes) {
                 $fixed = Fix-DuplicateBCEEntries -AppendVolumeLabels
-                if ($fixed.Count -gt 0) {
-                    Show-MessageBoxSafe -Message "Fixed $($fixed.Count) duplicate entry name(s)." -Title "Success" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Information)
+                if (@($fixed).Count -gt 0) {
+                    Show-MessageBoxSafe -Message "Fixed $(@($fixed).Count) duplicate entry name(s)." -Title "Success" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Information)
                     # Reload BCD
                     if ($ButtonControl) {
                         $ButtonControl.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
@@ -2893,8 +2913,8 @@ function Invoke-BCDRefresh {
             }
         }
 
-        $defaultCount = ($bcdItems | Where-Object { $_.IsDefault }).Count
-        $statusMsg = "Loaded $($bcdItems.Count) BCD entries"
+        $defaultCount = (@($bcdItems | Where-Object { $_.IsDefault })).Count
+        $statusMsg = "Loaded $(@($bcdItems).Count) BCD entries"
         if ($defaultCount -gt 0) {
             $statusMsg += " (1 default entry marked)"
         }
@@ -2902,8 +2922,8 @@ function Invoke-BCDRefresh {
             Update-StatusBar -Message $statusMsg -HideProgress
         }
 
-        if (-not $duplicates) {
-            Show-MessageBoxSafe -Message ("Loaded $($bcdItems.Count) BCD entries." + $(if ($defaultCount -gt 0) { "`n`nDefault boot entry is marked with [DEFAULT]." } else { "" })) -Title "Success" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Information)
+        if (-not $duplicates -or @($duplicates).Count -eq 0) {
+            Show-MessageBoxSafe -Message ("Loaded $(@($bcdItems).Count) BCD entries." + $(if ($defaultCount -gt 0) { "`n`nDefault boot entry is marked with [DEFAULT]." } else { "" })) -Title "Success" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Information)
         }
     } catch {
         $errorMsg = $_.Exception.Message
@@ -4626,7 +4646,7 @@ if ($btnOneClickRepair) {
     $btnOneClickRepair.Add_Click({
         $txtOneClickStatus = Get-Control -Name "TxtOneClickStatus"
         $fixerOutput = Get-Control -Name "FixerOutput"
-        $chkDryRun = Get-Control -Name "ChkDryRun"
+        $repairModeCombo = Get-Control -Name "RepairModeCombo"
         $simulateCombo = Get-Control -Name "SimulateIssueCombo"
         $oneClickDriveCombo = Get-Control -Name "OneClickDriveCombo"
         $targetDrive = $env:SystemDrive.TrimEnd(':')
@@ -4656,11 +4676,98 @@ if ($btnOneClickRepair) {
             $val = $simulateCombo.SelectedItem.ToString()
             if ($val -and $val -ne "None") { $simulationScenario = $val }
         }
-        $dryRunFlag = $false
-        if ($chkDryRun) { $dryRunFlag = [bool]$chkDryRun.IsChecked }
-
+        # IMPORTANT: Even if "None" is selected, we still analyze and fix real issues
+        # The simulation scenario only affects testing, not actual repair behavior
+        
+        # Determine repair mode from combo box
+        $dryRunFlag = $true  # Default to safe mode
+        $repairMode = "DryRun"
+        $bruteForceMode = $false
+        if ($repairModeCombo -and $repairModeCombo.SelectedItem) {
+            $selectedItem = $repairModeCombo.SelectedItem
+            if ($selectedItem.Tag -eq "Execute") {
+                $repairMode = "Execute"
+                $dryRunFlag = $false
+            } elseif ($selectedItem.Tag -eq "BruteForce") {
+                $repairMode = "BruteForce"
+                $dryRunFlag = $false
+                $bruteForceMode = $true
+            }
+        }
+        
+        # Build command preview
+        $commandsToRun = @()
+        if ($bruteForceMode) {
+            $commandsToRun += "Invoke-BruteForceBootRepair -TargetDrive $targetDrive"
+            $commandsToRun += "  -ExtractFromWim"
+            $commandsToRun += "  -MaxRetries 3"
+        } else {
+            $commandsToRun += "Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode Auto"
+            if ($simulationScenario) {
+                $commandsToRun += "  -SimulationScenario $simulationScenario"
+            }
+            if ($dryRunFlag) {
+                $commandsToRun += "  -DryRun"
+            }
+        }
+        
+        # Show command preview and get confirmation
+        $previewText = "COMMANDS THAT WILL BE RUN:`n`n"
+        $previewText += ($commandsToRun -join "`n") + "`n`n"
+        
+        if ($bruteForceMode) {
+            $previewText += "⚠ BRUTE FORCE MODE - AGGRESSIVE REPAIR:`n"
+            $previewText += "This will execute the following aggressive operations:`n"
+            $previewText += "  1. Search ALL drives for winload.efi sources`n"
+            $previewText += "  2. Extract from install.wim if no source found`n"
+            $previewText += "  3. Try MULTIPLE copy methods with retries`n"
+            $previewText += "  4. VERIFY file integrity after each copy attempt`n"
+            $previewText += "  5. Rebuild BCD completely if standard repair fails`n"
+            $previewText += "  6. COMPREHENSIVE verification of all boot files`n`n"
+            $previewText += "⚠ WARNING: This mode is more aggressive and will:`n"
+            $previewText += "  - Try multiple copy methods (Copy-Item, robocopy, xcopy, .NET)`n"
+            $previewText += "  - Retry failed operations up to 3 times`n"
+            $previewText += "  - Extract from install.wim if needed`n"
+            $previewText += "  - Rebuild BCD completely if needed`n"
+            $previewText += "  - Verify EVERYTHING after repair`n`n"
+            $previewText += "A BCD backup will be created before any modifications.`n`n"
+        } else {
+            $previewText += "This will execute the following operations:`n"
+            $previewText += "  1. Diagnose boot issues on drive $targetDrive`:`n"
+            $previewText += "  2. Check for missing winload.efi`n"
+            $previewText += "  3. Verify BCD configuration`n"
+            $previewText += "  4. Check storage drivers`n"
+            $previewText += "  5. Attempt automatic repairs (if enabled)`n`n"
+            
+            if ($dryRunFlag) {
+                $previewText += "⚠ PREVIEW MODE: Commands will be displayed but NOT executed.`n"
+                $previewText += "No changes will be made to your system.`n`n"
+            } else {
+                $previewText += "⚠ EXECUTE MODE: Commands will be executed and changes will be made.`n"
+                $previewText += "A BCD backup will be created before any modifications.`n`n"
+            }
+        }
+        
+        $previewText += "Do you want to proceed?"
+        
+        $confirmExecute = [System.Windows.MessageBox]::Show(
+            $previewText,
+            "Command Preview - One-Click Repair" + $(if ($bruteForceMode) { " (BRUTE FORCE MODE)" } else { "" }),
+            "YesNo",
+            $(if ($dryRunFlag) { "Question" } else { "Warning" })
+        )
+        
+        if ($confirmExecute -eq "No") {
+            if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Repair canceled by user." }
+            return
+        }
+        
         try {
-            $result = Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag
+            if ($bruteForceMode) {
+                $result = Invoke-BruteForceBootRepair -TargetDrive $targetDrive -ExtractFromWim:$true -MaxRetries 3
+            } else {
+                $result = Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag
+            }
             if ($fixerOutput) {
                 $fixerOutput.Text = $result.Output + "`n`n" + $result.Bundle
                 $fixerOutput.ScrollToEnd()
@@ -4669,7 +4776,18 @@ if ($btnOneClickRepair) {
             if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Path $summaryDir -Force | Out-Null }
             $summaryPath = Join-Path $summaryDir ("OneClick_GUI_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
             Set-Content -Path $summaryPath -Value ($result.Output + "`n`n" + $result.Bundle) -Encoding UTF8 -Force
-            if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Completed. Verdict: " + $(if ($result.Bootable) { "Likely bootable" } else { "Will not boot" }) }
+            
+            # Comprehensive report is already opened in Notepad by DefensiveBootCore
+            # But show status about it
+            if ($result.ReportPath) {
+                if ($txtOneClickStatus) { 
+                    $statusText = "Completed. Verdict: " + $(if ($result.Bootable) { "Likely bootable" } else { "Will not boot" })
+                    $statusText += "`nComprehensive report opened in Notepad."
+                    $txtOneClickStatus.Text = $statusText
+                }
+            } else {
+                if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Completed. Verdict: " + $(if ($result.Bootable) { "Likely bootable" } else { "Will not boot" }) }
+            }
             Update-StatusBar -Message "One-Click Repair: Complete" -HideProgress
         } catch {
             if ($txtOneClickStatus) { $txtOneClickStatus.Text = "❌ Error: $($_.Exception.Message)" }
@@ -4679,7 +4797,7 @@ if ($btnOneClickRepair) {
             $btnOneClickRepair.IsEnabled = $true
         }
         return
-<# LEGACY ONE-CLICK BLOCK (deprecated; superseded by DefensiveBootCore) 
+        <# LEGACY ONE-CLICK BLOCK (deprecated; superseded by DefensiveBootCore) 
         # BitLocker status check
         $bitlockerLocked = $false
         try {
@@ -4805,9 +4923,9 @@ if ($btnOneClickRepair) {
             $null = $summaryBuilder.AppendLine("Step 2/5: Storage driver check...")
             
             $controllers = Get-StorageControllers -WindowsDrive $drive
-            $bootCriticalMissing = $controllers | Where-Object {
+            $bootCriticalMissing = @($controllers | Where-Object {
                 (-not $_.DriverLoaded) -and ($_.ControllerType -match 'VMD|RAID|NVMe|SATA|AHCI|SAS')
-            }
+            })
             # If nothing boot-critical is missing, still show any missing drivers (but less noisy)
             $missingDrivers = if ($bootCriticalMissing.Count -gt 0) { $bootCriticalMissing } else { @() }
             if ($missingDrivers.Count -eq 0) {
@@ -5217,8 +5335,6 @@ if ($btnOneClickRepair) {
             }
 
             Update-StatusBar -Message "One-Click Repair: Complete" -HideProgress
-            
-        #> 
         } catch {
             if ($txtOneClickStatus) {
                 $txtOneClickStatus.Text = "❌ Error: $($_.Exception.Message)"
@@ -5260,14 +5376,21 @@ if ($btnOneClickRepair) {
                 # ignore message box failures
             }
         }
+        #>
     })
 }
 
 # Boot Fixer Functions - Enhanced with detailed command info
 function Show-CommandPreview {
-    param($Command, $Key, $Description)
-    $chkTestMode = Get-Control -Name "ChkTestMode"
-    $testMode = if ($chkTestMode) { $chkTestMode.IsChecked } else { $false }
+    param($Command, $Key, $Description, $AdditionalCommands = @())
+    $repairModeCombo = Get-Control -Name "RepairModeCombo"
+    $testMode = $true  # Default to safe mode
+    if ($repairModeCombo -and $repairModeCombo.SelectedItem) {
+        $selectedItem = $repairModeCombo.SelectedItem
+        if ($selectedItem.Tag -eq "Execute") {
+            $testMode = $false
+        }
+    }
     $cmdInfo = Get-DetailedCommandInfo $Key
     
     $output = ">>> ANALYSIS REPORT`n"
@@ -5283,17 +5406,63 @@ function Show-CommandPreview {
         $output += "  $($cmdInfo.What)`n`n"
     }
     
+    # Show all commands that will run
+    $allCommands = @($Command)
+    if ($AdditionalCommands.Count -gt 0) {
+        $allCommands += $AdditionalCommands
+    }
+    
+    if ($allCommands.Count -gt 1) {
+        $output += "COMMAND SEQUENCE (will run in order):`n"
+        for ($i = 0; $i -lt $allCommands.Count; $i++) {
+            $output += "  $($i + 1). $($allCommands[$i])`n"
+        }
+        $output += "`n"
+    }
+    
     if ($testMode) {
-        $output += "--- [TEST MODE ACTIVE: NO CHANGES WILL BE MADE] ---`n"
-        $output += "Uncheck 'Test Mode' to execute this command.`n"
+        $output += "--- [PREVIEW MODE: NO CHANGES WILL BE MADE] ---`n"
+        $output += "Select 'Execute Repairs' mode to run these commands.`n"
     } else {
-        $output += "--- [EXECUTING COMMAND] ---`n"
+        $output += "--- [EXECUTE MODE: COMMANDS WILL BE RUN] ---`n"
+        $output += "⚠ WARNING: This will make changes to your system.`n"
     }
     
     $fixerOutput = Get-Control -Name "FixerOutput"
     if ($fixerOutput) {
         $fixerOutput.Text = $output
         $fixerOutput.ScrollToEnd()
+    }
+    
+    # If in Execute mode, show confirmation dialog
+    if (-not $testMode) {
+        $confirmText = "EXECUTE COMMAND?`n`n"
+        $confirmText += "Command: $Command`n"
+        if ($allCommands.Count -gt 1) {
+            $confirmText += "`nThis will execute $($allCommands.Count) commands in sequence:`n"
+            for ($i = 0; $i -lt $allCommands.Count; $i++) {
+                $confirmText += "  $($i + 1). $($allCommands[$i])`n"
+            }
+        }
+        $confirmText += "`n⚠ WARNING: This will make changes to your system.`n"
+        $confirmText += "A BCD backup will be created before modifications.`n`n"
+        $confirmText += "Do you want to proceed?"
+        
+        $confirm = [System.Windows.MessageBox]::Show(
+            $confirmText,
+            "Confirm Command Execution",
+            "YesNo",
+            "Warning"
+        )
+        
+        if ($confirm -eq "No") {
+            if ($fixerOutput) {
+                $fixerOutput.Text += "`n[USER CANCELED] Command execution canceled by user.`n"
+                $fixerOutput.ScrollToEnd()
+            }
+            Update-StatusBar -Message "Command execution canceled" -HideProgress
+            return $true  # Return testMode = true to prevent execution
+        }
     }
     
     return $testMode
@@ -5404,6 +5573,7 @@ if ($btnFixBoot) {
     }
     
     $command = "bootrec /fixboot"
+    $additionalCommands = @("bootrec /fixmbr", "bootrec /rebuildbcd")
     $cmdInfo = Get-DetailedCommandInfo "fixboot"
     
     $displayText = "COMMAND: $command`nAlso runs: bootrec /fixmbr`nAlso runs: bootrec /rebuildbcd`n`n"
@@ -5416,7 +5586,7 @@ if ($btnFixBoot) {
         $TxtFixBoot.Text = $displayText
     }
     
-    $testMode = Show-CommandPreview $command "fixboot" "Fix Boot Files (bootrec)"
+    $testMode = Show-CommandPreview $command "fixboot" "Fix Boot Files (bootrec)" $additionalCommands
     
     if (-not $testMode) {
         # Show comprehensive warning
@@ -7860,17 +8030,54 @@ $btnZoomReset = Get-Control -Name "BtnZoomReset" -Silent
 if ($btnZoomIn) {
     $btnZoomIn.Add_Click({
         Update-Zoom -NewZoom ($script:ZoomLevel + 0.1)
+        # Sync slider if it exists
+        $interfaceScaleSlider = Get-Control -Name "InterfaceScaleSlider" -Silent
+        if ($interfaceScaleSlider) {
+            $interfaceScaleSlider.Value = $script:ZoomLevel
+        }
     })
 }
 
 if ($btnZoomOut) {
     $btnZoomOut.Add_Click({
         Update-Zoom -NewZoom ($script:ZoomLevel - 0.1)
+        # Sync slider if it exists
+        $interfaceScaleSlider = Get-Control -Name "InterfaceScaleSlider" -Silent
+        if ($interfaceScaleSlider) {
+            $interfaceScaleSlider.Value = $script:ZoomLevel
+        }
     })
 }
 
 if ($btnZoomReset) {
     $btnZoomReset.Add_Click({
+        Update-Zoom -NewZoom 1.0
+        # Sync slider if it exists
+        $interfaceScaleSlider = Get-Control -Name "InterfaceScaleSlider" -Silent
+        if ($interfaceScaleSlider) {
+            $interfaceScaleSlider.Value = 1.0
+        }
+    })
+}
+
+# Interface Scale Slider (in Settings menu)
+$interfaceScaleSlider = Get-Control -Name "InterfaceScaleSlider" -Silent
+$btnInterfaceScaleReset = Get-Control -Name "BtnInterfaceScaleReset" -Silent
+
+if ($interfaceScaleSlider) {
+    # Initialize slider to current zoom level
+    $interfaceScaleSlider.Value = $script:ZoomLevel
+    
+    # Handle slider value change
+    $interfaceScaleSlider.Add_ValueChanged({
+        $newZoom = $interfaceScaleSlider.Value
+        Update-Zoom -NewZoom $newZoom
+    })
+}
+
+if ($btnInterfaceScaleReset) {
+    $btnInterfaceScaleReset.Add_Click({
+        $interfaceScaleSlider.Value = 1.0
         Update-Zoom -NewZoom 1.0
     })
 }
@@ -7896,6 +8103,356 @@ try {
 } catch {}
 # #endregion agent log
 
+# ============================================================================
+# BOOT FIXER INFORMATION ICONS
+# ============================================================================
+
+function New-BootFixerHelpDocument {
+    $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+    if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
+    
+    $docPath = Join-Path $logDir "BOOT_FIXER_HELP_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    $doc = @()
+    
+    $doc += "================================================================================="
+    $doc += "BOOT FIXER - COMPREHENSIVE HELP GUIDE"
+    $doc += "================================================================================="
+    $doc += ""
+    $doc += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    $doc += ""
+    
+    $doc += "================================================================================="
+    $doc += "ONE-CLICK REPAIR OPTIONS"
+    $doc += "================================================================================="
+    $doc += ""
+    
+    $doc += "TARGET DRIVE DROPDOWN:"
+    $doc += "---------------------------------------------------------------------------------"
+    $doc += "Select the Windows drive you want to repair."
+    $doc += "  • Auto-detects available Windows installations"
+    $doc += "  • Shows drive letter and volume label"
+    $doc += "  • Defaults to your current system drive"
+    $doc += ""
+    
+    $doc += "SIMULATE ISSUE DROPDOWN:"
+    $doc += "─────────────────────────────────────────────────────────────────────────────"
+    $doc += "IMPORTANT: Even if 'None' is selected, the tool will still analyze and fix real issues!"
+    $doc += ""
+    $doc += "Options:"
+    $doc += "  • None (Default)"
+    $doc += "    - Analyzes and fixes ACTUAL issues found on your system"
+    $doc += "    - This is the recommended option for real repairs"
+    $doc += "    - The tool will detect missing winload.efi, BCD problems, etc. automatically"
+    $doc += ""
+    $doc += "  • winload_missing"
+    $doc += "    - Simulates a missing winload.efi scenario for testing"
+    $doc += "    - Use this to test the repair process without affecting your system"
+    $doc += "    - Only for testing/demonstration purposes"
+    $doc += ""
+    $doc += "  • bcd_missing"
+    $doc += "    - Simulates a missing/corrupted BCD scenario for testing"
+    $doc += "    - Use this to test BCD repair procedures"
+    $doc += "    - Only for testing/demonstration purposes"
+    $doc += ""
+    $doc += "  • storage_driver_missing"
+    $doc += "    - Simulates missing storage driver scenario for testing"
+    $doc += "    - Use this to test driver detection and injection procedures"
+    $doc += "    - Only for testing/demonstration purposes"
+    $doc += ""
+    
+    $doc += "REPAIR MODE DROPDOWN:"
+    $doc += "---------------------------------------------------------------------------------"
+    $doc += "Select how aggressive you want the repair to be:"
+    $doc += ""
+    $doc += "  • Preview Only (Dry Run) - Default"
+    $doc += "    - Shows what commands would be run"
+    $doc += "    - Does NOT make any changes to your system"
+    $doc += "    - Safe to use to see what would happen"
+    $doc += "    - Recommended for first-time users"
+    $doc += ""
+    $doc += "  • Execute Repairs"
+    $doc += "    - Actually runs the repair commands"
+    $doc += "    - Makes changes to your system (BCD, boot files, etc.)"
+    $doc += "    - Creates BCD backup before making changes"
+    $doc += "    - Uses standard repair methods"
+    $doc += "    - Recommended for most users"
+    $doc += ""
+    $doc += "  • Brute Force Mode"
+    $doc += "    - Most aggressive repair mode"
+    $doc += "    - Tries multiple copy methods with retries"
+    $doc += "    - Extracts from install.wim if no source found"
+    $doc += "    - Comprehensive verification after repair"
+    $doc += "    - Use when standard repair fails"
+    $doc += "    - WARNING: More aggressive, but also more thorough"
+    $doc += ""
+    
+    $doc += "================================================================================="
+    $doc += "BOOT REPAIR OPERATIONS BUTTONS"
+    $doc += "================================================================================="
+    $doc += ""
+    
+    $doc += "1. REBUILD BCD FROM WINDOWS INSTALLATION"
+    $doc += "---------------------------------------------------------------------------------"
+    $doc += "Command: bcdboot `<drive`>:\Windows /s `<ESP`> /f ALL"
+    $doc += ""
+    $doc += "What it does:"
+    $doc += "  • Rebuilds the Boot Configuration Data (BCD) completely"
+    $doc += "  • Copies boot files to the EFI System Partition (ESP)"
+    $doc += "  • Creates new boot entries for Windows"
+    $doc += ""
+    $doc += "When to use:"
+    $doc += "  • BCD is corrupted or missing"
+    $doc += "  • Boot entries are incorrect"
+    $doc += "  • After fixing winload.efi issues"
+    $doc += ""
+    
+    $doc += "2. FIX BOOT FILES (bootrec /fixboot)"
+    $doc += "---------------------------------------------------------------------------------"
+    $doc += "Commands: bootrec /fixboot, bootrec /fixmbr, bootrec /rebuildbcd"
+    $doc += ""
+    $doc += "What it does:"
+    $doc += "  • Repairs the boot sector"
+    $doc += "  • Fixes the Master Boot Record (MBR)"
+    $doc += "  • Rebuilds BCD entries"
+    $doc += ""
+    $doc += "When to use:"
+    $doc += "  • Boot sector is corrupted"
+    $doc += "  • MBR is damaged"
+    $doc += "  • Boot files are missing or corrupted"
+    $doc += ""
+    
+    $doc += "3. SCAN FOR WINDOWS INSTALLATIONS"
+    $doc += "---------------------------------------------------------------------------------"
+    $doc += "Command: bootrec /scanos"
+    $doc += ""
+    $doc += "What it does:"
+    $doc += "  • Scans all drives for Windows installations"
+    $doc += "  • Lists all found Windows versions"
+    $doc += "  • Shows drive letters and installation paths"
+    $doc += ""
+    $doc += "When to use:"
+    $doc += "  • Need to find all Windows installations"
+    $doc += "  • Multiple Windows versions installed"
+    $doc += "  • Windows not detected automatically"
+    $doc += ""
+    
+    $doc += "4. REBUILD BCD (bootrec /rebuildbcd)"
+    $doc += "---------------------------------------------------------------------------------"
+    $doc += "Command: bootrec /rebuildbcd"
+    $doc += ""
+    $doc += "What it does:"
+    $doc += "  • Rebuilds BCD from scratch"
+    $doc += "  • Scans for Windows installations first"
+    $doc += "  • Adds found installations to BCD"
+    $doc += ""
+    $doc += "When to use:"
+    $doc += "  • BCD is completely corrupted"
+    $doc += "  • Boot entries are missing"
+    $doc += "  • After disk cloning or migration"
+    $doc += ""
+    
+    $doc += "5. SET DEFAULT BOOT ENTRY"
+    $doc += "---------------------------------------------------------------------------------"
+    $doc += "Command: bcdedit /set {default} ..."
+    $doc += ""
+    $doc += "What it does:"
+    $doc += "  • Sets which Windows installation boots by default"
+    $doc += "  • Configures boot entry parameters"
+    $doc += "  • Updates device and osdevice paths"
+    $doc += ""
+    $doc += "When to use:"
+    $doc += "  • Multiple Windows installations"
+    $doc += "  • Wrong Windows version boots"
+    $doc += "  • Need to change default boot entry"
+    $doc += ""
+    
+    $doc += "6. BOOT DIAGNOSIS"
+    $doc += "---------------------------------------------------------------------------------"
+    $doc += "Command: Comprehensive diagnostic scan"
+    $doc += ""
+    $doc += "What it does:"
+    $doc += "  • Runs comprehensive boot diagnosis"
+    $doc += "  • Checks all boot files and BCD"
+    $doc += "  • Identifies boot issues"
+    $doc += "  • Provides detailed report"
+    $doc += ""
+    $doc += "When to use:"
+    $doc += "  • Need to understand boot problems"
+    $doc += "  • Before attempting repairs"
+    $doc += "  • Troubleshooting boot issues"
+    $doc += ""
+    
+    $doc += "================================================================================="
+    $doc += "OTHER BUTTONS"
+    $doc += "================================================================================="
+    $doc += ""
+    $doc += "These buttons are available in other tabs:"
+    $doc += ""
+    $doc += "  • BCD Editor tab: Edit BCD entries manually"
+    $doc += "  • Diagnostics tab: System restore, OS info, etc."
+    $doc += "  • Diagnostics `& Logs tab: View detailed logs"
+    $doc += ""
+    $doc += "For detailed information about other features, check the help icons in those tabs."
+    $doc += ""
+    
+    $doc += "================================================================================="
+    $doc += "TIPS AND BEST PRACTICES"
+    $doc += "================================================================================="
+    $doc += ""
+    $doc += "1. Always start with 'Preview Only (Dry Run)' to see what would happen"
+    $doc += "2. Even with 'None' selected, the tool analyzes and fixes real issues"
+    $doc += "3. Use 'Brute Force Mode' only if standard repair fails"
+    $doc += "4. Run 'Boot Diagnosis' first to understand the problem"
+    $doc += "5. BCD backups are created automatically before repairs"
+    $doc += "6. Check the Command Output box for detailed operation logs"
+    $doc += ""
+    
+    $doc += "================================================================================="
+    $doc += "END OF HELP GUIDE"
+    $doc += "================================================================================="
+    
+    Set-Content -Path $docPath -Value ($doc -join "`r`n") -Encoding UTF8 -Force
+    return $docPath
+}
+
+# Boot Fixer tab info button
+$btnBootFixerInfo = Get-Control -Name "BtnBootFixerInfo"
+if ($btnBootFixerInfo) {
+    $btnBootFixerInfo.Add_Click({
+        $helpDoc = New-BootFixerHelpDocument
+        $helpContent = Get-Content $helpDoc -Raw
+        
+        [System.Windows.MessageBox]::Show(
+            $helpContent,
+            "Boot Fixer - Help Information",
+            "OK",
+            "Information"
+        )
+    })
+}
+
+# Boot Fixer tab notepad button
+$btnBootFixerNotepad = Get-Control -Name "BtnBootFixerNotepad"
+if ($btnBootFixerNotepad) {
+    $btnBootFixerNotepad.Add_Click({
+        $helpDoc = New-BootFixerHelpDocument
+        try {
+            Start-Process notepad.exe -ArgumentList "`"$helpDoc`""
+        } catch {
+            [System.Windows.MessageBox]::Show(
+                "Could not open Notepad. Help document saved to:`n$helpDoc",
+                "Help Document",
+                "OK",
+                "Information"
+            )
+        }
+    })
+}
+
+# One-Click Repair info button
+$btnOneClickInfo = Get-Control -Name "BtnOneClickInfo"
+if ($btnOneClickInfo) {
+    $btnOneClickInfo.Add_Click({
+        $helpText = @"
+ONE-CLICK REPAIR OPTIONS
+
+TARGET DRIVE:
+Select the Windows drive you want to repair. Auto-detects available Windows installations.
+
+SIMULATE ISSUE:
+• None (Default) - Analyzes and fixes ACTUAL issues found on your system
+• winload_missing - Simulates missing winload.efi (testing only)
+• bcd_missing - Simulates missing BCD (testing only)
+• storage_driver_missing - Simulates missing drivers (testing only)
+
+IMPORTANT: Even if 'None' is selected, the tool will still analyze and fix real issues!
+
+REPAIR MODE:
+• Preview Only (Dry Run) - Shows commands, makes no changes
+• Execute Repairs - Actually repairs your system (recommended)
+• Brute Force Mode - Most aggressive, use when standard repair fails
+"@
+        [System.Windows.MessageBox]::Show(
+            $helpText,
+            'One-Click Repair - Help',
+            'OK',
+            'Information'
+        )
+    })
+}
+
+# One-Click Repair notepad button
+$btnOneClickNotepad = Get-Control -Name "BtnOneClickNotepad"
+if ($btnOneClickNotepad) {
+    $btnOneClickNotepad.Add_Click({
+        $helpDoc = New-BootFixerHelpDocument
+        try {
+            Start-Process notepad.exe -ArgumentList "`"$helpDoc`""
+        } catch {
+            [System.Windows.MessageBox]::Show(
+                "Could not open Notepad. Help document saved to:`n$helpDoc",
+                "Help Document",
+                "OK",
+                "Information"
+            )
+        }
+    })
+}
+
+# Boot Repair Operations info button
+$btnBootOpsInfo = Get-Control -Name "BtnBootOpsInfo"
+if ($btnBootOpsInfo) {
+    $btnBootOpsInfo.Add_Click({
+        $helpText = @"
+BOOT REPAIR OPERATIONS
+
+1. REBUILD BCD FROM WINDOWS INSTALLATION
+   Rebuilds BCD completely using bcdboot. Use when BCD is corrupted.
+
+2. FIX BOOT FILES (bootrec /fixboot)
+   Repairs boot sector, MBR, and rebuilds BCD. Use for boot sector issues.
+
+3. SCAN FOR WINDOWS INSTALLATIONS
+   Scans all drives for Windows. Use to find all installations.
+
+4. REBUILD BCD (bootrec /rebuildbcd)
+   Rebuilds BCD from scratch. More aggressive than option 1.
+
+5. SET DEFAULT BOOT ENTRY
+   Sets which Windows boots by default. Use with multiple installations.
+
+6. BOOT DIAGNOSIS
+   Comprehensive diagnostic scan. Run this first to understand problems.
+
+Click any button to see detailed command information and preview.
+"@
+        [System.Windows.MessageBox]::Show(
+            $helpText,
+            "Boot Repair Operations - Help",
+            "OK",
+            "Information"
+        )
+    })
+}
+
+# Boot Repair Operations notepad button
+$btnBootOpsNotepad = Get-Control -Name "BtnBootOpsNotepad"
+if ($btnBootOpsNotepad) {
+    $btnBootOpsNotepad.Add_Click({
+        $helpDoc = New-BootFixerHelpDocument
+        try {
+            Start-Process notepad.exe -ArgumentList "`"$helpDoc`""
+        } catch {
+            [System.Windows.MessageBox]::Show(
+                "Could not open Notepad. Help document saved to:`n$helpDoc",
+                "Help Document",
+                "OK",
+                "Information"
+            )
+        }
+    })
+}
+
 try {
     $W.ShowDialog() | Out-Null
     
@@ -7917,6 +8474,67 @@ try {
     # Log the failure that could cause TUI fallback
     $errorDetails = "Failed to show GUI window: $_`n`nStack Trace: $($_.ScriptStackTrace)"
     Log-GUIFailure -Location "Start-GUI ShowDialog" -Error "Window Display Failed" -Details $errorDetails -Exception $_
+    
+    # Generate and open diagnostic report
+    $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+    if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { $logDir = $env:TEMP } }
+    
+    $reportPath = Join-Path $logDir "GUI_FAILURE_DIAGNOSTIC_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    $report = @()
+    
+    $report += "================================================================================="
+    $report += "GUI WINDOW DISPLAY FAILURE - DIAGNOSTIC REPORT"
+    $report += "================================================================================="
+    $report += ""
+    $report += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    $report += ""
+    
+    $report += "================================================================================="
+    $report += "SHORT SUMMARY (Quick Copy-Paste)"
+    $report += "================================================================================="
+    $report += ""
+    $report += "GUI failed: Window display failed in Start-GUI ShowDialog"
+    $report += "Error: $($_.Exception.Message)"
+    $report += "Location: WinRepairGUI.ps1:ShowDialog"
+    $report += ""
+    $report += "================================================================================="
+    $report += ""
+    
+    $report += "DETAILED ERROR:"
+    $report += "  $($_.Exception.Message)"
+    $report += ""
+    
+    if ($_.Exception.InnerException) {
+        $report += "INNER EXCEPTION:"
+        $report += "  $($_.Exception.InnerException.Message)"
+        $report += ""
+    }
+    
+    $report += "STACK TRACE:"
+    $report += "  $($_.ScriptStackTrace)"
+    $report += ""
+    
+    $report += "SYSTEM INFORMATION:"
+    $report += "  PowerShell Version: $($PSVersionTable.PSVersion)"
+    $report += "  PowerShell Edition: $($PSVersionTable.PSEdition)"
+    $report += "  OS: $(if (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue) { (Get-CimInstance Win32_OperatingSystem).Caption } else { 'Unknown' })"
+    $report += ""
+    
+    $report += "================================================================================="
+    $report += "HOW TO REPORT THIS ISSUE"
+    $report += "================================================================================="
+    $report += ""
+    $report += "Please provide the 'SHORT SUMMARY' section above when reporting this issue."
+    $report += ""
+    
+    Set-Content -Path $reportPath -Value ($report -join "`r`n") -Encoding UTF8 -Force
+    
+    # Open in Notepad
+    try {
+        Start-Process notepad.exe -ArgumentList "`"$reportPath`""
+    } catch {
+        Write-Host "Could not open Notepad. Report saved to: $reportPath" -ForegroundColor Yellow
+    }
     
     # #region agent log
     try {

@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 
 function Get-EnvState {
     $isWinPE = $false
@@ -70,15 +70,2066 @@ function Unmount-EspTemp {
     try { mountvol "$Letter`:\" /D 2>$null } catch { }
 }
 
+# ============================================================================
+# ULTIMATE HARDENING FUNCTIONS
+# ============================================================================
+
+function Resolve-WindowsPath {
+    <#
+    .SYNOPSIS
+    Resolves and normalizes Windows paths with comprehensive validation.
+    
+    .DESCRIPTION
+    Handles drive letter normalization, long paths, special characters, and validates path format.
+    Returns normalized path ready for use in file operations.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Path,
+        
+        [switch]$RequireExists,
+        [switch]$SupportLongPath
+    )
+    
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+    
+    # Normalize drive letter format (ensure colon)
+    if ($Path -match '^([A-Z]):?\\') {
+        $drive = $matches[1]
+        $offset = if ($Path[$drive.Length] -eq ':') { 1 } else { 0 }
+        $Path = "$drive`:" + $Path.Substring($drive.Length + $offset)
+    }
+    
+    # Handle long paths if requested
+    if ($SupportLongPath -and $Path.Length -gt 260 -and -not $Path.StartsWith("\\?\UNC\") -and -not $Path.StartsWith("\\?\")) {
+        if ($Path.StartsWith("\\")) {
+            $Path = "\\?\UNC\" + $Path.Substring(2)
+        } else {
+            $Path = "\\?\" + $Path
+        }
+    }
+    
+    # Normalize separators
+    $Path = $Path -replace '/', '\'
+    $Path = $Path -replace '\\+', '\'
+    
+    # Validate path if required
+    if ($RequireExists) {
+        $exists = $false
+        try {
+            # Try multiple detection methods
+            $exists = Test-Path -LiteralPath $Path -ErrorAction SilentlyContinue
+            if (-not $exists) {
+                # Try Get-Item as fallback
+                try {
+                    $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+                    $exists = ($null -ne $item)
+                } catch { }
+            }
+            if (-not $exists) {
+                # Try .NET File.Exists as last resort
+                try {
+                    $exists = [System.IO.File]::Exists($Path) -or [System.IO.Directory]::Exists($Path)
+                } catch { }
+            }
+        } catch {
+            return $null
+        }
+        
+        if (-not $exists) {
+            return $null
+        }
+    }
+    
+    return $Path
+}
+
+function Test-WinloadExistsComprehensive {
+    <#
+    .SYNOPSIS
+    Comprehensive winload.efi detection using multiple methods.
+    
+    .DESCRIPTION
+    Uses Test-Path, Get-Item, and File.Exists to detect winload.efi.
+    Handles symlinks, junctions, and permission issues.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Path
+    )
+    
+    $resolvedPath = Resolve-WindowsPath -Path $Path -SupportLongPath
+    if (-not $resolvedPath) {
+        return @{ Exists = $false; Method = "Path Resolution Failed"; Details = "Could not resolve path: $Path" }
+    }
+    
+    # Method 1: Test-Path
+    try {
+        $testPathResult = Test-Path -LiteralPath $resolvedPath -ErrorAction Stop
+        if ($testPathResult) {
+            # Verify it's actually a file and not a directory
+            $item = Get-Item -LiteralPath $resolvedPath -ErrorAction SilentlyContinue
+            if ($item -and -not $item.PSIsContainer) {
+                return @{ Exists = $true; Method = "Test-Path"; Details = "File found via Test-Path"; Item = $item }
+            }
+        }
+    } catch {
+        # Continue to next method
+    }
+    
+    # Method 2: Get-Item
+    try {
+        $item = Get-Item -LiteralPath $resolvedPath -ErrorAction Stop
+        if ($item -and -not $item.PSIsContainer) {
+            return @{ Exists = $true; Method = "Get-Item"; Details = "File found via Get-Item"; Item = $item }
+        }
+    } catch {
+        # Continue to next method
+    }
+    
+    # Method 3: .NET File.Exists
+    try {
+        $fileExists = [System.IO.File]::Exists($resolvedPath)
+        if ($fileExists) {
+            $item = Get-Item -LiteralPath $resolvedPath -ErrorAction SilentlyContinue
+            return @{ Exists = $true; Method = "File.Exists"; Details = "File found via File.Exists"; Item = $item }
+        }
+    } catch {
+        # Continue
+    }
+    
+    # Method 4: Check if it's a symlink/junction pointing to valid file
+    try {
+        $item = Get-Item -LiteralPath $resolvedPath -ErrorAction SilentlyContinue
+        if ($item) {
+            $linkType = $item.LinkType
+            if ($linkType) {
+                $target = $item.Target
+                if ($target -and (Test-Path -LiteralPath $target -ErrorAction SilentlyContinue)) {
+                    return @{ Exists = $true; Method = "Symlink/Junction"; Details = "Valid symlink/junction found"; Item = $item; Target = $target }
+                } else {
+                    return @{ Exists = $false; Method = "Symlink/Junction"; Details = "Broken symlink/junction"; Item = $item; Target = $target }
+                }
+            }
+        }
+    } catch {
+        # Continue
+    }
+    
+    return @{ Exists = $false; Method = "All Methods Failed"; Details = "File not found via any detection method" }
+}
+
+function Get-FileHashSafe {
+    <#
+    .SYNOPSIS
+    Safely calculates file hash with error handling.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$FilePath
+    )
+    
+    try {
+        $resolvedPath = Resolve-WindowsPath -Path $FilePath -RequireExists -SupportLongPath
+        if (-not $resolvedPath) {
+            return $null
+        }
+        
+        # Try Get-FileHash first (PowerShell 4+)
+        if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
+            return Get-FileHash -Path $resolvedPath -Algorithm SHA256 -ErrorAction Stop
+        }
+        
+        # Fallback to .NET
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $fileStream = [System.IO.File]::OpenRead($resolvedPath)
+        try {
+            $hashBytes = $sha256.ComputeHash($fileStream)
+            $hashString = [System.BitConverter]::ToString($hashBytes) -replace '-', ''
+            return [pscustomobject]@{
+                Algorithm = "SHA256"
+                Hash = $hashString
+                Path = $resolvedPath
+            }
+        } finally {
+            $fileStream.Close()
+            $sha256.Dispose()
+        }
+    } catch {
+        return $null
+    }
+}
+
+function Test-FileIntegrity {
+    <#
+    .SYNOPSIS
+    Comprehensive file integrity verification.
+    
+    .DESCRIPTION
+    Verifies file exists, has correct size, is readable, and optionally matches hash.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$FilePath,
+        
+        [long]$ExpectedSize = -1,
+        [string]$ExpectedHash = $null,
+        [long]$MinSize = 100000,
+        [long]$MaxSize = 5000000
+    )
+    
+    $result = @{
+        Valid = $false
+        Exists = $false
+        SizeMatch = $false
+        HashMatch = $false
+        Readable = $false
+        SizeReasonable = $false
+        Details = @()
+        FileInfo = $null
+    }
+    
+    # Check existence using comprehensive method
+    $existsCheck = Test-WinloadExistsComprehensive -Path $FilePath
+    $result.Exists = $existsCheck.Exists
+    
+    if (-not $result.Exists) {
+        $result.Details += "File does not exist: $FilePath"
+        return $result
+    }
+    
+    $result.FileInfo = $existsCheck.Item
+    if (-not $result.FileInfo) {
+        try {
+            $result.FileInfo = Get-Item -LiteralPath $FilePath -ErrorAction Stop
+        } catch {
+            $result.Details += "Could not get file info: $($_.Exception.Message)"
+            return $result
+        }
+    }
+    
+    # Check file size
+    $actualSize = $result.FileInfo.Length
+    $result.SizeReasonable = ($actualSize -ge $MinSize -and $actualSize -le $MaxSize)
+    
+    if ($ExpectedSize -gt 0) {
+        $result.SizeMatch = ($actualSize -eq $ExpectedSize)
+        if (-not $result.SizeMatch) {
+            $result.Details += "Size mismatch: Expected $ExpectedSize bytes, got $actualSize bytes"
+        }
+    } else {
+        $result.SizeMatch = $result.SizeReasonable
+    }
+    
+    # Check readability
+    try {
+        $testRead = [System.IO.File]::OpenRead($FilePath)
+        $testRead.Close()
+        $result.Readable = $true
+    } catch {
+        $result.Readable = $false
+        $result.Details += "File not readable: $($_.Exception.Message)"
+    }
+    
+    # Check hash if provided
+    if ($ExpectedHash) {
+        $actualHash = Get-FileHashSafe -FilePath $FilePath
+        if ($actualHash) {
+            $result.HashMatch = ($actualHash.Hash -eq $ExpectedHash)
+            if (-not $result.HashMatch) {
+                $result.Details += "Hash mismatch: Expected $ExpectedHash, got $($actualHash.Hash)"
+            }
+        } else {
+            $result.Details += "Could not calculate file hash"
+        }
+    } else {
+        $result.HashMatch = $true  # No hash to compare
+    }
+    
+    # Overall validity
+    $result.Valid = $result.Exists -and $result.SizeMatch -and $result.Readable -and $result.SizeReasonable -and ($result.HashMatch -or -not $ExpectedHash)
+    
+    if ($result.Valid) {
+        $result.Details += "File integrity verified: $actualSize bytes, readable, size reasonable"
+    }
+    
+    return $result
+}
+
+function Get-WindowsVersionInfo {
+    <#
+    .SYNOPSIS
+    Gets Windows version and architecture information for a drive.
+    
+    .DESCRIPTION
+    Attempts to read version info from registry or system files.
+    Returns version, build number, and architecture.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Drive
+    )
+    
+    $info = @{
+        Version = $null
+        BuildNumber = $null
+        Architecture = $null
+        OSName = $null
+        IsCompatible = $false
+    }
+    
+    try {
+        # Try to load registry hive
+        $systemHive = "$Drive`:\Windows\System32\config\SYSTEM"
+        if (Test-Path $systemHive) {
+            # Try to get info from registry (requires reg.exe or offline registry access)
+            # For now, use file-based detection
+            $sys32Path = "$Drive`:\Windows\System32"
+            
+            # Architecture detection
+            if (Test-Path "$sys32Path\winload.efi") {
+                $info.Architecture = "x64"
+            } elseif (Test-Path "$sys32Path\winload.exe") {
+                $info.Architecture = "x86"
+            } else {
+                # Check for ARM64
+                if (Test-Path "$sys32Path\winloadarm.efi") {
+                    $info.Architecture = "ARM64"
+                } else {
+                    $info.Architecture = "Unknown"
+                }
+            }
+            
+            # Version detection from build number (if available)
+            try {
+                $versionFile = "$Drive`:\Windows\System32\ntoskrnl.exe"
+                if (Test-Path $versionFile) {
+                    $fileVersion = (Get-Item $versionFile -ErrorAction SilentlyContinue).VersionInfo
+                    if ($fileVersion) {
+                        $info.Version = $fileVersion.FileVersion
+                        # Extract build number from version string
+                        if ($fileVersion.FileVersion -match '(\d+\.\d+\.\d+\.\d+)') {
+                            $parts = $matches[1] -split '\.'
+                            if ($parts.Count -ge 3) {
+                                $info.BuildNumber = $parts[2]
+                            }
+                        }
+                    }
+                }
+            } catch { }
+            
+            $info.IsCompatible = ($info.Architecture -ne "Unknown")
+        }
+    } catch {
+        # Fallback: assume compatible if we can't determine
+        $info.IsCompatible = $true
+    }
+    
+    return $info
+}
+
+function Test-VersionCompatibility {
+    <#
+    .SYNOPSIS
+    Tests if source winload.efi is compatible with target Windows installation.
+    
+    .DESCRIPTION
+    Checks architecture match and optionally version compatibility.
+    Returns compatibility score and details.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$SourcePath,
+        
+        [Parameter(Mandatory=$true)]
+        [string]$TargetDrive,
+        
+        [hashtable]$TargetInfo = $null
+    )
+    
+    $result = @{
+        Compatible = $false
+        Score = 0
+        Details = @()
+        Warnings = @()
+    }
+    
+    # Get target info if not provided
+    if (-not $TargetInfo) {
+        $TargetInfo = Get-WindowsVersionInfo -Drive $TargetDrive
+    }
+    
+    # Get source info
+    $sourceDrive = (Split-Path $SourcePath -Qualifier).TrimEnd(':')
+    $sourceInfo = Get-WindowsVersionInfo -Drive $sourceDrive
+    
+    # Architecture compatibility (CRITICAL)
+    if ($sourceInfo.Architecture -eq $TargetInfo.Architecture) {
+        $result.Score += 50
+        $result.Details += "✓ Architecture match: $($sourceInfo.Architecture)"
+    } elseif ($sourceInfo.Architecture -eq "Unknown" -or $TargetInfo.Architecture -eq "Unknown") {
+        $result.Score += 25
+        $result.Warnings += "⚠ Architecture unknown - assuming compatible"
+        $result.Details += "⚠ Architecture detection failed - proceeding with caution"
+    } else {
+        $result.Details += "❌ Architecture mismatch: Source=$($sourceInfo.Architecture), Target=$($TargetInfo.Architecture)"
+        $result.Warnings += "CRITICAL: Architecture mismatch - winload.efi may not work!"
+        return $result  # Architecture mismatch is critical
+    }
+    
+    # Version compatibility (if available)
+    if ($sourceInfo.BuildNumber -and $TargetInfo.BuildNumber) {
+        $sourceBuild = [int]$sourceInfo.BuildNumber
+        $targetBuild = [int]$TargetInfo.BuildNumber
+        
+        # Same build = perfect match
+        if ($sourceBuild -eq $targetBuild) {
+            $result.Score += 30
+            $result.Details += "✓ Build number match: $sourceBuild"
+        }
+        # Within same major version (e.g., both Windows 10 or both Windows 11)
+        elseif (($sourceBuild -lt 22000 -and $targetBuild -lt 22000) -or 
+                ($sourceBuild -ge 22000 -and $targetBuild -ge 22000)) {
+            $result.Score += 20
+            $result.Details += "✓ Same Windows version family (builds: $sourceBuild vs $targetBuild)"
+        }
+        # Different major versions (e.g., Win10 vs Win11)
+        else {
+            $result.Score += 10
+            $result.Warnings += "⚠ Different Windows versions (builds: $sourceBuild vs $targetBuild)"
+            $result.Details += "⚠ Version mismatch: Source build $sourceBuild, Target build $targetBuild"
+        }
+    } else {
+        $result.Score += 20  # Partial credit if we can't determine version
+        $result.Details += "⚠ Version info unavailable - assuming compatible"
+    }
+    
+    # Overall compatibility
+    $result.Compatible = ($result.Score -ge 50)  # At least architecture must match
+    
+    return $result
+}
+
+function Find-WinloadSourceUltimate {
+    <#
+    .SYNOPSIS
+    Ultimate source discovery - searches all possible locations.
+    
+    .DESCRIPTION
+    Searches Windows installations, WinRE, mounted ISOs, network shares, and install.wim.
+    Returns best match with version/architecture validation.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TargetDrive,
+        
+        [string]$TargetVersion = $null,
+        [string]$TargetArchitecture = $null
+    )
+    
+    $sources = @()
+    $actions = @()
+    
+    # Get target Windows info for compatibility checking
+    $targetInfo = Get-WindowsVersionInfo -Drive $TargetDrive
+    $actions += "Target Windows: Architecture=$($targetInfo.Architecture), Build=$($targetInfo.BuildNumber)"
+    
+    $sources = @()
+    $actions = @()
+    
+    # 1. Search all Windows installations
+    $windowsInstalls = Get-WindowsInstallsSafe
+    foreach ($winInstall in $windowsInstalls) {
+        if ($winInstall.Drive -ne "$TargetDrive`:") {
+            $candidatePath = Resolve-WindowsPath -Path "$($winInstall.Drive)\Windows\System32\winload.efi" -SupportLongPath
+            if ($candidatePath) {
+                $existsCheck = Test-WinloadExistsComprehensive -Path $candidatePath
+                if ($existsCheck.Exists) {
+                    $integrity = Test-FileIntegrity -FilePath $candidatePath
+                    if ($integrity.Valid) {
+                        # Check version/architecture compatibility
+                        $compatibility = Test-VersionCompatibility -SourcePath $candidatePath -TargetDrive $TargetDrive -TargetInfo $targetInfo
+                        
+                        $confidence = "HIGH"
+                        if (-not $compatibility.Compatible) {
+                            $confidence = "LOW"
+                            $actions += "⚠ Source in $($winInstall.Drive) has compatibility issues: $($compatibility.Warnings -join '; ')"
+                        } elseif ($compatibility.Score -lt 70) {
+                            $confidence = "MEDIUM"
+                            $actions += "⚠ Source in $($winInstall.Drive) may have version mismatch"
+                        }
+                        
+                        $sources += [pscustomobject]@{
+                            Path = $candidatePath
+                            Source = "WindowsInstall"
+                            Drive = $winInstall.Drive
+                            Size = $integrity.FileInfo.Length
+                            Confidence = $confidence
+                            Integrity = $integrity
+                            Compatibility = $compatibility
+                            CompatibilityScore = $compatibility.Score
+                        }
+                        $actions += "Found winload.efi in $($winInstall.Drive): $($integrity.FileInfo.Length) bytes (verified, compatibility: $($compatibility.Score)/100)"
+                    }
+                }
+            }
+        }
+    }
+    
+    # 2. Search WinRE/current environment (expanded paths)
+    $winrePaths = @(
+        "$env:SystemRoot\System32\winload.efi",
+        "X:\Windows\System32\winload.efi",
+        "X:\sources\boot.wim\Windows\System32\winload.efi",
+        "C:\Windows\System32\winload.efi",  # Current system
+        "D:\Windows\System32\winload.efi",  # Common secondary
+        "E:\Windows\System32\winload.efi"   # Common tertiary
+    )
+    
+    foreach ($winrePath in $winrePaths) {
+        $resolvedPath = Resolve-WindowsPath -Path $winrePath -SupportLongPath
+        if ($resolvedPath) {
+            $existsCheck = Test-WinloadExistsComprehensive -Path $resolvedPath
+            if ($existsCheck.Exists) {
+                $integrity = Test-FileIntegrity -FilePath $resolvedPath
+                if ($integrity.Valid) {
+                    $sources += [pscustomobject]@{
+                        Path = $resolvedPath
+                        Source = "WinRE"
+                        Drive = (Split-Path $resolvedPath -Qualifier)
+                        Size = $integrity.FileInfo.Length
+                        Confidence = "MEDIUM"
+                        Integrity = $integrity
+                    }
+                    $actions += "Found winload.efi in WinRE: $resolvedPath ($($integrity.FileInfo.Length) bytes)"
+                    break
+                }
+            }
+        }
+    }
+    
+    # 3. Search all mounted drives (including removable/USB)
+    $allVolumes = Get-VolumesSafe
+    foreach ($volume in $allVolumes) {
+        $driveLetter = "$($volume.DriveLetter):"
+        if ($driveLetter -ne "$TargetDrive`:" -and $driveLetter -ne "X:") {
+            $candidatePath = Resolve-WindowsPath -Path "$driveLetter\Windows\System32\winload.efi" -SupportLongPath
+            if ($candidatePath) {
+                $existsCheck = Test-WinloadExistsComprehensive -Path $candidatePath
+                if ($existsCheck.Exists) {
+                    $integrity = Test-FileIntegrity -FilePath $candidatePath
+                    if ($integrity.Valid) {
+                        # Check if already in sources
+                        $alreadyFound = $sources | Where-Object { $_.Path -eq $candidatePath }
+                        if (-not $alreadyFound) {
+                            $sources += [pscustomobject]@{
+                                Path = $candidatePath
+                                Source = "MountedDrive"
+                                Drive = $driveLetter
+                                Size = $integrity.FileInfo.Length
+                                Confidence = "MEDIUM"
+                                Integrity = $integrity
+                            }
+                            $actions += "Found winload.efi on mounted drive ${driveLetter}: $($integrity.FileInfo.Length) bytes"
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    # 4. Search for mounted ISOs (check for sources\install.wim)
+    foreach ($volume in $allVolumes) {
+        $driveLetter = "$($volume.DriveLetter):"
+        $wimPath = Resolve-WindowsPath -Path "$driveLetter\sources\install.wim" -SupportLongPath
+        $esdPath = Resolve-WindowsPath -Path "$driveLetter\sources\install.esd" -SupportLongPath
+        
+        if ($wimPath -or $esdPath) {
+            $actions += "Found Windows installation media on $driveLetter (install.wim/esd detected)"
+            # Note: Extraction would be handled by Extract-WinloadFromWim function
+            # This just identifies the source
+        }
+    }
+    
+    # 4. Search network shares (if available and accessible)
+    try {
+        if (Get-Command Get-SmbShare -ErrorAction SilentlyContinue) {
+            $smbShares = Get-SmbShare -ErrorAction SilentlyContinue | Where-Object { $_.PathType -eq "FileSystem" }
+            foreach ($share in $smbShares) {
+                try {
+                    $sharePath = $share.Path
+                    $candidatePath = Resolve-WindowsPath -Path "$sharePath\Windows\System32\winload.efi" -SupportLongPath
+                    if ($candidatePath) {
+                        $existsCheck = Test-WinloadExistsComprehensive -Path $candidatePath
+                        if ($existsCheck.Exists) {
+                            $integrity = Test-FileIntegrity -FilePath $candidatePath
+                            if ($integrity.Valid) {
+                                $compatibility = Test-VersionCompatibility -SourcePath $candidatePath -TargetDrive $TargetDrive -TargetInfo $targetInfo
+                                
+                                $confidence = if ($compatibility.Compatible) { "MEDIUM" } else { "LOW" }
+                                
+                                $sources += [pscustomobject]@{
+                                    Path = $candidatePath
+                                    Source = "NetworkShare"
+                                    Drive = $share.Name
+                                    Size = $integrity.FileInfo.Length
+                                    Confidence = $confidence
+                                    Integrity = $integrity
+                                    Compatibility = $compatibility
+                                    CompatibilityScore = $compatibility.Score
+                                }
+                                $actions += "Found winload.efi on network share '$($share.Name)': $($integrity.FileInfo.Length) bytes"
+                            }
+                        }
+                    }
+                } catch {
+                    # Network share may not be accessible, skip silently
+                }
+            }
+        }
+    } catch {
+        # SMB module may not be available, skip network search
+    }
+    
+    # Return best source (prioritize: compatibility score > confidence > size)
+    if ($sources.Count -gt 0) {
+        $bestSource = $sources | Sort-Object -Property @{
+            Expression = {
+                $score = 0
+                # Compatibility score (0-100)
+                if ($_.CompatibilityScore) { $score += $_.CompatibilityScore * 10 }
+                # Confidence (HIGH=3, MEDIUM=2, LOW=1)
+                $score += switch ($_.Confidence) { "HIGH" { 3 } "MEDIUM" { 2 } "LOW" { 1 } default { 0 } }
+                # Prefer larger files (more likely to be complete)
+                if ($_.Size) { $score += [math]::Min($_.Size / 1000000, 1) }
+                return $score
+            }
+            Descending = $true
+        } | Select-Object -First 1
+        
+        if ($bestSource.Compatibility -and -not $bestSource.Compatibility.Compatible) {
+            $actions += "⚠ WARNING: Best source has compatibility issues - repair may fail!"
+            foreach ($warning in $bestSource.Compatibility.Warnings) {
+                $actions += "  ⚠ $warning"
+            }
+        }
+        
+        return @{
+            Sources = $sources
+            BestSource = $bestSource
+            Actions = $actions
+        }
+    }
+    
+    return @{
+        Sources = @()
+        BestSource = $null
+        Actions = $actions
+    }
+}
+
+function New-ComprehensiveRepairReport {
+    param(
+        [string]$TargetDrive,
+        [array]$CommandHistory,
+        [array]$FailedCommands,
+        [array]$InitialIssues,
+        [array]$RemainingIssues,
+        [array]$Actions,
+        [bool]$Bootable,
+        [bool]$WinloadExists,
+        [bool]$BcdPathMatch,
+        [bool]$BitlockerLocked
+    )
+    
+    $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+    if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
+    
+    $reportPath = Join-Path $logDir "COMPREHENSIVE_REPAIR_REPORT_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    $report = @()
+    
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "COMPREHENSIVE BOOT REPAIR REPORT"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    $report += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    $report += "Target Drive: $TargetDrive`:"
+    $report += ""
+    
+    # CODE RED: FAILED COMMANDS! (at the top)
+    if ($FailedCommands.Count -gt 0) {
+        $report += "═══════════════════════════════════════════════════════════════════════════════"
+        $report += "CODE RED: FAILED COMMANDS!"
+        $report += "═══════════════════════════════════════════════════════════════════════════════"
+        $report += ""
+        $report += "The following commands FAILED during repair:"
+        $report += ""
+        foreach ($failed in $FailedCommands) {
+            $report += "❌ FAILED COMMAND:"
+            $report += "   Time: $($failed.Timestamp)"
+            $report += "   Command: $($failed.Command)"
+            $report += "   Description: $($failed.Description)"
+            if ($failed.TargetDrive) {
+                $report += "   Target Drive: $($failed.TargetDrive):"
+            }
+            $report += "   Exit Code: $($failed.ExitCode)"
+            if ($failed.ErrorOutput) {
+                $report += "   Error Output: $($failed.ErrorOutput)"
+            }
+            $report += ""
+        }
+        $report += "═══════════════════════════════════════════════════════════════════════════════"
+        $report += ""
+    }
+    
+    # Initial Issues
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "INITIAL ISSUES DETECTED"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    if ($InitialIssues.Count -gt 0) {
+        foreach ($issue in $InitialIssues) {
+            $report += "  • $issue"
+        }
+    } else {
+        $report += "  • winload.efi: $(if ($WinloadExists) { 'Present' } else { 'MISSING' })"
+        $report += "  • BCD path match: $(if ($BcdPathMatch) { 'YES' } else { 'NO - MISMATCH' })"
+        $report += "  • BitLocker: $(if ($BitlockerLocked) { 'LOCKED' } else { 'Unlocked or N/A' })"
+    }
+    $report += ""
+    
+    # Commands Executed
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "COMMANDS EXECUTED"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    if ($CommandHistory.Count -gt 0) {
+        foreach ($cmd in $CommandHistory) {
+            $status = if ($cmd.Success) { "✓ SUCCESS" } else { "❌ FAILED" }
+            $report += "$status - $($cmd.Description)"
+            $report += "   Command: $($cmd.Command)"
+            $report += "   Time: $($cmd.Timestamp)"
+            if ($cmd.TargetDrive) {
+                $report += "   Target Drive: $($cmd.TargetDrive):"
+            }
+            if (-not $cmd.Success) {
+                $report += "   Exit Code: $($cmd.ExitCode)"
+                if ($cmd.ErrorOutput) {
+                    $report += "   Error: $($cmd.ErrorOutput)"
+                }
+            }
+            $report += ""
+        }
+    } else {
+        $report += "No commands were executed (DiagnoseOnly or DryRun mode)."
+        $report += ""
+    }
+    
+    # Current Status
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "CURRENT STATUS"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    $report += "Bootability: $(if ($Bootable) { '✅ LIKELY BOOTABLE' } else { '❌ WILL NOT BOOT' })"
+    $report += "  • winload.efi: $(if ($WinloadExists) { 'Present' } else { 'MISSING' })"
+    $report += "  • BCD path match: $(if ($BcdPathMatch) { 'YES' } else { 'NO - MISMATCH' })"
+    $report += "  • BitLocker: $(if ($BitlockerLocked) { 'LOCKED - Unlock required' } else { 'Unlocked or N/A' })"
+    $report += ""
+    
+    # Remaining Issues
+    if (-not $Bootable) {
+        $report += "═══════════════════════════════════════════════════════════════════════════════"
+        $report += "REMAINING ISSUES"
+        $report += "═══════════════════════════════════════════════════════════════════════════════"
+        $report += ""
+        
+        $remainingIssuesList = @()
+        if (-not $WinloadExists) {
+            $remainingIssuesList += "winload.efi is still MISSING at $TargetDrive`:\Windows\System32\winload.efi"
+        }
+        if (-not $BcdPathMatch) {
+            $remainingIssuesList += "BCD does NOT point to winload.efi correctly"
+        }
+        if ($BitlockerLocked) {
+            $remainingIssuesList += "BitLocker is LOCKED - drive must be unlocked before repairs"
+        }
+        
+        if ($RemainingIssues.Count -gt 0) {
+            foreach ($issue in $RemainingIssues) {
+                $remainingIssuesList += $issue
+            }
+        }
+        
+        if ($remainingIssuesList.Count -gt 0) {
+            foreach ($issue in $remainingIssuesList) {
+                $report += "  ❌ $issue"
+            }
+        } else {
+            $report += "  (No specific remaining issues identified)"
+        }
+        $report += ""
+        
+        # Additional Fix Suggestions (NEW commands not already run)
+        $report += "═══════════════════════════════════════════════════════════════════════════════"
+        $report += "ADDITIONAL FIX SUGGESTIONS"
+        $report += "═══════════════════════════════════════════════════════════════════════════════"
+        $report += ""
+        $report += "The following commands were NOT run by the automated repair. Try these manually:"
+        $report += ""
+        
+        $suggestedCommands = @()
+        $executedCommands = $CommandHistory | ForEach-Object { $_.Command }
+        
+        if (-not $WinloadExists) {
+            # Check if we tried DISM extraction
+            $triedDism = $executedCommands | Where-Object { $_ -match "dism.*mount.*wim" }
+            if (-not $triedDism) {
+                $suggestedCommands += @{
+                    Command = "dism /Mount-Wim /WimFile:<ISO_PATH>\sources\install.wim /Index:1 /MountDir:C:\Mount /ReadOnly"
+                    Description = "Extract winload.efi from Windows installation media"
+                    Why = "If no other source was found, extract from install.wim"
+                    ErrorToLookUp = "DISM mount errors, install.wim not found"
+                }
+                $suggestedCommands += @{
+                    Command = "copy C:\Mount\Windows\System32\winload.efi $TargetDrive`:\Windows\System32\winload.efi /Y"
+                    Description = "Copy extracted winload.efi to target"
+                    Why = "After extracting from WIM, copy to target location"
+                    ErrorToLookUp = "Access denied, file in use"
+                }
+            }
+            
+            # Check if we tried SFC
+            $triedSfc = $executedCommands | Where-Object { $_ -match "sfc.*scannow" }
+            if (-not $triedSfc) {
+                $suggestedCommands += @{
+                    Command = "sfc /scannow /offbootdir=$TargetDrive`:\ /offwindir=$TargetDrive`:\Windows"
+                    Description = "System File Checker - repair corrupted system files"
+                    Why = "SFC can restore missing system files including winload.efi"
+                    ErrorToLookUp = "SFC cannot repair, Windows Resource Protection errors"
+                }
+            }
+            
+            # Check if we tried DISM restore health
+            $triedDismRestore = $executedCommands | Where-Object { $_ -match "dism.*restorehealth" }
+            if (-not $triedDismRestore) {
+                $suggestedCommands += @{
+                    Command = "dism /Online /Cleanup-Image /RestoreHealth /Source:<ISO_PATH>\sources\install.wim"
+                    Description = "DISM restore health - repair Windows image"
+                    Why = "DISM can restore corrupted Windows image files"
+                    ErrorToLookUp = "DISM restore health errors, source not found"
+                }
+            }
+        }
+        
+        if (-not $BcdPathMatch) {
+            # Check if we tried bootrec
+            $triedBootrec = $executedCommands | Where-Object { $_ -match "bootrec" }
+            if (-not $triedBootrec) {
+                $suggestedCommands += @{
+                    Command = "bootrec /fixmbr"
+                    Description = "Fix Master Boot Record"
+                    Why = "Can fix MBR issues that prevent BCD from working"
+                    ErrorToLookUp = "bootrec access denied, MBR write errors"
+                }
+                $suggestedCommands += @{
+                    Command = "bootrec /fixboot"
+                    Description = "Fix boot sector"
+                    Why = "Can fix boot sector corruption"
+                    ErrorToLookUp = "bootrec fixboot errors, boot sector locked"
+                }
+            }
+            
+            # Check if we tried rebuilding BCD completely
+            $triedRebuild = $executedCommands | Where-Object { $_ -match "bootrec.*rebuildbcd" }
+            if (-not $triedRebuild) {
+                $suggestedCommands += @{
+                    Command = "bootrec /rebuildbcd"
+                    Description = "Rebuild BCD completely"
+                    Why = "More aggressive BCD rebuild than bcdboot"
+                    ErrorToLookUp = "bootrec rebuildbcd errors, BCD store locked"
+                }
+            }
+        }
+        
+        if ($BitlockerLocked) {
+            $suggestedCommands += @{
+                Command = "manage-bde -unlock $TargetDrive`: -RecoveryPassword <YOUR_48_DIGIT_KEY>"
+                Description = "Unlock BitLocker-encrypted drive"
+                Why = "Drive must be unlocked before any repairs can be applied"
+                ErrorToLookUp = "BitLocker unlock errors, invalid recovery key"
+            }
+            $suggestedCommands += @{
+                Command = "manage-bde -status $TargetDrive`:"
+                Description = "Check BitLocker status"
+                Why = "Verify unlock was successful"
+                ErrorToLookUp = "manage-bde not found, BitLocker service errors"
+            }
+        }
+        
+        # Add disk health checks if not done
+        $triedChkdsk = $executedCommands | Where-Object { $_ -match "chkdsk" }
+        if (-not $triedChkdsk) {
+            $suggestedCommands += @{
+                Command = "chkdsk $TargetDrive`: /f /r"
+                Description = "Check and repair disk errors"
+                Why = "Disk errors can prevent file operations from succeeding"
+                ErrorToLookUp = "chkdsk cannot run, disk is in use, file system errors"
+            }
+        }
+        
+        if ($suggestedCommands.Count -gt 0) {
+            foreach ($suggestion in $suggestedCommands) {
+                $report += "Command: $($suggestion.Command)"
+                $report += "  Purpose: $($suggestion.Description)"
+                $report += "  Why try this: $($suggestion.Why)"
+                if ($suggestion.ErrorToLookUp) {
+                    $report += "  If this fails, search for: $($suggestion.ErrorToLookUp)"
+                }
+                $report += ""
+            }
+        } else {
+            $report += "All common repair commands have been attempted."
+            $report += "Please refer to the manual repair guide for advanced troubleshooting."
+            $report += ""
+        }
+        
+        # Error Messages to Look Up
+        if ($FailedCommands.Count -gt 0) {
+            $report += "═══════════════════════════════════════════════════════════════════════════════"
+            $report += "ERROR MESSAGES TO LOOK UP"
+            $report += "═══════════════════════════════════════════════════════════════════════════════"
+            $report += ""
+            $report += "If you encounter these errors, search for them online for specific solutions:"
+            $report += ""
+            foreach ($failed in $FailedCommands) {
+                if ($failed.ErrorOutput) {
+                    $errorLines = ($failed.ErrorOutput -split "`n" | Where-Object { $_ -match "error|failed|denied|invalid|syntax|access" -and $_.Length -gt 10 -and $_.Length -lt 200 }) | Select-Object -First 3
+                    foreach ($errorLine in $errorLines) {
+                        $cleanError = $errorLine.Trim()
+                        if ($cleanError) {
+                            $report += "  • $cleanError"
+                        }
+                    }
+                }
+            }
+            $report += ""
+            $report += "Common error codes and meanings:"
+            $report += "  • Exit Code 1: General error"
+            $report += "  • Exit Code 2: Invalid syntax or parameters"
+            $report += "  • Exit Code 5: Access denied (permissions)"
+            $report += "  • Exit Code 32: File in use (cannot access)"
+            $report += "  • Exit Code 50: Not supported (wrong environment)"
+            $report += ""
+        }
+    }
+    
+    # Actions Summary
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "REPAIR ACTIONS SUMMARY"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += ""
+    if ($Actions.Count -gt 0) {
+        foreach ($action in $Actions) {
+            $report += "  $action"
+        }
+    } else {
+        $report += "  No repair actions were executed."
+    }
+    $report += ""
+    
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    $report += "END OF REPORT"
+    $report += "═══════════════════════════════════════════════════════════════════════════════"
+    
+    Set-Content -Path $reportPath -Value ($report -join "`r`n") -Encoding UTF8 -Force
+    return $reportPath
+}
+
+function New-WinloadRepairGuidanceDocument {
+    param(
+        [string]$TargetDrive,
+        [bool]$WinloadExists,
+        [bool]$BcdPathMatch,
+        [bool]$BitlockerLocked,
+        [array]$Actions
+    )
+    
+    $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+    if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
+    
+    $docPath = Join-Path $logDir "WINLOAD_EFI_MANUAL_REPAIR_GUIDE_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
+    $doc = @()
+    
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += "WINLOAD.EFI MANUAL REPAIR GUIDE"
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += ""
+    $doc += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    $doc += "Target Drive: $TargetDrive`:"
+    $doc += ""
+    $doc += "CURRENT STATUS:"
+    $doc += "  • winload.efi present: $(if ($WinloadExists) { 'YES' } else { 'NO - MISSING' })"
+    $doc += "  • BCD points to winload.efi: $(if ($BcdPathMatch) { 'YES' } else { 'NO - MISMATCH' })"
+    $doc += "  • BitLocker status: $(if ($BitlockerLocked) { 'LOCKED - Unlock required' } else { 'Unlocked or N/A' })"
+    $doc += ""
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += "AUTOMATED REPAIR ATTEMPTS"
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += ""
+    foreach ($action in $Actions) {
+        $doc += "  $action"
+    }
+    $doc += ""
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += "MANUAL REPAIR INSTRUCTIONS"
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += ""
+    
+    if ($BitlockerLocked) {
+        $doc += "STEP 0: UNLOCK BITLOCKER (REQUIRED FIRST)"
+        $doc += "───────────────────────────────────────────────────────────────────────────────"
+        $doc += "Your drive is BitLocker-locked. You MUST unlock it before attempting repairs."
+        $doc += ""
+        $doc += "Command:"
+        $doc += "  manage-bde -unlock $TargetDrive`: -RecoveryPassword <YOUR_48_DIGIT_KEY>"
+        $doc += ""
+        $doc += "To find your recovery key:"
+        $doc += "  1. Check your Microsoft account: https://account.microsoft.com/devices/recoverykey"
+        $doc += "  2. Check printed recovery key if you saved it"
+        $doc += "  3. Check if your organization has the key"
+        $doc += ""
+        $doc += "After unlocking, verify:"
+        $doc += "  manage-bde -status $TargetDrive`:"
+        $doc += "  # Should show 'Lock Status: Unlocked'"
+        $doc += ""
+    }
+    
+    if (-not $WinloadExists) {
+        $doc += "STEP 1: IDENTIFY THE ESP (EFI System Partition)"
+        $doc += "───────────────────────────────────────────────────────────────────────────────"
+        $doc += "The ESP is a FAT32 partition, typically 100-550 MB, that contains boot files."
+        $doc += ""
+        $doc += "Method 1: Using PowerShell (Recommended)"
+        $doc += "  Get-Volume | Where-Object { `$_.FileSystem -eq 'FAT32' -and `$_.Size -lt 600MB }"
+        $doc += ""
+        $doc += "Method 2: Using diskpart"
+        $doc += "  diskpart"
+        $doc += "  > list disk"
+        $doc += "  > select disk X  (where X is your Windows disk number)"
+        $doc += "  > list partition"
+        $doc += "  > select partition Y  (look for 'System' or 'EFI' type, FAT32, ~100-550 MB)"
+        $doc += "  > detail partition"
+        $doc += "  > exit"
+        $doc += ""
+        $doc += "What to look for:"
+        $doc += "  ✓ FileSystem: FAT32"
+        $doc += "  ✓ Size: Usually 100-550 MB (less than 600 MB)"
+        $doc += "  ✓ GPT Type: {c12a7328-f81f-11d2-ba4b-00a0c93ec93b} (EFI System Partition)"
+        $doc += ""
+        $doc += "STEP 2: MOUNT THE ESP (If Not Already Mounted)"
+        $doc += "───────────────────────────────────────────────────────────────────────────────"
+        $doc += "If ESP doesn't have a drive letter, mount it temporarily:"
+        $doc += ""
+        $doc += "Method 1: Using mountvol (Recommended)"
+        $doc += "  mountvol S: /S"
+        $doc += "  # This mounts the system ESP to drive letter S:"
+        $doc += "  # Replace S: with any available drive letter (Z:, Y:, X:, etc.)"
+        $doc += ""
+        $doc += "Method 2: Using diskpart"
+        $doc += "  diskpart"
+        $doc += "  > list disk"
+        $doc += "  > select disk X"
+        $doc += "  > list partition"
+        $doc += "  > select partition Y  (select the ESP partition)"
+        $doc += "  > assign letter=S"
+        $doc += "  > exit"
+        $doc += ""
+        $doc += "Verify mount:"
+        $doc += "  dir S:\EFI\Microsoft\Boot"
+        $doc += "  # Should show: bootmgfw.efi, BCD, and other boot files"
+        $doc += ""
+        $doc += "STEP 3: LOCATE WINLOAD.EFI SOURCE"
+        $doc += "───────────────────────────────────────────────────────────────────────────────"
+        $doc += "You need a copy of winload.efi from a compatible Windows installation."
+        $doc += ""
+        $doc += "Option A: From Windows Installation Media (ISO/USB) - RECOMMENDED"
+        $doc += "  1. Mount your Windows ISO or insert Windows USB"
+        $doc += "  2. Navigate to: sources\install.wim or sources\install.esd"
+        $doc += "  3. Extract winload.efi using DISM:"
+        $doc += ""
+        $doc += "     # First, get WIM info to find correct index"
+        $doc += "     dism /Get-WimInfo /WimFile:D:\sources\install.wim"
+        $doc += "     # Note the index number for your Windows edition (usually 1 for Home, 2 for Pro)"
+        $doc += ""
+        $doc += "     # Create mount directory"
+        $doc += "     mkdir C:\Mount"
+        $doc += ""
+        $doc += "     # Mount the WIM (replace Index:1 with your index)"
+        $doc += "     dism /Mount-Wim /WimFile:D:\sources\install.wim /Index:1 /MountDir:C:\Mount /ReadOnly"
+        $doc += ""
+        $doc += "     # Copy winload.efi to temporary location"
+        $doc += "     copy C:\Mount\Windows\System32\winload.efi C:\winload.efi.temp"
+        $doc += ""
+        $doc += "     # Unmount WIM"
+        $doc += "     dism /Unmount-Wim /MountDir:C:\Mount /Discard"
+        $doc += ""
+        $doc += "     # Your winload.efi is now at C:\winload.efi.temp"
+        $doc += ""
+        $doc += "Option B: From Another Working Windows Installation"
+        $doc += "  1. If you have another Windows installation on a different drive (e.g., D:):"
+        $doc += "     copy D:\Windows\System32\winload.efi C:\winload.efi.temp"
+        $doc += ""
+        $doc += "Option C: From Windows Recovery Environment (WinRE)"
+        $doc += "  1. If running from WinRE, check:"
+        $doc += "     dir /s X:\Windows\System32\winload.efi"
+        $doc += "     # X: is typically WinRE in recovery environment"
+        $doc += "     # If found, copy it:"
+        $doc += "     copy X:\Windows\System32\winload.efi C:\winload.efi.temp"
+        $doc += ""
+        $doc += "STEP 4: COPY WINLOAD.EFI TO TARGET WINDOWS SYSTEM32"
+        $doc += "───────────────────────────────────────────────────────────────────────────────"
+        $doc += "Target location: $TargetDrive`:\Windows\System32\winload.efi"
+        $doc += ""
+        $doc += "IMPORTANT: Run PowerShell as Administrator for these commands!"
+        $doc += ""
+        $doc += "Commands (run in order):"
+        $doc += ""
+        $doc += "  1. Take ownership of the target file (if it exists):"
+        $doc += "     takeown /f `"$TargetDrive`:\Windows\System32\winload.efi`""
+        $doc += ""
+        $doc += "  2. Grant full permissions:"
+        $doc += "     icacls `"$TargetDrive`:\Windows\System32\winload.efi`" /grant Administrators:F"
+        $doc += ""
+        $doc += "  3. Remove read-only/system/hidden attributes:"
+        $doc += "     attrib -s -h -r `"$TargetDrive`:\Windows\System32\winload.efi`""
+        $doc += ""
+        $doc += "  4. Copy the file (adjust source path as needed):"
+        $doc += "     copy C:\winload.efi.temp `"$TargetDrive`:\Windows\System32\winload.efi`" /Y"
+        $doc += ""
+        $doc += "  5. Verify the file was copied correctly:"
+        $doc += "     dir `"$TargetDrive`:\Windows\System32\winload.efi`""
+        $doc += "     # Should show file size (typically 1-2 MB)"
+        $doc += ""
+        $doc += "  6. Verify file is readable:"
+        $doc += "     [System.IO.File]::OpenRead(`"$TargetDrive`:\Windows\System32\winload.efi`").Close()"
+        $doc += "     # Should complete without error"
+        $doc += ""
+    }
+    
+    if (-not $BcdPathMatch) {
+        $doc += "STEP 5: VERIFY AND FIX BCD ENTRY"
+        $doc += "───────────────────────────────────────────────────────────────────────────────"
+        $doc += "Ensure BCD points to the correct winload.efi path."
+        $doc += ""
+        $doc += "Commands:"
+        $doc += ""
+        $doc += "  1. Check current BCD entry:"
+        $doc += "     bcdedit /enum {default}"
+        $doc += ""
+        $doc += "  2. If ESP is mounted to S:, fix BCD path:"
+        $doc += "     bcdedit /store S:\EFI\Microsoft\Boot\BCD /set {default} path \Windows\system32\winload.efi"
+        $doc += "     bcdedit /store S:\EFI\Microsoft\Boot\BCD /set {default} device partition=$TargetDrive`:"
+        $doc += "     bcdedit /store S:\EFI\Microsoft\Boot\BCD /set {default} osdevice partition=$TargetDrive`:"
+        $doc += ""
+        $doc += "  3. If ESP is not mounted, use default BCD:"
+        $doc += "     bcdedit /set {default} path \Windows\system32\winload.efi"
+        $doc += "     bcdedit /set {default} device partition=$TargetDrive`:"
+        $doc += "     bcdedit /set {default} osdevice partition=$TargetDrive`:"
+        $doc += ""
+        $doc += "  4. Verify BCD fix:"
+        $doc += "     bcdedit /enum {default}"
+        $doc += "     # Look for 'path \Windows\system32\winload.efi' and correct 'device'/'osdevice'"
+        $doc += ""
+    }
+    
+    $doc += "STEP 6: REBUILD BOOT FILES (If BCD is still problematic)"
+    $doc += "───────────────────────────────────────────────────────────────────────────────"
+    $doc += "If BCD is corrupted or not fixable with bcdedit /set, rebuild it completely."
+    $doc += ""
+    $doc += "Commands:"
+    $doc += ""
+    $doc += "  1. Ensure ESP is mounted (e.g., to S:)"
+    $doc += "     mountvol S: /S"
+    $doc += ""
+    $doc += "  2. Rebuild BCD and copy boot files to ESP:"
+    $doc += "     bcdboot $TargetDrive`:\Windows /s S: /f ALL"
+    $doc += ""
+    $doc += "  3. Verify boot files:"
+    $doc += "     dir S:\EFI\Microsoft\Boot"
+    $doc += "     # Should show: bootmgfw.efi, BCD, and other boot files"
+    $doc += ""
+    $doc += "STEP 7: UNMOUNT ESP"
+    $doc += "───────────────────────────────────────────────────────────────────────────────"
+    $doc += "Always unmount the ESP after repairs."
+    $doc += ""
+    $doc += "Command:"
+    $doc += "  mountvol S: /D"
+    $doc += "  # Replace S: with the letter you assigned"
+    $doc += ""
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += "TROUBLESHOOTING TIPS"
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += ""
+    $doc += "Problem: 'Access Denied' when copying winload.efi"
+    $doc += "  Solution:"
+    $doc += "    • Ensure you're running PowerShell as Administrator"
+    $doc += "    • Take ownership: takeown /f `"$TargetDrive`:\Windows\System32\winload.efi`""
+    $doc += "    • Grant permissions: icacls `"$TargetDrive`:\Windows\System32\winload.efi`" /grant Administrators:F"
+    $doc += "    • Remove attributes: attrib -s -h -r `"$TargetDrive`:\Windows\System32\winload.efi`""
+    $doc += ""
+    $doc += "Problem: Cannot find winload.efi source"
+    $doc += "  Solution:"
+    $doc += "    • Check if another Windows installation exists:"
+    $doc += "      Get-Volume | Where-Object { Test-Path `"`$(`$_.DriveLetter):\Windows\System32\winload.efi`" }"
+    $doc += "    • Mount Windows ISO and extract from install.wim (see Step 3, Option A)"
+    $doc += "    • Download Windows ISO from Microsoft if needed"
+    $doc += ""
+    $doc += "Problem: 'mountvol S: /S' fails"
+    $doc += "  Solution:"
+    $doc += "    • Try different drive letters (Z:, Y:, X:, etc.)"
+    $doc += "    • Use diskpart method instead (see Step 2, Method 2)"
+    $doc += "    • Check if ESP is already mounted: Get-Volume | Where-Object { `$_.FileSystem -eq 'FAT32' }"
+    $doc += ""
+    $doc += "Problem: 'bcdboot' fails"
+    $doc += "  Solution:"
+    $doc += "    • Ensure ESP is FAT32 and has enough free space"
+    $doc += "    • Check if install.wim is accessible"
+    $doc += "    • Try: bcdboot $TargetDrive`:\Windows /s S: /f UEFI (instead of /f ALL)"
+    $doc += ""
+    $doc += "Problem: 'bcdedit /enum {default}' shows incorrect path"
+    $doc += "  Solution:"
+    $doc += "    • Double-check the bcdedit /set commands"
+    $doc += "    • Ensure ESP is mounted correctly"
+    $doc += "    • Try rebuilding BCD completely (Step 6)"
+    $doc += ""
+    $doc += "Problem: BitLocker is active"
+    $doc += "  Solution:"
+    $doc += "    • Unlock the drive first: manage-bde -unlock $TargetDrive`: -RecoveryPassword <key>"
+    $doc += "    • Find recovery key at: https://account.microsoft.com/devices/recoverykey"
+    $doc += ""
+    $doc += "Problem: winload.efi is missing from install.wim"
+    $doc += "  Solution:"
+    $doc += "    • The image might be corrupted or a different version"
+    $doc += "    • Try another Windows ISO"
+    $doc += "    • Try extracting from a different index in the WIM"
+    $doc += ""
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += "QUICK REFERENCE: ALL COMMANDS IN ORDER"
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += ""
+    $doc += "# 1. Unlock BitLocker (if locked)"
+    $doc += "manage-bde -unlock $TargetDrive`: -RecoveryPassword <YOUR_KEY>"
+    $doc += ""
+    $doc += "# 2. Mount ESP"
+    $doc += "mountvol S: /S"
+    $doc += ""
+    $doc += "# 3. Extract winload.efi from install.wim (if needed)"
+    $doc += "mkdir C:\Mount"
+    $doc += "dism /Mount-Wim /WimFile:D:\sources\install.wim /Index:1 /MountDir:C:\Mount /ReadOnly"
+    $doc += "copy C:\Mount\Windows\System32\winload.efi C:\winload.efi.temp"
+    $doc += "dism /Unmount-Wim /MountDir:C:\Mount /Discard"
+    $doc += ""
+    $doc += "# 4. Copy winload.efi to target"
+    $doc += "takeown /f `"$TargetDrive`:\Windows\System32\winload.efi`""
+    $doc += "icacls `"$TargetDrive`:\Windows\System32\winload.efi`" /grant Administrators:F"
+    $doc += "attrib -s -h -r `"$TargetDrive`:\Windows\System32\winload.efi`""
+    $doc += "copy C:\winload.efi.temp `"$TargetDrive`:\Windows\System32\winload.efi`" /Y"
+    $doc += ""
+    $doc += "# 5. Fix BCD"
+    $doc += "bcdedit /store S:\EFI\Microsoft\Boot\BCD /set {default} path \Windows\system32\winload.efi"
+    $doc += "bcdedit /store S:\EFI\Microsoft\Boot\BCD /set {default} device partition=$TargetDrive`:"
+    $doc += "bcdedit /store S:\EFI\Microsoft\Boot\BCD /set {default} osdevice partition=$TargetDrive`:"
+    $doc += ""
+    $doc += "# 6. Rebuild boot files (if needed)"
+    $doc += "bcdboot $TargetDrive`:\Windows /s S: /f ALL"
+    $doc += ""
+    $doc += "# 7. Unmount ESP"
+    $doc += "mountvol S: /D"
+    $doc += ""
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    $doc += "END OF GUIDE"
+    $doc += "═══════════════════════════════════════════════════════════════════════════════"
+    
+    Set-Content -Path $docPath -Value ($doc -join "`r`n") -Encoding UTF8 -Force
+    
+    return @{
+        Path = $docPath
+        Content = $doc
+    }
+}
+
+# ============================================================================
+# BRUTE FORCE BOOT REPAIR FUNCTIONS
+# ============================================================================
+
+function Find-WinloadSourceAggressive {
+    param(
+        [string]$TargetDrive,
+        [switch]$ExtractFromWim
+    )
+    
+    $sources = @()
+    $actions = @()
+    
+    # 1. Search all mounted Windows installations
+    $windowsInstalls = Get-WindowsInstallsSafe
+    foreach ($winInstall in $windowsInstalls) {
+        if ($winInstall.Drive -ne "$TargetDrive`:") {
+            $candidatePath = "$($winInstall.Drive)\Windows\System32\winload.efi"
+            if (Test-Path $candidatePath) {
+                $fileInfo = Get-Item $candidatePath -ErrorAction SilentlyContinue
+                if ($fileInfo) {
+                    $sources += [pscustomobject]@{
+                        Path = $candidatePath
+                        Source = "WindowsInstall"
+                        Drive = $winInstall.Drive
+                        Size = $fileInfo.Length
+                        Confidence = "HIGH"
+                    }
+                    $actions += "Found winload.efi in $($winInstall.Drive): $($fileInfo.Length) bytes"
+                }
+            }
+        }
+    }
+    
+    # 2. Search WinRE/current environment
+    $winrePaths = @(
+        "$env:SystemRoot\System32\winload.efi",
+        "X:\Windows\System32\winload.efi",
+        "X:\sources\boot.wim\Windows\System32\winload.efi"
+    )
+    foreach ($winrePath in $winrePaths) {
+        if (Test-Path $winrePath) {
+            $fileInfo = Get-Item $winrePath -ErrorAction SilentlyContinue
+            if ($fileInfo) {
+                $sources += [pscustomobject]@{
+                    Path = $winrePath
+                    Source = "WinRE"
+                    Drive = "WinRE"
+                    Size = $fileInfo.Length
+                    Confidence = "MEDIUM"
+                }
+                $actions += "Found winload.efi in WinRE: $($fileInfo.Length) bytes"
+            }
+        }
+    }
+    
+    # 3. Search all mounted drives (including ISOs/USB)
+    $allVolumes = Get-VolumesSafe
+    foreach ($vol in $allVolumes) {
+        $dl = "$($vol.DriveLetter):"
+        if ($dl -ne "$TargetDrive`:" -and $dl -ne "X:") {
+            # Check for install.wim/esd
+            $wimPaths = @(
+                "$dl\sources\install.wim",
+                "$dl\sources\install.esd"
+            )
+            foreach ($wimPath in $wimPaths) {
+                if (Test-Path $wimPath -ErrorAction SilentlyContinue) {
+                    $sources += [pscustomobject]@{
+                        Path = $wimPath
+                        Source = "InstallWim"
+                        Drive = $dl
+                        Size = $null
+                        Confidence = "MEDIUM"
+                    }
+                    $actions += "Found install.wim/esd at $wimPath"
+                }
+            }
+            
+            # Check for winload.efi directly
+            $directPath = "$dl\Windows\System32\winload.efi"
+            if (Test-Path $directPath -ErrorAction SilentlyContinue) {
+                $fileInfo = Get-Item $directPath -ErrorAction SilentlyContinue
+                if ($fileInfo) {
+                    $sources += [pscustomobject]@{
+                        Path = $directPath
+                        Source = "Direct"
+                        Drive = $dl
+                        Size = $fileInfo.Length
+                        Confidence = "HIGH"
+                    }
+                    $actions += "Found winload.efi directly at ${directPath}: $($fileInfo.Length) bytes"
+                }
+            }
+        }
+    }
+    
+    # Return best source (prefer HIGH confidence, then by size)
+    if ($sources.Count -gt 0) {
+        $bestSource = $sources | Where-Object { $_.Confidence -eq "HIGH" } | Sort-Object Size -Descending | Select-Object -First 1
+        if (-not $bestSource) {
+            $bestSource = $sources | Sort-Object { if ($_.Size) { $_.Size } else { 0 } } -Descending | Select-Object -First 1
+        }
+        return @{
+            Source = $bestSource
+            AllSources = $sources
+            Actions = $actions
+        }
+    }
+    
+    return @{
+        Source = $null
+        AllSources = @()
+        Actions = $actions
+    }
+}
+
+function Extract-WinloadFromWim {
+    param(
+        [string]$WimPath,
+        [string]$MountDir,
+        [string]$TargetPath
+    )
+    
+    $actions = @()
+    $tempMount = $null
+    
+    try {
+        # Create mount directory
+        if (-not (Test-Path $MountDir)) {
+            New-Item -ItemType Directory -Path $MountDir -Force | Out-Null
+            $actions += "Created mount directory: $MountDir"
+        }
+        
+        # Get WIM info to find correct index
+        $wimInfo = dism /Get-WimInfo /WimFile:$WimPath 2>&1 | Out-String
+        $actions += "WIM info retrieved"
+        
+        # Try index 1 first (most common)
+        $index = 1
+        if ($wimInfo -match "Index\s*:\s*(\d+)") {
+            $index = [int]$matches[1]
+        }
+        
+        # Mount WIM
+        $mountOut = dism /Mount-Wim /WimFile:$WimPath /Index:$index /MountDir:$MountDir /ReadOnly 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            $tempMount = $MountDir
+            $actions += "Mounted WIM index $index to $MountDir"
+            
+            # Extract winload.efi
+            $sourcePath = Join-Path $MountDir "Windows\System32\winload.efi"
+            if (Test-Path $sourcePath) {
+                $fileInfo = Get-Item $sourcePath -ErrorAction SilentlyContinue
+                if ($fileInfo) {
+                    Copy-Item -Path $sourcePath -Destination $TargetPath -Force -ErrorAction Stop
+                    $actions += "Extracted winload.efi ($($fileInfo.Length) bytes) to $TargetPath"
+                    
+                    # Unmount
+                    dism /Unmount-Wim /MountDir:$MountDir /Discard 2>&1 | Out-Null
+                    $tempMount = $null
+                    $actions += "Unmounted WIM"
+                    
+                    return @{
+                        Success = $true
+                        Actions = $actions
+                        FileSize = $fileInfo.Length
+                    }
+                } else {
+                    $actions += "winload.efi not found in mounted WIM at $sourcePath"
+                }
+            } else {
+                $actions += "winload.efi path not found in mounted WIM: $sourcePath"
+            }
+            
+            # Unmount on failure
+            dism /Unmount-Wim /MountDir:$MountDir /Discard 2>&1 | Out-Null
+            $tempMount = $null
+        } else {
+            $actions += "Failed to mount WIM: $mountOut"
+        }
+    } catch {
+        $actions += "WIM extraction error: $($_.Exception.Message)"
+        if ($tempMount) {
+            try { dism /Unmount-Wim /MountDir:$tempMount /Discard 2>&1 | Out-Null } catch { }
+        }
+    }
+    
+    return @{
+        Success = $false
+        Actions = $actions
+        FileSize = $null
+    }
+}
+
+function Copy-BootFileBruteForce {
+    param(
+        [string]$SourcePath,
+        [string]$TargetPath,
+        [int]$MaxRetries = 3
+    )
+    
+    $actions = @()
+    $sourceFile = Get-Item $SourcePath -ErrorAction SilentlyContinue
+    if (-not $sourceFile) {
+        return @{
+            Success = $false
+            Actions = @("Source file not found: $SourcePath")
+            Verified = $false
+        }
+    }
+    
+    $expectedSize = $sourceFile.Length
+    $targetDir = Split-Path $TargetPath -Parent
+    
+    # Ensure target directory exists
+    if (-not (Test-Path $targetDir)) {
+        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+        $actions += "Created target directory: $targetDir"
+    }
+    
+    # Try multiple copy methods
+    $copyMethods = @(
+        @{ Name = "Copy-Item"; Script = { Copy-Item -Path $SourcePath -Destination $TargetPath -Force -ErrorAction Stop } },
+        @{ Name = "robocopy"; Script = { 
+            $robocopyOut = robocopy (Split-Path $SourcePath -Parent) $targetDir (Split-Path $SourcePath -Leaf) /R:1 /W:1 /NFL /NDL /NJH /NJS 2>&1
+            if ($LASTEXITCODE -ge 0 -and $LASTEXITCODE -le 7) { } else { throw "robocopy failed with exit code $LASTEXITCODE" }
+        }},
+        @{ Name = "xcopy"; Script = { 
+            $xcopyOut = xcopy $SourcePath $TargetPath /Y /R 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "xcopy failed with exit code $LASTEXITCODE" }
+        }},
+        @{ Name = ".NET File.Copy"; Script = {
+            [System.IO.File]::Copy($SourcePath, $TargetPath, $true)
+        }}
+    )
+    
+    foreach ($method in $copyMethods) {
+        for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+            try {
+                # Force permissions before copy
+                if (Test-Path $TargetPath) {
+                    Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$TargetPath`"" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                    Start-Process -FilePath "icacls.exe" -ArgumentList "`"$TargetPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                    Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$TargetPath`"" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                }
+                
+                # Execute copy method
+                & $method.Script
+                $actions += "Copy attempt $attempt using $($method.Name): SUCCESS"
+                
+                # Verify copy
+                Start-Sleep -Milliseconds 500  # Allow file system to sync
+                $targetFile = Get-Item $TargetPath -ErrorAction SilentlyContinue
+                if ($targetFile -and $targetFile.Length -eq $expectedSize) {
+                    # Set permissions on copied file
+                    Start-Process -FilePath "icacls.exe" -ArgumentList "`"$TargetPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                    
+                    $actions += "VERIFIED: File copied successfully ($($targetFile.Length) bytes, matches source)"
+                    return @{
+                        Success = $true
+                        Actions = $actions
+                        Verified = $true
+                        FileSize = $targetFile.Length
+                    }
+                } else {
+                    $actualSize = if ($targetFile) { $targetFile.Length } else { 0 }
+                    $actions += "VERIFICATION FAILED: Expected $expectedSize bytes, got $actualSize bytes"
+                }
+            } catch {
+                $actions += "Copy attempt $attempt using $($method.Name): FAILED - $($_.Exception.Message)"
+                if ($attempt -lt $MaxRetries) {
+                    Start-Sleep -Seconds ([Math]::Pow(2, $attempt))  # Exponential backoff
+                }
+            }
+        }
+    }
+    
+    return @{
+        Success = $false
+        Actions = $actions
+        Verified = $false
+    }
+}
+
+function Repair-BCDBruteForce {
+    param(
+        [string]$TargetDrive,
+        [string]$EspLetter,
+        [string]$WinloadPath
+    )
+    
+    $actions = @()
+    $bcdStore = if ($EspLetter) { "$EspLetter\EFI\Microsoft\Boot\BCD" } else { "BCD" }
+    
+    # Step 1: Set BCD path
+    $actions += "Setting BCD path to winload.efi..."
+    $setPath = bcdedit /store $bcdStore /set {default} path \Windows\system32\winload.efi 2>&1 | Out-String
+    $setDevice = bcdedit /store $bcdStore /set {default} device partition=$TargetDrive 2>&1 | Out-String
+    $setOsDevice = bcdedit /store $bcdStore /set {default} osdevice partition=$TargetDrive 2>&1 | Out-String
+    
+    if ($LASTEXITCODE -eq 0) {
+        $actions += "BCD path set successfully"
+    } else {
+        $actions += "BCD path set failed: $setPath"
+    }
+    
+    # Step 2: Verify BCD was updated
+    $actions += "Verifying BCD configuration..."
+    $bcdEnum = bcdedit /store $bcdStore /enum {default} 2>&1 | Out-String
+    $bcdPathMatch = $bcdEnum -match "path\s+\\Windows\\system32\\winload\.efi"
+    $bcdDeviceMatch = $bcdEnum -match "device\s+partition=$TargetDrive"
+    
+    if ($bcdPathMatch -and $bcdDeviceMatch) {
+        $actions += "VERIFIED: BCD correctly points to winload.efi on $TargetDrive"
+        return @{
+            Success = $true
+            Actions = $actions
+            Verified = $true
+        }
+    } else {
+        $actions += "BCD verification failed - path match: $bcdPathMatch, device match: $bcdDeviceMatch"
+        $actions += "Attempting complete BCD rebuild..."
+        
+        # Step 3: Rebuild BCD completely
+        if ($EspLetter) {
+            $rebuildOut = bcdboot "$TargetDrive`:\Windows" /s $EspLetter /f ALL 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) {
+                $actions += "BCD rebuild successful"
+                
+                # Re-verify
+                $bcdEnum2 = bcdedit /store $bcdStore /enum {default} 2>&1 | Out-String
+                $bcdPathMatch2 = $bcdEnum2 -match "path\s+\\Windows\\system32\\winload\.efi"
+                if ($bcdPathMatch2) {
+                    $actions += "VERIFIED: BCD rebuild successful and verified"
+                    return @{
+                        Success = $true
+                        Actions = $actions
+                        Verified = $true
+                    }
+                } else {
+                    $actions += "BCD rebuild completed but verification still failed"
+                }
+            } else {
+                $actions += "BCD rebuild failed: $rebuildOut"
+            }
+        }
+    }
+    
+    return @{
+        Success = $false
+        Actions = $actions
+        Verified = $false
+    }
+}
+
+function Test-BootabilityComprehensive {
+    <#
+    .SYNOPSIS
+    Ultimate comprehensive bootability test using hardened detection methods.
+    #>
+    param(
+        [string]$TargetDrive,
+        [string]$EspLetter
+    )
+    
+    $verification = @{
+        WinloadExists = $false
+        WinloadReadable = $false
+        WinloadSize = $null
+        BootmgfwExists = $false
+        BCDExists = $false
+        BCDReadable = $false
+        BCDPathMatch = $false
+        BCDDeviceMatch = $false
+        AllBootFilesPresent = $false
+        Issues = @()
+        Actions = @()
+    }
+    
+    # 1. Verify winload.efi (ULTIMATE HARDENED DETECTION)
+    $winloadPath = Resolve-WindowsPath -Path "$TargetDrive`:\Windows\System32\winload.efi" -SupportLongPath
+    if (-not $winloadPath) {
+        $winloadPath = "$TargetDrive`:\Windows\System32\winload.efi"  # Fallback
+    }
+    
+    $winloadCheck = Test-WinloadExistsComprehensive -Path $winloadPath
+    if ($winloadCheck.Exists) {
+        $winloadIntegrity = Test-FileIntegrity -FilePath $winloadPath
+        if ($winloadIntegrity.Valid) {
+            $verification.WinloadExists = $true
+            $verification.WinloadReadable = $winloadIntegrity.Readable
+            $verification.WinloadSize = $winloadIntegrity.FileInfo.Length
+            $verification.Actions += "✓ winload.efi exists and verified at $winloadPath (detected via: $($winloadCheck.Method))"
+            $verification.Actions += "  Size: $($winloadIntegrity.FileInfo.Length) bytes, Readable: $($winloadIntegrity.Readable), Integrity: Valid"
+        } else {
+            $verification.Issues += "winload.efi exists but integrity check FAILED: $($winloadIntegrity.Details -join '; ')"
+            $verification.WinloadExists = $false
+        }
+    } else {
+        $verification.Issues += "winload.efi MISSING at $winloadPath (checked via: $($winloadCheck.Method))"
+    }
+    
+    # 2. Verify bootmgfw.efi in ESP
+    if ($EspLetter) {
+        $bootmgfwPath = "$EspLetter\EFI\Microsoft\Boot\bootmgfw.efi"
+        if (Test-Path $bootmgfwPath) {
+            $verification.BootmgfwExists = $true
+            $verification.Actions += "✓ bootmgfw.efi exists in ESP"
+        } else {
+            $verification.Issues += "bootmgfw.efi MISSING in ESP"
+        }
+    }
+    
+    # 3. Verify BCD
+    $bcdStore = if ($EspLetter) { "$EspLetter\EFI\Microsoft\Boot\BCD" } else { "$TargetDrive`:\Boot\BCD" }
+    if (Test-Path $bcdStore) {
+        $verification.BCDExists = $true
+        $verification.Actions += "✓ BCD exists at $bcdStore"
+        
+        try {
+            $bcdEnum = bcdedit /store $bcdStore /enum {default} 2>&1 | Out-String
+            if ($LASTEXITCODE -eq 0) {
+                $verification.BCDReadable = $true
+                $verification.BCDPathMatch = $bcdEnum -match "path\s+\\Windows\\system32\\winload\.efi"
+                $verification.BCDDeviceMatch = $bcdEnum -match "device\s+partition=$TargetDrive"
+                
+                if ($verification.BCDPathMatch) {
+                    $verification.Actions += "✓ BCD path correctly points to winload.efi"
+                } else {
+                    $verification.Issues += "BCD path does NOT point to winload.efi"
+                }
+                
+                if ($verification.BCDDeviceMatch) {
+                    $verification.Actions += "✓ BCD device correctly set to $TargetDrive"
+                } else {
+                    $verification.Issues += "BCD device does NOT match $TargetDrive"
+                }
+            } else {
+                $verification.Issues += "BCD exists but cannot be enumerated"
+            }
+        } catch {
+            $verification.Issues += "BCD exists but not readable: $($_.Exception.Message)"
+        }
+    } else {
+        $verification.Issues += "BCD MISSING at $bcdStore"
+    }
+    
+    # 4. Check all critical boot files
+    $criticalFiles = @(
+        "$TargetDrive`:\Windows\System32\winload.efi",
+        "$TargetDrive`:\Windows\System32\ntoskrnl.exe"
+    )
+    if ($EspLetter) {
+        $criticalFiles += "$EspLetter\EFI\Microsoft\Boot\bootmgfw.efi"
+        $criticalFiles += "$EspLetter\EFI\Microsoft\Boot\BCD"
+    }
+    
+    $allPresent = $true
+    foreach ($file in $criticalFiles) {
+        $resolvedFile = Resolve-WindowsPath -Path $file -SupportLongPath
+        if (-not $resolvedFile) { $resolvedFile = $file }  # Fallback
+        
+        $fileCheck = Test-WinloadExistsComprehensive -Path $resolvedFile
+        if (-not $fileCheck.Exists) {
+            $allPresent = $false
+            $verification.Issues += "Critical boot file MISSING: $file"
+        }
+    }
+    $verification.AllBootFilesPresent = $allPresent
+    if ($allPresent) {
+        $verification.Actions += "✓ All critical boot files present"
+    }
+    
+    # Overall bootability assessment
+    $verification.Bootable = $verification.WinloadExists -and 
+                             $verification.WinloadReadable -and 
+                             $verification.BCDPathMatch -and 
+                             $verification.AllBootFilesPresent
+    
+    return $verification
+}
+
+function Invoke-BruteForceBootRepair {
+    param(
+        [string]$TargetDrive,
+        [switch]$ExtractFromWim = $true,
+        [int]$MaxRetries = 3,
+        [switch]$DryRun
+    )
+    
+    $actions = @()
+    $verificationResults = @()
+    $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+    if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
+    
+    $targetDrive = $TargetDrive.TrimEnd(':')
+    $actions += "═══════════════════════════════════════════════════════════════════════════════"
+    $actions += "BRUTE FORCE BOOT REPAIR MODE"
+    $actions += "═══════════════════════════════════════════════════════════════════════════════"
+    $actions += "Target Drive: $targetDrive`:"
+    $actions += "Max Retries: $MaxRetries"
+    $actions += "Extract from WIM: $ExtractFromWim"
+    $actions += ""
+    
+    if ($DryRun) {
+        $actions += "⚠ DRY RUN MODE: No changes will be made"
+        return @{
+            Output = ($actions -join "`n")
+            Bootable = $false
+            Verified = $false
+            Actions = $actions
+        }
+    }
+    
+    # Step 1: Ultimate source discovery (using hardened function)
+    $actions += "STEP 1: ULTIMATE SOURCE DISCOVERY"
+    $actions += "───────────────────────────────────────────────────────────────────────────────"
+    
+    # Use ultimate source discovery first
+    $ultimateSource = Find-WinloadSourceUltimate -TargetDrive $targetDrive
+    $actions += $ultimateSource.Actions
+    
+    # Fallback to aggressive if ultimate didn't find source
+    if (-not $ultimateSource.BestSource) {
+        $sourceResult = Find-WinloadSourceAggressive -TargetDrive $targetDrive -ExtractFromWim:$ExtractFromWim
+        $actions += $sourceResult.Actions
+        if ($sourceResult.Source) {
+            $ultimateSource.BestSource = [pscustomobject]@{
+                Path = $sourceResult.Source.Path
+                Source = $sourceResult.Source.Source
+                Drive = $sourceResult.Source.Drive
+                Size = $sourceResult.Source.Size
+                Confidence = $sourceResult.Source.Confidence
+                Integrity = $null
+            }
+        }
+    }
+    
+    $sourceResult = @{
+        Source = $ultimateSource.BestSource
+        Actions = $actions
+    }
+    
+    if (-not $sourceResult.Source) {
+        $actions += "❌ No winload.efi source found. Cannot proceed with brute force repair."
+        return @{
+            Output = ($actions -join "`n")
+            Bootable = $false
+            Verified = $false
+            Actions = $actions
+        }
+    }
+    
+    $winloadSource = $sourceResult.Source
+    $actions += "✓ Selected source: $($winloadSource.Path) (Confidence: $($winloadSource.Confidence))"
+    
+    # Validate source integrity before proceeding
+    if ($winloadSource.Integrity) {
+        if ($winloadSource.Integrity.Valid) {
+            $actions += "  ✓ Source integrity verified: $($winloadSource.Size) bytes, readable"
+        } else {
+            $actions += "  ⚠ Source integrity check warnings: $($winloadSource.Integrity.Details -join '; ')"
+        }
+    } else {
+        # Perform integrity check now
+        $sourceIntegrity = Test-FileIntegrity -FilePath $winloadSource.Path
+        if ($sourceIntegrity.Valid) {
+            $actions += "  ✓ Source integrity verified: $($sourceIntegrity.FileInfo.Length) bytes, readable"
+        } else {
+            $actions += "  ⚠ Source integrity check failed: $($sourceIntegrity.Details -join '; ')"
+            $actions += "  ⚠ Proceeding anyway, but repair may fail"
+        }
+    }
+    $actions += ""
+    
+    # Step 2: Mount ESP if needed
+    $actions += "STEP 2: ESP MOUNTING"
+    $actions += "───────────────────────────────────────────────────────────────────────────────"
+    $espMounted = $false
+    $espLetter = $null
+    $mountedByUs = $false
+    
+    $esp = Get-EspCandidate
+    if ($esp -and $esp.DriveLetter) {
+        $espMounted = $true
+        $espLetter = "$($esp.DriveLetter):"
+        $actions += "✓ ESP already mounted at $espLetter"
+    } else {
+        $mount = Mount-EspTemp -PreferredLetter "S"
+        if ($mount) {
+            $espMounted = $true
+            $espLetter = "$($mount.Letter):"
+            $mountedByUs = $true
+            $actions += "✓ ESP mounted to $espLetter"
+        } else {
+            $actions += "⚠ Failed to mount ESP - will continue without ESP mount"
+        }
+    }
+    $actions += ""
+    
+    # Step 3: Extract from WIM if needed
+    $winloadSourcePath = $winloadSource.Path
+    if ($winloadSource.Source -eq "InstallWim" -and $ExtractFromWim) {
+        $actions += "STEP 3: EXTRACTING FROM INSTALL.WIM"
+        $actions += "───────────────────────────────────────────────────────────────────────────────"
+        $mountDir = Join-Path $env:TEMP "MiracleBoot_WIM_Mount_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        $tempWinloadPath = Join-Path $env:TEMP "winload_efi_temp_$(Get-Date -Format 'yyyyMMdd_HHmmss').efi"
+        
+        $extractResult = Extract-WinloadFromWim -WimPath $winloadSourcePath -MountDir $mountDir -TargetPath $tempWinloadPath
+        $actions += $extractResult.Actions
+        
+        if ($extractResult.Success) {
+            $winloadSourcePath = $tempWinloadPath
+            $actions += "✓ Successfully extracted winload.efi from WIM"
+        } else {
+            $actions += "❌ Failed to extract from WIM - will try other sources"
+            # Try other sources
+            $otherSources = $sourceResult.AllSources | Where-Object { $_.Source -ne "InstallWim" } | Select-Object -First 1
+            if ($otherSources) {
+                $winloadSourcePath = $otherSources.Path
+                $actions += "Falling back to: $winloadSourcePath"
+            } else {
+                $actions += "❌ No alternative sources available"
+                return @{
+                    Output = ($actions -join "`n")
+                    Bootable = $false
+                    Verified = $false
+                    Actions = $actions
+                }
+            }
+        }
+        $actions += ""
+    }
+    
+    # Step 4: Brute force file copy
+    $actions += "STEP 4: BRUTE FORCE FILE COPY"
+    $actions += "───────────────────────────────────────────────────────────────────────────────"
+    $targetPath = "$targetDrive`:\Windows\System32\winload.efi"
+    
+    $copyResult = Copy-BootFileBruteForce -SourcePath $winloadSourcePath -TargetPath $targetPath -MaxRetries $MaxRetries
+    $actions += $copyResult.Actions
+    
+    if (-not $copyResult.Success -or -not $copyResult.Verified) {
+        $actions += "❌ BRUTE FORCE COPY FAILED after all attempts"
+        
+        # Create and show guidance document
+        $guidanceDoc = New-WinloadRepairGuidanceDocument -TargetDrive $targetDrive -WinloadExists $false -BcdPathMatch $false -BitlockerLocked $false -Actions $actions
+        $actions += ""
+        $actions += "═══════════════════════════════════════════════════════════════════════════════"
+        $actions += "REPAIR FAILED - COMPREHENSIVE GUIDANCE DOCUMENT CREATED"
+        $actions += "═══════════════════════════════════════════════════════════════════════════════"
+        $actions += "A detailed manual repair guide has been created and will open in Notepad."
+        $actions += "Guidance document location: $($guidanceDoc.Path)"
+        $actions += "═══════════════════════════════════════════════════════════════════════════════"
+        
+        # Show guidance document in Notepad
+        try {
+            Start-Process notepad.exe -ArgumentList "`"$($guidanceDoc.Path)`""
+        } catch {
+            $actions += "Could not open Notepad automatically. Please open: $($guidanceDoc.Path)"
+        }
+        
+        return @{
+            Output = ($actions -join "`n")
+            Bootable = $false
+            Verified = $false
+            Actions = $actions
+        }
+    }
+    
+    $actions += "✓ winload.efi successfully copied and verified"
+    $actions += ""
+    
+    # Step 5: Brute force BCD repair
+    $actions += "STEP 5: BRUTE FORCE BCD REPAIR"
+    $actions += "───────────────────────────────────────────────────────────────────────────────"
+    
+    # Backup BCD first
+    $bcdBackup = Join-Path $logDir "BCD_BRUTEFORCE_BACKUP_$(Get-Date -Format 'yyyyMMdd_HHmmss').bak"
+    $bcdStore = if ($espLetter) { "$espLetter\EFI\Microsoft\Boot\BCD" } else { "$targetDrive`:\Boot\BCD" }
+    if (Test-Path $bcdStore) {
+        $backupOut = bcdedit /export $bcdBackup 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            $actions += "✓ BCD backed up to $bcdBackup"
+        } else {
+            $actions += "⚠ BCD backup failed but continuing"
+        }
+    }
+    
+    $bcdResult = Repair-BCDBruteForce -TargetDrive $targetDrive -EspLetter $espLetter -WinloadPath $targetPath
+    $actions += $bcdResult.Actions
+    
+    if (-not $bcdResult.Success -or -not $bcdResult.Verified) {
+        $actions += "⚠ BCD repair completed but verification had issues"
+    } else {
+        $actions += "✓ BCD repair successful and verified"
+    }
+    $actions += ""
+    
+    # Step 6: Comprehensive verification
+    $actions += "STEP 6: COMPREHENSIVE VERIFICATION"
+    $actions += "───────────────────────────────────────────────────────────────────────────────"
+    $verification = Test-BootabilityComprehensive -TargetDrive $targetDrive -EspLetter $espLetter
+    $actions += $verification.Actions
+    
+    if ($verification.Issues.Count -gt 0) {
+        $actions += ""
+        $actions += "⚠ VERIFICATION ISSUES FOUND:"
+        foreach ($issue in $verification.Issues) {
+            $actions += "  - $issue"
+        }
+    }
+    
+    $actions += ""
+    if ($verification.Bootable) {
+        $actions += "✅ BOOTABILITY STATUS: LIKELY BOOTABLE"
+        $actions += "All critical boot files are present and correctly configured."
+    } else {
+        $actions += "❌ BOOTABILITY STATUS: WILL NOT BOOT"
+        $actions += "Issues detected that prevent booting."
+        $actions += ""
+        
+        # Create and show guidance document on failure
+        $guidanceDoc = New-WinloadRepairGuidanceDocument -TargetDrive $targetDrive -WinloadExists $verification.WinloadExists -BcdPathMatch $verification.BCDPathMatch -BitlockerLocked $false -Actions $actions
+        $actions += "═══════════════════════════════════════════════════════════════════════════════"
+        $actions += "REPAIR FAILED - COMPREHENSIVE GUIDANCE DOCUMENT CREATED"
+        $actions += "═══════════════════════════════════════════════════════════════════════════════"
+        $actions += "A detailed manual repair guide has been created and will open in Notepad."
+        $actions += "Guidance document location: $($guidanceDoc.Path)"
+        $actions += "═══════════════════════════════════════════════════════════════════════════════"
+        
+        # Show guidance document in Notepad
+        try {
+            Start-Process notepad.exe -ArgumentList "`"$($guidanceDoc.Path)`""
+        } catch {
+            $actions += "Could not open Notepad automatically. Please open: $($guidanceDoc.Path)"
+        }
+    }
+    $actions += ""
+    
+    # Cleanup
+    if ($mountedByUs -and $espLetter) {
+        Unmount-EspTemp -Letter $espLetter.TrimEnd(':')
+        $actions += "Cleaned up temporary ESP mount"
+    }
+    
+    $actions += "═══════════════════════════════════════════════════════════════════════════════"
+    $actions += "BRUTE FORCE REPAIR COMPLETE"
+    $actions += "═══════════════════════════════════════════════════════════════════════════════"
+    
+    return @{
+        Output = ($actions -join "`n")
+        Bootable = $verification.Bootable
+        Verified = $verification.Bootable
+        Actions = $actions
+        Verification = $verification
+    }
+}
+
 function Invoke-DefensiveBootRepair {
     param(
         [string]$TargetDrive,
-        [ValidateSet("Auto","DiagnoseOnly","RepairSafe","RepairForce")]
+        [ValidateSet("Auto","DiagnoseOnly","RepairSafe","RepairForce","BruteForce")]
         [string]$Mode = "Auto",
         [string]$SimulationScenario = $null,
         [switch]$DryRun,
         [switch]$AllowOnlineRepair,
-        [switch]$Force
+        [switch]$Force,
+        [switch]$BruteForce
     )
 
     $actions = @()
@@ -93,6 +2144,42 @@ function Invoke-DefensiveBootRepair {
     if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
     $envState = Get-EnvState
     $runningOnline = (-not $envState.IsWinPE)
+    
+    # Command tracking for comprehensive reporting
+    $script:CommandHistory = @()
+    $script:FailedCommands = @()
+    $script:InitialIssues = @()
+    $script:RemainingIssues = @()
+    
+    function Track-Command {
+        param(
+            [string]$Command,
+            [string]$Description,
+            [object]$Result = $null,
+            [int]$ExitCode = $LASTEXITCODE,
+            [string]$ErrorOutput = $null,
+            [string]$TargetDrive = $null
+        )
+        
+        $commandRecord = [pscustomobject]@{
+            Timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+            Command = $Command
+            Description = $Description
+            TargetDrive = $TargetDrive
+            ExitCode = $ExitCode
+            Success = ($ExitCode -eq 0)
+            ErrorOutput = $ErrorOutput
+            Result = $Result
+        }
+        
+        $script:CommandHistory += $commandRecord
+        
+        if (-not $commandRecord.Success -and -not $DryRun) {
+            $script:FailedCommands += $commandRecord
+        }
+        
+        return $commandRecord
+    }
 
     # Mode resolution
     $resolvedMode = $Mode
@@ -106,6 +2193,11 @@ function Invoke-DefensiveBootRepair {
         }
     }
     if ($resolvedMode -eq "RepairForce" -and $runningOnline) { $resolvedMode = "DiagnoseOnly" }
+    
+    # Brute Force mode override
+    if ($BruteForce -or $resolvedMode -eq "BruteForce") {
+        return Invoke-BruteForceBootRepair -TargetDrive $TargetDrive -ExtractFromWim:$true -MaxRetries 3 -DryRun:$DryRun
+    }
 
     $diagOnly = ($resolvedMode -eq "DiagnoseOnly")
     $simulate = [bool]$SimulationScenario
@@ -194,6 +2286,10 @@ function Invoke-DefensiveBootRepair {
     try {
         # Detection
         $windowsInstalls = Get-WindowsInstallsSafe
+        # Ensure $windowsInstalls is always an array
+        if ($null -eq $windowsInstalls) { $windowsInstalls = @() }
+        if ($windowsInstalls -isnot [array]) { $windowsInstalls = @($windowsInstalls) }
+        
         if ($TargetDrive) {
             $selectedOS = $windowsInstalls | Where-Object { $_.Drive.TrimEnd(':') -ieq $TargetDrive.TrimEnd(':') } | Select-Object -First 1
         } elseif ($windowsInstalls.Count -eq 1) {
@@ -214,13 +2310,20 @@ function Invoke-DefensiveBootRepair {
             if ($mount) { $espMounted = $true; $espLetter = "$($mount.Letter):"; $mountedByUs = $true }
         }
 
-        # If simulation, override states
+        # STATE RESET (ULTIMATE HARDENING - Prevent stale state)
+        # Always reset all state variables to ensure fresh detection
         $winloadExists = $false
         $bcdPathMatch = $false
         $bitlockerLocked = $null
         $bootFilesPresent = $false
         $storageDriverMissing = $false
         $secureBoot = $false
+        
+        # Reset command tracking for this run
+        $script:CommandHistory = @()
+        $script:FailedCommands = @()
+        $script:InitialIssues = @()
+        $script:RemainingIssues = @()
 
         if ($simulate -and $simulationState) {
         $winloadExists = $simulationState.WinloadExists
@@ -252,26 +2355,41 @@ function Invoke-DefensiveBootRepair {
             try {
                 $controllers = Get-StorageControllerCandidates
                 $bootCrit = $controllers | Where-Object { $_.Class -match 'VMD|RAID|NVMe|SATA|AHCI|SAS' }
-                if ($bootCrit) { $storageDriverMissing = ($bootCrit | Where-Object { $_.ErrorCode -and $_.ErrorCode -ne 0 }).Count -gt 0 }
+                if ($bootCrit) { 
+                    $bootCritWithErrors = @($bootCrit | Where-Object { $_.ErrorCode -and $_.ErrorCode -ne 0 })
+                    $storageDriverMissing = $bootCritWithErrors.Count -gt 0 
+                }
             } catch { }
         }
 
+        # Record initial issues
+        $script:InitialIssues = @()
+        if (-not $winloadExists) { $script:InitialIssues += "winload.efi missing" }
+        if (-not $bcdPathMatch) { $script:InitialIssues += "BCD path mismatch" }
+        if ($bitlockerLocked) { $script:InitialIssues += "BitLocker locked" }
+        if ($storageDriverMissing) { $script:InitialIssues += "Storage driver missing" }
+        
         # Pre-flight backup (Layer 8)
         $backupPath = Join-Path $logDir "BCD_PRODUCTION_BACKUP.bak"
         $shouldWrite = (-not $diagOnly -and -not $DryRun -and -not $simulate -and -not $runningOnline)
         if ($shouldWrite -and -not $blocker) {
             try {
                 $exportOut = bcdedit /export "$backupPath" 2>&1 | Out-String
-                if ($LASTEXITCODE -eq 0) {
+                $exitCode = $LASTEXITCODE
+                Track-Command -Command "bcdedit /export `"$backupPath`"" -Description "BCD backup creation" -ExitCode $exitCode -ErrorOutput $exportOut -TargetDrive $TargetDrive
+                
+                if ($exitCode -eq 0) {
                     $script:LastBackupPath = $backupPath
                     $rollbackPlan[0] = "Restore BCD from backup at $backupPath"
                     $actions += "BCD backup created at $backupPath"
                 } else {
-                    $blocker = "Failed to export BCD backup (exit $LASTEXITCODE). Aborting repair."
+                    $blocker = "Failed to export BCD backup (exit $exitCode). Aborting repair."
                     $actions += "BCD backup failed; repair aborted."
                 }
             } catch {
-                $blocker = "Failed to export BCD backup: $($_.Exception.Message)"
+                $errorMsg = $_.Exception.Message
+                Track-Command -Command "bcdedit /export `"$backupPath`"" -Description "BCD backup creation" -ExitCode -1 -ErrorOutput $errorMsg -TargetDrive $TargetDrive
+                $blocker = "Failed to export BCD backup: $errorMsg"
                 $actions += "BCD backup failed; repair aborted."
             }
         }
@@ -295,6 +2413,324 @@ function Invoke-DefensiveBootRepair {
         if ($diagOnly -or $DryRun -or $simulate) { $actions += "Destructive commands blocked by Environment Guard." }
         if ($bitlockerLocked -eq $true) { $actions += "Repair aborted: BitLocker locked." }
 
+        # AUTOMATIC REPAIR EXECUTION (when not in DiagnoseOnly mode)
+        $repairExecuted = $false
+        if (-not $diagOnly -and -not $DryRun -and -not $simulate -and -not $blocker -and -not $bitlockerLocked -and $selectedOS) {
+            # Auto-repair winload.efi if missing
+            if (-not $winloadExists) {
+                $actions += "Attempting automatic winload.efi repair..."
+                
+                # Step 1: Ensure ESP is mounted
+                if (-not $espMounted) {
+                    $mount = Mount-EspTemp -PreferredLetter "S"
+                    if ($mount) {
+                        $espMounted = $true
+                        $espLetter = "$($mount.Letter):"
+                        $mountedByUs = $true
+                        $actions += "ESP mounted to $espLetter"
+                        Track-Command -Command "mountvol $($mount.Letter): /S" -Description "Mount ESP partition" -ExitCode 0 -ErrorOutput $null -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    } else {
+                        $actions += "Failed to mount ESP automatically"
+                        Track-Command -Command "mountvol S: /S" -Description "Mount ESP partition" -ExitCode -1 -ErrorOutput "Failed to mount ESP" -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    }
+                }
+                
+                # Step 2: Search for winload.efi source (ULTIMATE HARDENED SEARCH)
+                $winloadSource = $null
+                $winloadSourcePath = $null
+                
+                # Use ultimate source discovery
+                $sourceSearch = Find-WinloadSourceUltimate -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                $actions += $sourceSearch.Actions
+                
+                if ($sourceSearch.BestSource) {
+                    $winloadSource = $sourceSearch.BestSource.Source
+                    $winloadSourcePath = $sourceSearch.BestSource.Path
+                    $actions += "✓ Selected best source: $winloadSourcePath (Confidence: $($sourceSearch.BestSource.Confidence), Size: $($sourceSearch.BestSource.Size) bytes)"
+                } else {
+                    # Fallback to original search method for compatibility
+                    foreach ($winInstall in $windowsInstalls) {
+                        if ($winInstall.Drive -ne $selectedOS.Drive) {
+                            $candidatePath = Resolve-WindowsPath -Path "$($winInstall.Drive)\Windows\System32\winload.efi" -SupportLongPath
+                            if ($candidatePath) {
+                                $existsCheck = Test-WinloadExistsComprehensive -Path $candidatePath
+                                if ($existsCheck.Exists) {
+                                    $winloadSource = $winInstall.Drive
+                                    $winloadSourcePath = $candidatePath
+                                    $actions += "Found winload.efi source (fallback): $candidatePath"
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    
+                    # Search in WinRE/current environment if no other source found
+                    if (-not $winloadSource) {
+                        $winrePaths = @(
+                            "$env:SystemRoot\System32\winload.efi",
+                            "X:\Windows\System32\winload.efi",
+                            "X:\sources\boot.wim\Windows\System32\winload.efi"
+                        )
+                        foreach ($winrePath in $winrePaths) {
+                            $resolvedPath = Resolve-WindowsPath -Path $winrePath -SupportLongPath
+                            if ($resolvedPath) {
+                                $existsCheck = Test-WinloadExistsComprehensive -Path $resolvedPath
+                                if ($existsCheck.Exists) {
+                                    $winloadSource = "WinRE"
+                                    $winloadSourcePath = $resolvedPath
+                                    $actions += "Found winload.efi source (fallback): $resolvedPath"
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                # Step 3: Copy winload.efi if source found (ULTIMATE HARDENED with comprehensive verification)
+                if ($winloadSourcePath) {
+                    $targetPath = Resolve-WindowsPath -Path "$($selectedOS.Drive)\Windows\System32\winload.efi" -SupportLongPath
+                    if (-not $targetPath) {
+                        $targetPath = "$($selectedOS.Drive)\Windows\System32\winload.efi"  # Fallback
+                    }
+                    
+                    # Comprehensive source file validation
+                    $sourceIntegrity = Test-FileIntegrity -FilePath $winloadSourcePath
+                    if (-not $sourceIntegrity.Valid) {
+                        $actions += "ERROR: Source file integrity check failed: $($sourceIntegrity.Details -join '; ')"
+                        $actions += "Source file: $winloadSourcePath"
+                    } else {
+                        $sourceFile = $sourceIntegrity.FileInfo
+                        $expectedSize = $sourceFile.Length
+                        $expectedHash = $null
+                        
+                        # Calculate source hash for verification
+                        $sourceHash = Get-FileHashSafe -FilePath $winloadSourcePath
+                        if ($sourceHash) {
+                            $expectedHash = $sourceHash.Hash
+                            $actions += "Source file verified: $expectedSize bytes, SHA256: $($expectedHash.Substring(0,16))..."
+                        } else {
+                            $actions += "Source file size: $expectedSize bytes (hash calculation skipped)"
+                        }
+                        
+                        # Try multiple copy methods with retries
+                        $copySuccess = $false
+                        $copyMethods = @(
+                            @{ Name = "Copy-Item"; Script = { Copy-Item -Path $winloadSourcePath -Destination $targetPath -Force -ErrorAction Stop } },
+                            @{ Name = "robocopy"; Script = { 
+                                $targetDir = Split-Path $targetPath -Parent
+                                $robocopyOut = robocopy (Split-Path $winloadSourcePath -Parent) $targetDir (Split-Path $winloadSourcePath -Leaf) /R:1 /W:1 /NFL /NDL /NJH /NJS 2>&1
+                                if ($LASTEXITCODE -lt 0 -or $LASTEXITCODE -gt 7) { throw "robocopy failed with exit code $LASTEXITCODE" }
+                            }},
+                            @{ Name = ".NET File.Copy"; Script = {
+                                [System.IO.File]::Copy($winloadSourcePath, $targetPath, $true)
+                            }}
+                        )
+                        
+                        foreach ($method in $copyMethods) {
+                            if ($copySuccess) { break }
+                            
+                            for ($attempt = 1; $attempt -le 3; $attempt++) {
+                                try {
+                                    # Ensure target directory exists
+                                    $targetDir = Split-Path $targetPath -Parent
+                                    if (-not (Test-Path $targetDir)) {
+                                        New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+                                    }
+                                    
+                                    # Force permissions before copy
+                                    if (Test-Path $targetPath) {
+                                        Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$targetPath`"" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                                        Start-Process -FilePath "icacls.exe" -ArgumentList "`"$targetPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                                        Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$targetPath`"" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                                    }
+                                    
+                                    # Execute copy method
+                                    & $method.Script
+                                    $actions += "Copy attempt $attempt using $($method.Name): executed"
+                                    
+                                    # Wait for file system sync
+                                    Start-Sleep -Milliseconds 500
+                                    
+                                    # ULTIMATE HARDENED VERIFICATION: Comprehensive integrity check
+                                    $targetIntegrity = Test-FileIntegrity -FilePath $targetPath -ExpectedSize $expectedSize -ExpectedHash $expectedHash
+                                    
+                                    if ($targetIntegrity.Valid) {
+                                        # Set permissions on copied file
+                                        $icaclsFinalProc = Start-Process -FilePath "icacls.exe" -ArgumentList "`"$targetPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+                                        Track-Command -Command "icacls `"$targetPath`" /grant Administrators:F (final)" -Description "Set final permissions on copied file" -ExitCode $(if ($icaclsFinalProc) { $icaclsFinalProc.ExitCode } else { -1 }) -ErrorOutput $null -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                                        
+                                        # Final comprehensive check
+                                        $finalCheck = Test-WinloadExistsComprehensive -Path $targetPath
+                                        if ($finalCheck.Exists -and $targetIntegrity.Readable) {
+                                            $copySuccess = $true
+                                            $winloadExists = $true
+                                            $bootFilesPresent = $true
+                                            $repairExecuted = $true
+                                            
+                                            $verifyMsg = "✓ ULTIMATE VERIFICATION PASSED: winload.efi copied successfully"
+                                            $verifyMsg += " ($($targetIntegrity.FileInfo.Length) bytes"
+                                            if ($targetIntegrity.HashMatch) {
+                                                $verifyMsg += ", hash verified"
+                                            }
+                                            $verifyMsg += ", readable, integrity confirmed)"
+                                            $actions += $verifyMsg
+                                            break
+                                        } else {
+                                            $actions += "⚠ Final check failed: $($finalCheck.Details)"
+                                        }
+                                    } else {
+                                        $actions += "⚠ Integrity verification failed: $($targetIntegrity.Details -join '; ')"
+                                        if ($targetIntegrity.FileInfo) {
+                                            $actualSize = $targetIntegrity.FileInfo.Length
+                                            $actions += "  Expected: $expectedSize bytes, Got: $actualSize bytes"
+                                        }
+                                    }
+                                } catch {
+                                    $actions += "Copy attempt $attempt using $($method.Name): FAILED - $($_.Exception.Message)"
+                                    if ($attempt -lt 3) {
+                                        Start-Sleep -Seconds ([Math]::Pow(2, $attempt))
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if (-not $copySuccess) {
+                            $actions += "❌ winload.efi copy FAILED after all methods and retries"
+                        }
+                    }
+                } else {
+                    $actions += "No winload.efi source found - cannot auto-repair (see manual guide below)"
+                }
+            }
+            
+            # Auto-fix BCD path if winload.efi now exists but BCD doesn't point to it
+            if ($winloadExists -and -not $bcdPathMatch) {
+                try {
+                    $bcdOut = bcdedit /set {default} path \Windows\system32\winload.efi 2>&1 | Out-String
+                    $exitCode = $LASTEXITCODE
+                    Track-Command -Command "bcdedit /set {default} path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi" -ExitCode $exitCode -ErrorOutput $bcdOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    
+                    if ($exitCode -eq 0) {
+                        $actions += "BCD path set to \\Windows\\system32\\winload.efi"
+                        
+                        # Set device and osdevice
+                        $driveLetter = $selectedOS.Drive.TrimEnd(':')
+                        $deviceOut = bcdedit /set {default} device partition=$driveLetter`: 2>&1 | Out-String
+                        $osdeviceOut = bcdedit /set {default} osdevice partition=$driveLetter`: 2>&1 | Out-String
+                        Track-Command -Command "bcdedit /set {default} device partition=$driveLetter`:" -Description "Set BCD device partition" -ExitCode $LASTEXITCODE -ErrorOutput $deviceOut -TargetDrive $driveLetter
+                        Track-Command -Command "bcdedit /set {default} osdevice partition=$driveLetter`:" -Description "Set BCD osdevice partition" -ExitCode $LASTEXITCODE -ErrorOutput $osdeviceOut -TargetDrive $driveLetter
+                        $actions += "BCD device/osdevice set to partition=$driveLetter`:"
+                        
+                        # Verify the fix
+                        $bcdCheck = bcdedit /enum {default} 2>&1 | Out-String
+                        Track-Command -Command "bcdedit /enum {default}" -Description "Verify BCD path fix" -ExitCode $LASTEXITCODE -ErrorOutput $null -TargetDrive $driveLetter
+                        if ($bcdCheck -match "winload\.efi") {
+                            $bcdPathMatch = $true
+                            $repairExecuted = $true
+                            $actions += "BCD path fix verified"
+                        }
+                    } else {
+                        $actions += "BCD path fix failed: $bcdOut"
+                    }
+                } catch {
+                    $errorMsg = $_.Exception.Message
+                    Track-Command -Command "bcdedit /set {default} path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi" -ExitCode -1 -ErrorOutput $errorMsg -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    $actions += "BCD path fix failed: $errorMsg"
+                }
+            }
+            
+            # Rebuild boot files if ESP is mounted and winload.efi exists
+            if ($espMounted -and $espLetter -and $winloadExists) {
+                try {
+                    $bcdbootOut = bcdboot "$($selectedOS.Drive)\Windows" /s $espLetter /f UEFI 2>&1 | Out-String
+                    $exitCode = $LASTEXITCODE
+                    Track-Command -Command "bcdboot `"$($selectedOS.Drive)\Windows`" /s $espLetter /f UEFI" -Description "Rebuild boot files using bcdboot" -ExitCode $exitCode -ErrorOutput $bcdbootOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    
+                    if ($exitCode -eq 0) {
+                        $actions += "Boot files rebuilt using bcdboot"
+                        $repairExecuted = $true
+                    } else {
+                        $actions += "bcdboot rebuild failed: $bcdbootOut"
+                    }
+                } catch {
+                    $errorMsg = $_.Exception.Message
+                    Track-Command -Command "bcdboot `"$($selectedOS.Drive)\Windows`" /s $espLetter /f UEFI" -Description "Rebuild boot files using bcdboot" -ExitCode -1 -ErrorOutput $errorMsg -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    $actions += "bcdboot rebuild failed: $errorMsg"
+                }
+            }
+        }
+
+        # POST-REPAIR VERIFICATION (ULTIMATE HARDENED - Comprehensive final check)
+        $actions += ""
+        $actions += "═══════════════════════════════════════════════════════════════════════════════"
+        $actions += "ULTIMATE POST-REPAIR VERIFICATION"
+        $actions += "═══════════════════════════════════════════════════════════════════════════════"
+        
+        # Re-check winload.efi with ultimate comprehensive verification
+        if ($selectedOS) {
+            $finalWinloadPath = Resolve-WindowsPath -Path "$($selectedOS.Drive)\Windows\System32\winload.efi" -SupportLongPath
+            if (-not $finalWinloadPath) {
+                $finalWinloadPath = "$($selectedOS.Drive)\Windows\System32\winload.efi"  # Fallback
+            }
+            
+            # Comprehensive existence check
+            $finalWinloadCheck = Test-WinloadExistsComprehensive -Path $finalWinloadPath
+            
+            if ($finalWinloadCheck.Exists) {
+                # Ultimate integrity verification
+                $finalIntegrity = Test-FileIntegrity -FilePath $finalWinloadPath
+                
+                $actions += "✓ winload.efi EXISTS at $finalWinloadPath (detected via: $($finalWinloadCheck.Method))"
+                $actions += "  File size: $($finalIntegrity.FileInfo.Length) bytes"
+                
+                if ($finalIntegrity.Valid) {
+                    $actions += "  ✓ File integrity VERIFIED"
+                    $actions += "    - Size match: $($finalIntegrity.SizeMatch)"
+                    $actions += "    - Readable: $($finalIntegrity.Readable)"
+                    $actions += "    - Size reasonable: $($finalIntegrity.SizeReasonable)"
+                    if ($finalIntegrity.HashMatch) {
+                        $actions += "    - Hash verified: ✓"
+                    }
+                    $winloadExists = $true
+                } else {
+                    $actions += "  ❌ File integrity CHECK FAILED:"
+                    foreach ($detail in $finalIntegrity.Details) {
+                        $actions += "    - $detail"
+                    }
+                    $winloadExists = $false
+                }
+            } else {
+                $actions += "❌ winload.efi MISSING at $finalWinloadPath"
+                $actions += "  Detection method: $($finalWinloadCheck.Method)"
+                $actions += "  Details: $($finalWinloadCheck.Details)"
+                $winloadExists = $false
+            }
+            
+            # Re-check BCD
+            try {
+                $finalBcdCheck = bcdedit /enum {default} 2>&1 | Out-String
+                if ($finalBcdCheck -match "winload\.efi") {
+                    $actions += "✓ BCD path correctly points to winload.efi"
+                    $bcdPathMatch = $true
+                } else {
+                    $actions += "❌ BCD path does NOT point to winload.efi"
+                    $bcdPathMatch = $false
+                }
+            } catch {
+                $actions += "⚠ Could not verify BCD: $($_.Exception.Message)"
+            }
+        }
+        
+        $actions += "═══════════════════════════════════════════════════════════════════════════════"
+        $actions += ""
+        
+        # Record remaining issues
+        $script:RemainingIssues = @()
+        if (-not $winloadExists) { $script:RemainingIssues += "winload.efi still missing" }
+        if (-not $bcdPathMatch) { $script:RemainingIssues += "BCD path still does not match" }
+        if ($bitlockerLocked) { $script:RemainingIssues += "BitLocker still locked" }
+        if ($storageDriverMissing) { $script:RemainingIssues += "Storage driver still missing" }
+        
         # Truth engine
         $bootable = $winloadExists -and $bcdPathMatch -and (-not $bitlockerLocked)
         $confidence = "LOW"
@@ -351,12 +2787,295 @@ function Invoke-DefensiveBootRepair {
 
         $output = @()
         $output += "--- FINAL REPAIR REPORT ---"
+        if ($repairExecuted) {
+            $output += "AUTO-REPAIR: Attempted automatic fixes (see ActionsExecuted below)"
+        }
         if ($bootable) { $output += "BOOT STATUS: LIKELY BOOTABLE" }
         else { $output += "BOOT STATUS: WILL NOT BOOT"; $output += "Blocker: $blockerFinal" }
         $output += "Confidence: $confidence"
         $output += "Plan: "
         foreach ($p in $plan) { $output += "  - $p" }
+        if ($repairExecuted) {
+            $output += ""
+            $output += "AUTO-REPAIR SUMMARY:"
+            $output += "───────────────────────────────────────────────────────────────────────────────"
+            $repairActions = $actions | Where-Object { $_ -match "winload|BCD|bcdboot|ESP mounted|repair" }
+            foreach ($action in $repairActions) {
+                $output += "  • $action"
+            }
+            if ($winloadExists -and $bcdPathMatch) {
+                $output += ""
+                $output += "✓ Auto-repair appears successful - winload.efi present and BCD configured"
+            } elseif ($winloadExists) {
+                $output += ""
+                $output += "⚠ Partial success - winload.efi restored but BCD may need manual fix"
+            } else {
+                $output += ""
+                $output += "✗ Auto-repair could not complete - see manual guide below"
+            }
+            $output += "───────────────────────────────────────────────────────────────────────────────"
+        }
+        
+        # Add comprehensive guide when winload.efi is missing and confidence is LOW
+        if (-not $winloadExists -and $confidence -eq "LOW" -and $selectedOS) {
+            $output += ""
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += "COMPREHENSIVE WINLOAD.EFI REPAIR GUIDE"
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += ""
+            $output += "STEP 1: IDENTIFY THE ESP (EFI System Partition)"
+            $output += "───────────────────────────────────────────────────────────────────────────────"
+            $output += "The ESP is a FAT32 partition, typically 100-550 MB, that contains boot files."
+            $output += ""
+            $output += "Commands to identify ESP:"
+            $output += "  • Get-Volume | Where-Object { `$_.FileSystem -eq 'FAT32' -and `$_.Size -lt 600MB }"
+            $output += "  • Get-Partition | Where-Object { `$_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' }"
+            $output += "  • diskpart"
+            $output += "    > list disk"
+            $output += "    > select disk X  (where X is your Windows disk)"
+            $output += "    > list partition"
+            $output += "    > select partition Y  (look for 'System' or 'EFI' type, FAT32, ~100-550 MB)"
+            $output += "    > detail partition"
+            $output += ""
+            $output += "What to look for:"
+            $output += "  ✓ FileSystem: FAT32"
+            $output += "  ✓ Size: Usually 100-550 MB (less than 600 MB)"
+            $output += "  ✓ GPT Type: {c12a7328-f81f-11d2-ba4b-00a0c93ec93b} (EFI System Partition)"
+            $output += "  ✓ May have drive letter already assigned, or may be hidden"
+            $output += ""
+            $output += "STEP 2: MOUNT THE ESP (If Not Already Mounted)"
+            $output += "───────────────────────────────────────────────────────────────────────────────"
+            $output += "If ESP doesn't have a drive letter, mount it temporarily:"
+            $output += ""
+            $output += "Method 1: Using mountvol (Recommended)"
+            $output += "  mountvol S: /S"
+            $output += "  # This mounts the system ESP to drive letter S:"
+            $output += "  # Replace S: with any available drive letter (Z:, Y:, X:, etc.)"
+            $output += ""
+            $output += "Method 2: Using diskpart"
+            $output += "  diskpart"
+            $output += "  > list disk"
+            $output += "  > select disk X"
+            $output += "  > list partition"
+            $output += "  > select partition Y  (select the ESP partition)"
+            $output += "  > assign letter=S"
+            $output += "  > exit"
+            $output += ""
+            $output += "Method 3: Using PowerShell (if partition has GUID)"
+            $output += "  `$espPart = Get-Partition | Where-Object { `$_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' }"
+            $output += "  `$espPart | Add-PartitionAccessPath -AssignDriveLetter"
+            $output += ""
+            $output += "Verify ESP is mounted:"
+            $output += "  dir S:\EFI\Microsoft\Boot"
+            $output += "  # Should show: bootmgfw.efi, BCD, and other boot files"
+            $output += ""
+            $output += "STEP 3: LOCATE WINLOAD.EFI SOURCE"
+            $output += "───────────────────────────────────────────────────────────────────────────────"
+            $output += "You need to find winload.efi from one of these sources:"
+            $output += ""
+            $output += "Option A: From Windows Installation Media (ISO/USB)"
+            $output += "  1. Mount your Windows ISO or insert Windows USB"
+            $output += "  2. Navigate to: sources\install.wim or sources\install.esd"
+            $output += "  3. Extract winload.efi using DISM:"
+            $output += "     dism /Get-WimInfo /WimFile:X:\sources\install.wim"
+            $output += "     # Note the index number for your Windows edition"
+            $output += "     dism /Mount-Wim /WimFile:X:\sources\install.wim /Index:1 /MountDir:C:\Mount"
+            $output += "     # Copy: C:\Mount\Windows\System32\winload.efi"
+            $output += "     dism /Unmount-Wim /MountDir:C:\Mount /Discard"
+            $output += ""
+            $output += "Option B: From Another Working Windows Installation"
+            $output += "  1. If you have another Windows installation on a different drive:"
+            $output += "     copy D:\Windows\System32\winload.efi C:\Windows\System32\winload.efi"
+            $output += ""
+            $output += "Option C: From Windows Recovery Environment (WinRE)"
+            $output += "  1. WinRE partition may have winload.efi:"
+            $output += "     dir /s X:\Windows\System32\winload.efi"
+            $output += "     # X: is typically WinRE in recovery environment"
+            $output += ""
+            $output += "STEP 4: COPY WINLOAD.EFI TO WINDOWS SYSTEM32"
+            $output += "───────────────────────────────────────────────────────────────────────────────"
+            $output += "Target location: $($selectedOS.Drive)\Windows\System32\winload.efi"
+            $output += ""
+            $output += "Commands:"
+            $output += "  # If source is on another drive (e.g., D:):"
+            $output += "  copy D:\Windows\System32\winload.efi $($selectedOS.Drive)\Windows\System32\winload.efi /Y"
+            $output += ""
+            $output += "  # If source is in mounted WIM:"
+            $output += "  copy C:\Mount\Windows\System32\winload.efi $($selectedOS.Drive)\Windows\System32\winload.efi /Y"
+            $output += ""
+            $output += "  # Verify the file was copied:"
+            $output += "  dir $($selectedOS.Drive)\Windows\System32\winload.efi"
+            $output += ""
+            $output += "STEP 5: VERIFY AND FIX BCD ENTRY"
+            $output += "───────────────────────────────────────────────────────────────────────────────"
+            $output += "Ensure BCD points to the correct winload.efi path:"
+            $output += ""
+            $output += "Commands:"
+            $output += "  # View current BCD entries:"
+            $output += "  bcdedit /enum all"
+            $output += ""
+            $output += "  # Check if default entry points to winload.efi:"
+            $output += "  bcdedit /enum {default}"
+            $output += ""
+            $output += "  # If path is wrong, set it correctly:"
+            $output += "  bcdedit /set {default} path \\Windows\\system32\\winload.efi"
+            $output += ""
+            $output += "  # Set device and osdevice (if needed):"
+            $output += "  bcdedit /set {default} device partition=$($selectedOS.Drive.TrimEnd(':')):"
+            $output += "  bcdedit /set {default} osdevice partition=$($selectedOS.Drive.TrimEnd(':')):"
+            $output += ""
+            $output += "  # Verify the fix:"
+            $output += "  bcdedit /enum {default} | findstr winload"
+            $output += ""
+            $output += "STEP 6: REBUILD BOOT FILES (If Needed)"
+            $output += "───────────────────────────────────────────────────────────────────────────────"
+            $output += "If winload.efi is present but boot still fails, rebuild boot files:"
+            $output += ""
+            $output += "Commands:"
+            $output += "  # Rebuild BCD (if ESP is mounted as S: and Windows is on C:):"
+            $output += "  bcdboot $($selectedOS.Drive)\Windows /s S: /f UEFI"
+            $output += ""
+            $output += "  # Alternative: Rebuild boot files using bootrec (if in WinRE):"
+            $output += "  bootrec /fixmbr"
+            $output += "  bootrec /fixboot"
+            $output += "  bootrec /rebuildbcd"
+            $output += ""
+            $output += "STEP 7: UNMOUNT ESP (When Done)"
+            $output += "───────────────────────────────────────────────────────────────────────────────"
+            $output += "If you mounted ESP manually, unmount it:"
+            $output += ""
+            $output += "Method 1: Using mountvol"
+            $output += "  mountvol S: /D"
+            $output += ""
+            $output += "Method 2: Using diskpart"
+            $output += "  diskpart"
+            $output += "  > select disk X"
+            $output += "  > select partition Y"
+            $output += "  > remove letter=S"
+            $output += "  > exit"
+            $output += ""
+            $output += "Method 3: Using PowerShell"
+            $output += "  `$espPart = Get-Partition | Where-Object { `$_.DriveLetter -eq 'S' }"
+            $output += "  `$espPart | Remove-PartitionAccessPath -DriveLetter S"
+            $output += ""
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += "QUICK REFERENCE: ALL COMMANDS IN ONE PLACE"
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += ""
+            $output += "# 1. Find ESP partition"
+            $output += "Get-Volume | Where-Object { `$_.FileSystem -eq 'FAT32' -and `$_.Size -lt 600MB }"
+            $output += ""
+            $output += "# 2. Mount ESP"
+            $output += "mountvol S: /S"
+            $output += ""
+            $output += "# 3. Verify ESP contents"
+            $output += "dir S:\EFI\Microsoft\Boot"
+            $output += ""
+            $output += "# 4. Copy winload.efi (adjust source path as needed)"
+            $output += "copy D:\Windows\System32\winload.efi $($selectedOS.Drive)\Windows\System32\winload.efi /Y"
+            $output += ""
+            $output += "# 5. Verify winload.efi exists"
+            $output += "dir $($selectedOS.Drive)\Windows\System32\winload.efi"
+            $output += ""
+            $output += "# 6. Fix BCD path"
+            $output += "bcdedit /set {default} path \\Windows\\system32\\winload.efi"
+            $output += "bcdedit /set {default} device partition=$($selectedOS.Drive.TrimEnd(':')):"
+            $output += "bcdedit /set {default} osdevice partition=$($selectedOS.Drive.TrimEnd(':')):"
+            $output += ""
+            $output += "# 7. Rebuild boot files (if needed)"
+            $output += "bcdboot $($selectedOS.Drive)\Windows /s S: /f UEFI"
+            $output += ""
+            $output += "# 8. Unmount ESP"
+            $output += "mountvol S: /D"
+            $output += ""
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += "TROUBLESHOOTING"
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += ""
+            $output += "Problem: 'mountvol S: /S' fails with 'parameter is incorrect'"
+            $output += "  Solution: ESP may already be mounted or drive letter S: is in use. Try:"
+            $output += "    • Use a different drive letter: mountvol Z: /S"
+            $output += "    • Check if ESP already has a drive letter: Get-Volume | Where-Object { `$_.FileSystem -eq 'FAT32' }"
+            $output += ""
+            $output += "Problem: Cannot find winload.efi source"
+            $output += "  Solution:"
+            $output += "    • Use Windows Installation Media (ISO/USB)"
+            $output += "    • Extract from install.wim using DISM (see Step 3, Option A)"
+            $output += "    • Check if another Windows installation exists: Get-Volume | Where-Object { Test-Path `"`$(`$_.DriveLetter):\Windows\System32\winload.efi`" }"
+            $output += ""
+            $output += "Problem: 'Access Denied' when copying winload.efi"
+            $output += "  Solution:"
+            $output += "    • Run PowerShell/CMD as Administrator"
+            $output += "    • Take ownership: takeown /f $($selectedOS.Drive)\Windows\System32\winload.efi"
+            $output += "    • Grant permissions: icacls $($selectedOS.Drive)\Windows\System32\winload.efi /grant Administrators:F"
+            $output += ""
+            $output += "Problem: BCD edit fails"
+            $output += "  Solution:"
+            $output += "    • Ensure you're in WinRE/WinPE (not full Windows)"
+            $output += "    • Backup BCD first: bcdedit /export C:\BCD_Backup.bak"
+            $output += "    • Try rebuilding: bcdboot $($selectedOS.Drive)\Windows /s S: /f UEFI"
+            $output += ""
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+        }
+        
         $output += $bundle
+        
+        # If repair failed, create and show comprehensive guidance document
+        if (-not $bootable -and -not $diagOnly -and -not $DryRun -and -not $simulate) {
+            $guidanceDoc = New-WinloadRepairGuidanceDocument -TargetDrive $selectedOS.Drive -WinloadExists $winloadExists -BcdPathMatch $bcdPathMatch -BitlockerLocked $bitlockerLocked -Actions $actions
+            $output += ""
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += "REPAIR FAILED - COMPREHENSIVE GUIDANCE DOCUMENT CREATED"
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += ""
+            $output += "A detailed manual repair guide has been created and will open in Notepad."
+            $output += "The guide contains step-by-step instructions to manually fix winload.efi issues."
+            $output += ""
+            $output += "Guidance document location: $($guidanceDoc.Path)"
+            $output += ""
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            
+            # Show guidance document in Notepad
+            try {
+                Start-Process notepad.exe -ArgumentList "`"$($guidanceDoc.Path)`""
+            } catch {
+                $output += "Could not open Notepad automatically. Please open: $($guidanceDoc.Path)"
+            }
+        }
+
+        # Generate comprehensive repair report (ALWAYS, not just on failure)
+        $reportPath = $null
+        if ($selectedOS) {
+            $reportPath = New-ComprehensiveRepairReport -TargetDrive $selectedOS.Drive.TrimEnd(':') -CommandHistory $script:CommandHistory -FailedCommands $script:FailedCommands -InitialIssues $script:InitialIssues -RemainingIssues $script:RemainingIssues -Actions $actions -Bootable $bootable -WinloadExists $winloadExists -BcdPathMatch $bcdPathMatch -BitlockerLocked $bitlockerLocked
+            
+            # Open report in Notepad (ALWAYS, so user can see what was done)
+            if ($reportPath) {
+                try {
+                    Start-Process notepad.exe -ArgumentList "`"$reportPath`""
+                    $output += ""
+                    $output += "═══════════════════════════════════════════════════════════════════════════════"
+                    $output += "COMPREHENSIVE REPAIR REPORT"
+                    $output += "═══════════════════════════════════════════════════════════════════════════════"
+                    $output += ""
+                    $output += "A detailed repair report has been created and opened in Notepad."
+                    $output += "The report shows:"
+                    $output += "  • All commands that were run"
+                    $output += "  • Which hard drive was repaired ($($selectedOS.Drive))"
+                    $output += "  • What was wrong initially"
+                    $output += "  • What is still wrong (if anything)"
+                    if ($script:FailedCommands.Count -gt 0) {
+                        $output += "  • CODE RED: Failed commands (see top of report)"
+                    }
+                    $output += "  • Additional fix suggestions (if needed)"
+                    $output += ""
+                    $output += "Report location: $reportPath"
+                    $output += ""
+                    $output += "═══════════════════════════════════════════════════════════════════════════════"
+                } catch {
+                    $output += "`nCould not open Notepad automatically. Report saved to: $reportPath"
+                }
+            }
+        }
 
         return [pscustomobject]@{
             Mode       = $resolvedMode
@@ -365,6 +3084,9 @@ function Invoke-DefensiveBootRepair {
             Blocker    = $blockerFinal
             Output     = ($output -join "`n")
             Bundle     = ($bundle -join "`n")
+            ReportPath = $reportPath
+            CommandHistory = $script:CommandHistory
+            FailedCommands = $script:FailedCommands
         }
     }
     finally {
