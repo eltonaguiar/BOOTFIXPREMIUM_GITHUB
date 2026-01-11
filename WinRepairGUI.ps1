@@ -3809,9 +3809,92 @@ function Invoke-BCDRefresh {
             Update-StatusBar -Message "Loading BCD Entries..." -ShowProgress
         }
 
-        $rawBcd = (& bcdedit /enum /v 2>&1) | Out-String
-        if ($LASTEXITCODE -ne 0 -or ($rawBcd -match "access is denied|could not be opened")) {
-            throw "bcdedit exited with code $LASTEXITCODE. Output:`n$rawBcd"
+        # Use Invoke-BCDCommandWithTimeout for consistent error handling
+        $bcdResult = $null
+        if (Get-Command Invoke-BCDCommandWithTimeout -ErrorAction SilentlyContinue) {
+            $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "/v") -TimeoutSeconds 30 -Description "Enumerate BCD entries"
+            $rawBcd = $bcdResult.Output
+        } else {
+            # Fallback to direct call if function not available
+            $rawBcd = (& bcdedit /enum /v 2>&1) | Out-String
+            $bcdResult = @{
+                ExitCode = $LASTEXITCODE
+                Output = $rawBcd
+                Success = ($LASTEXITCODE -eq 0)
+            }
+        }
+        
+        # Check for actual permission errors vs. BCD missing/corrupted
+        $isPermissionError = $rawBcd -match "Access is denied|access is denied"
+        $isBcdMissing = $rawBcd -match "could not be opened|cannot find|No bootable entries"
+        $isInvalidEntry = $rawBcd -match "specified entry type is invalid|The parameter is incorrect"
+        
+        if ($bcdResult.ExitCode -ne 0) {
+            # If it's a permission error, show admin dialog
+            if ($isPermissionError) {
+                throw "bcdedit exited with code $($bcdResult.ExitCode). Output:`n$rawBcd"
+            }
+            # If BCD is missing or invalid entry, try to recover
+            elseif ($isBcdMissing -or $isInvalidEntry) {
+                Update-UI {
+                    Update-StatusBar -Message "BCD missing or corrupted - attempting recovery..." -ShowProgress
+                }
+                
+                # Try to recover BCD using DefensiveBootCore functions if available
+                if (Get-Command Restore-BCDFromWinPE -ErrorAction SilentlyContinue) {
+                    # Find target drive (usually C:)
+                    $targetDrive = "C"
+                    $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and (Test-Path "$($_.DriveLetter):\Windows" -ErrorAction SilentlyContinue) }
+                    if ($volumes) {
+                        $targetDrive = $volumes[0].DriveLetter
+                    }
+                    
+                    # Try to find ESP
+                    $espLetter = $null
+                    $espVolumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and (Test-Path "$($_.DriveLetter):\EFI\Microsoft\Boot" -ErrorAction SilentlyContinue) }
+                    if ($espVolumes) {
+                        $espLetter = $espVolumes[0].DriveLetter
+                    }
+                    
+                    if ($espLetter) {
+                        $bcdPath = "$espLetter`:\EFI\Microsoft\Boot\BCD"
+                        $restoreResult = Restore-BCDFromWinPE -TargetBcdPath $bcdPath -EspLetter $espLetter
+                        if ($restoreResult.Restored) {
+                            Start-Sleep -Milliseconds 500
+                            # Retry enumeration
+                            $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "/v") -TimeoutSeconds 30 -Description "Re-enumerate BCD after restore"
+                            $rawBcd = $bcdResult.Output
+                        }
+                    }
+                }
+                
+                # If still failing, check if we need to create {default} entry
+                if ($bcdResult.ExitCode -ne 0 -and $isInvalidEntry) {
+                    if (Get-Command Create-BCDDefaultEntry -ErrorAction SilentlyContinue) {
+                        $targetDrive = "C"
+                        $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and (Test-Path "$($_.DriveLetter):\Windows" -ErrorAction SilentlyContinue) }
+                        if ($volumes) {
+                            $targetDrive = $volumes[0].DriveLetter
+                        }
+                        
+                        $createResult = Create-BCDDefaultEntry -BcdStore "BCD" -TargetDrive $targetDrive
+                        if ($createResult.Success) {
+                            Start-Sleep -Milliseconds 500
+                            # Retry enumeration
+                            $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "/v") -TimeoutSeconds 30 -Description "Re-enumerate BCD after creating entry"
+                            $rawBcd = $bcdResult.Output
+                        }
+                    }
+                }
+                
+                # If still failing after recovery attempts, throw error
+                if ($bcdResult.ExitCode -ne 0) {
+                    throw "BCD could not be accessed or recovered. Exit code: $($bcdResult.ExitCode). Output:`n$rawBcd"
+                }
+            } else {
+                # Other error
+                throw "bcdedit exited with code $($bcdResult.ExitCode). Output:`n$rawBcd"
+            }
         }
         
         Update-UI {
@@ -3932,7 +4015,12 @@ function Invoke-BCDRefresh {
             Write-Warning "Could not update status bar: $_"
         }
 
-        if ($errorMsg -match "access is denied|could not be opened|Access Denied") {
+        # Distinguish between permission errors and BCD missing/corrupted errors
+        $isPermissionError = $errorMsg -match "Access is denied|access is denied" -and -not ($errorMsg -match "could not be opened.*cannot find|No bootable entries|specified entry type is invalid")
+        $isBcdMissing = $errorMsg -match "could not be opened.*cannot find|No bootable entries|specified entry type is invalid|BCD could not be accessed or recovered"
+        
+        if ($isPermissionError) {
+            # Actual permission error - show admin dialog
             $result = Show-MessageBoxSafe -Message (
                 "BCD Access Denied: The boot configuration data store could not be opened.`n`n" +
                 "This operation requires administrator privileges.`n`n" +
@@ -3940,6 +4028,64 @@ function Invoke-BCDRefresh {
             ) -Title "Administrator Privileges Required" -Button ([System.Windows.MessageBoxButton]::YesNo) -Icon ([System.Windows.MessageBoxImage]::Warning)
             if ($result -eq [System.Windows.MessageBoxResult]::Yes) {
                 Show-AdminInstructionsWindow
+            }
+        } elseif ($isBcdMissing) {
+            # BCD missing or corrupted - suggest repair
+            $result = Show-MessageBoxSafe -Message (
+                "BCD Missing or Corrupted: The boot configuration data store could not be accessed.`n`n" +
+                "This may indicate a missing or corrupted BCD file.`n`n" +
+                "Would you like to attempt automatic repair?"
+            ) -Title "BCD Recovery Required" -Button ([System.Windows.MessageBoxButton]::YesNo) -Icon ([System.Windows.MessageBoxImage]::Warning)
+            if ($result -eq [System.Windows.MessageBoxResult]::Yes) {
+                # Try to run repair
+                Update-UI {
+                    Update-StatusBar -Message "Attempting BCD repair..." -ShowProgress
+                }
+                try {
+                    # Find target drive
+                    $targetDrive = "C"
+                    $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and (Test-Path "$($_.DriveLetter):\Windows" -ErrorAction SilentlyContinue) }
+                    if ($volumes) {
+                        $targetDrive = $volumes[0].DriveLetter
+                    }
+                    
+                    # Find ESP
+                    $espLetter = $null
+                    $espVolumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter -and (Test-Path "$($_.DriveLetter):\EFI\Microsoft\Boot" -ErrorAction SilentlyContinue) }
+                    if ($espVolumes) {
+                        $espLetter = $espVolumes[0].DriveLetter
+                    }
+                    
+                    # Try repair if DefensiveBootCore is loaded
+                    if (Get-Command Repair-BCDBruteForce -ErrorAction SilentlyContinue) {
+                        $repairResult = Repair-BCDBruteForce -TargetDrive $targetDrive -EspLetter $espLetter
+                        if ($repairResult.Success) {
+                            Update-UI {
+                                Update-StatusBar -Message "BCD repair successful - refreshing..." -ShowProgress
+                            }
+                            Start-Sleep -Milliseconds 500
+                            # Retry loading BCD
+                            Invoke-BCDRefresh -ButtonControl $ButtonControl
+                            return
+                        } else {
+                            Show-MessageBoxSafe -Message (
+                                "BCD repair attempted but was not successful.`n`n" +
+                                "Actions taken:`n$($repairResult.Actions -join "`n")`n`n" +
+                                "You may need to use the 'One-Click Repair' feature for a complete repair."
+                            ) -Title "BCD Repair Incomplete" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Information)
+                        }
+                    } else {
+                        Show-MessageBoxSafe -Message (
+                            "BCD repair functions are not available.`n`n" +
+                            "Please use the 'One-Click Repair' feature from the main window to repair the BCD."
+                        ) -Title "Repair Functions Not Available" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Information)
+                    }
+                } catch {
+                    Show-MessageBoxSafe -Message (
+                        "Error during BCD repair attempt: $($_.Exception.Message)`n`n" +
+                        "Please use the 'One-Click Repair' feature for a complete repair."
+                    ) -Title "Repair Error" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Error)
+                }
             }
         } else {
             $extra = if ($logPath) { "`n`nDetails logged to:`n$logPath" } else { "" }
