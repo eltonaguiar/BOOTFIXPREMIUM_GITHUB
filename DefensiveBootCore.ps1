@@ -4726,15 +4726,6 @@ function Invoke-DefensiveBootRepair {
         if ($bootable -and $espMounted -and $bootFilesPresent -and -not $storageDriverMissing) { $confidence = "HIGH" }
         elseif ($bootable) { $confidence = "MEDIUM" }
         elseif (-not $bootable -and (-not $winloadExists -or $bitlockerLocked -or -not $bcdPathMatch)) { $confidence = "HIGH" }
-        
-        # Convert confidence string to numeric value for comparison (HIGH=90, MEDIUM=60, LOW=30)
-        $bootabilityConfidence = switch ($confidence) {
-            "HIGH" { 90 }
-            "MEDIUM" { 60 }
-            "LOW" { 30 }
-            default { 0 }
-        }
-        
         $blockerFinal = $null
         if (-not $bootable) {
             if (-not $winloadExists) { $blockerFinal = "winload.efi missing" }
