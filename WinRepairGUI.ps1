@@ -5026,6 +5026,10 @@ if ($btnOneClickRepair) {
                         $infHints += $md.RequiredInf
                     }
                 }
+                # Ensure $infHints is always an array before accessing .Count
+                if ($null -eq $infHints) { $infHints = @() }
+                if ($infHints -isnot [array]) { $infHints = @($infHints) }
+                
                 if ($infHints.Count -gt 0) {
                     $null = $summaryBuilder.AppendLine("  Suggested driver INF to search: " + ($infHints | Select-Object -Unique -join "; "))
                 } else {
