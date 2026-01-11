@@ -2940,6 +2940,13 @@ if ($null -ne $W) {
                                     $_ -match "❌|MISSING|FAILED|does NOT|still missing|still does not|cannot be|not readable" 
                                 } | Select-Object -First 10
                                 
+                                # Ensure $issueLines is always an array before accessing .Count
+                                if ($null -eq $issueLines) {
+                                    $issueLines = @()
+                                } elseif ($issueLines -isnot [array]) {
+                                    $issueLines = @($issueLines)
+                                }
+                                
                                 if ($issueLines.Count -gt 0) {
                                     $statusText += "`nSpecific Issues Found:`n"
                                     $statusText += "────────────────────────────────────────`n"
