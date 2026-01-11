@@ -2689,17 +2689,18 @@ if ($null -ne $W) {
                         "One-Click Repair: Performing repairs...",
                         "One-Click Repair: Verifying bootability..."
                     )
-                    $stepIndex = 0
+                    # Use script scope for stepIndex so it's accessible in the timer callback
+                    $script:stepIndex = 0
                     $progressTimer = New-Object System.Windows.Threading.DispatcherTimer
                     $progressTimer.Interval = [TimeSpan]::FromSeconds(2)
                     $progressTimer.Add_Tick({
-                        if ($stepIndex -lt $progressSteps.Count - 1) {
-                            $stepIndex++
-                            Update-StatusBar -Message $progressSteps[$stepIndex] -ShowProgress
+                        if ($script:stepIndex -lt $progressSteps.Count - 1) {
+                            $script:stepIndex++
+                            Update-StatusBar -Message $progressSteps[$script:stepIndex] -ShowProgress
                         } else {
                             # Cycle back to show activity
-                            $stepIndex = 0
-                            Update-StatusBar -Message $progressSteps[$stepIndex] -ShowProgress
+                            $script:stepIndex = 0
+                            Update-StatusBar -Message $progressSteps[$script:stepIndex] -ShowProgress
                         }
                     })
                     $progressTimer.Start()
