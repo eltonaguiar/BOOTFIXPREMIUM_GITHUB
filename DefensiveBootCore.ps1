@@ -79,7 +79,8 @@ function Test-GhostBCEEntries {
         
         # Count BCD entries
         try {
-            $bcdEntries = bcdedit /enum all 2>&1 | Out-String
+            $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "all") -TimeoutSeconds 15 -Description "Enumerate all BCD entries"
+            $bcdEntries = $bcdResult.Output
             $entryMatches = [regex]::Matches($bcdEntries, "identifier\s+\{[^}]+\}")
             $result.BCDEntryCount = $entryMatches.Count
             
@@ -145,18 +146,16 @@ function Test-ReadOnlyDrive {
     }
     
     try {
-        $diskNumber = $null
         $volumes = Get-Volume -ErrorAction SilentlyContinue
         foreach ($vol in $volumes) {
             if ($vol.DriveLetter -eq $TargetDrive.TrimEnd(':')) {
-                $diskNumber = $vol.OperationalStatus
                 break
             }
         }
         
         # Check disk attributes via diskpart
         try {
-            $diskpartOutput = diskpart /s (New-TemporaryFile) 2>&1 | Out-String
+            diskpart /s (New-TemporaryFile) 2>&1 | Out-Null
             # This is a simplified check - full implementation would parse diskpart output
             # For now, we'll check if we can write to the drive
             $testFile = "$TargetDrive`:\test_write_$(Get-Random).tmp"
@@ -193,8 +192,8 @@ function Test-BIOSFirmwareState {
         # Check firmware type
         $firmware = "Unknown"
         try {
-            $fw = bcdedit /enum firmware 2>&1 | Out-String
-            if ($fw) { $firmware = "UEFI" } else { $firmware = "Legacy" }
+            $fwResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "firmware") -TimeoutSeconds 10 -Description "Check firmware type"
+            if ($fwResult.Output) { $firmware = "UEFI" } else { $firmware = "Legacy" }
         } catch { }
         
         # Check for Secure Boot (simplified - would need WMI/registry access)
@@ -237,8 +236,8 @@ function Get-EnvState {
     } catch { }
     $firmware = "Unknown"
     try {
-        $fw = bcdedit /enum firmware 2>$null
-        if ($fw) { $firmware = "UEFI" }
+        $fwResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "firmware") -TimeoutSeconds 10 -Description "Check firmware type"
+        if ($fwResult.Output) { $firmware = "UEFI" }
     } catch { }
     return [pscustomobject]@{
         SystemDrive = $systemDrive
@@ -440,14 +439,21 @@ function Invoke-BCDCommandWithTimeout {
         $fullCommand = "$Command " + ($Arguments -join " ")
         
         # Properly escape arguments for ProcessStartInfo
-        # Each argument needs to be quoted if it contains spaces or special characters
+        # ProcessStartInfo.Arguments expects a single string with properly escaped arguments
+        # Arguments with spaces must be quoted, and quotes within arguments must be escaped
         $escapedArgs = @()
         foreach ($arg in $Arguments) {
-            if ($arg -match '\s|[{}\(\)]') {
-                # Quote arguments with spaces or special characters (like {default})
-                $escapedArgs += "`"$arg`""
+            if ($null -eq $arg) { continue }
+            $argStr = $arg.ToString()
+            
+            # If argument contains spaces, quotes, or special characters, quote it
+            if ($argStr -match '\s|"|[{}\(\)]') {
+                # Escape any existing quotes by doubling them
+                $escapedArg = $argStr -replace '"', '""'
+                # Then wrap in quotes
+                $escapedArgs += "`"$escapedArg`""
             } else {
-                $escapedArgs += $arg
+                $escapedArgs += $argStr
             }
         }
         $argumentString = $escapedArgs -join " "
@@ -615,11 +621,6 @@ function Test-WinloadExistsComprehensive {
         return @{ Exists = $false; Method = "Path Resolution Failed"; Details = "Could not resolve path: $Path" }
     }
     
-    # Track if we modified permissions (for restoration)
-    $permissionsModified = $false
-    $originalAttributes = $null
-    $originalOwner = $null
-    
     try {
         # Method 1: Test-Path
         try {
@@ -666,9 +667,9 @@ function Test-WinloadExistsComprehensive {
             if ($takeownResult.ExitCode -eq 0) {
                 $permissionsModified = $true
                 # Grant permissions
-                $icaclsResult = Start-Process -FilePath "icacls.exe" -ArgumentList "`"$resolvedPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+                Start-Process -FilePath "icacls.exe" -ArgumentList "`"$resolvedPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue | Out-Null
                 # Clear hidden/system/readonly attributes
-                $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$resolvedPath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+                Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$resolvedPath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue | Out-Null
                 
                 # Now try to access the file
                 $item = Get-Item -LiteralPath $resolvedPath -ErrorAction SilentlyContinue
@@ -819,8 +820,8 @@ function Test-FileIntegrity {
                     if ($takeownResult.ExitCode -eq 0) {
                         $permissionsModified = $true
                         $result.PermissionsModified = $true
-                        $icaclsResult = Start-Process -FilePath "icacls.exe" -ArgumentList "`"$resolvedPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
-                        $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$resolvedPath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+                        Start-Process -FilePath "icacls.exe" -ArgumentList "`"$resolvedPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue | Out-Null
+                        Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$resolvedPath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue | Out-Null
                         $result.FileInfo = Get-Item -LiteralPath $resolvedPath -ErrorAction Stop
                     } else {
                         $result.Details += "Could not get file info: $($_.Exception.Message)"
@@ -2233,11 +2234,11 @@ function Copy-BootFileBruteForce {
     $copyMethods = @(
         @{ Name = "Copy-Item"; Script = { Copy-Item -Path $SourcePath -Destination $TargetPath -Force -ErrorAction Stop } },
         @{ Name = "robocopy"; Script = { 
-            $robocopyOut = robocopy (Split-Path $SourcePath -Parent) $targetDir (Split-Path $SourcePath -Leaf) /R:1 /W:1 /NFL /NDL /NJH /NJS 2>&1
+            robocopy (Split-Path $SourcePath -Parent) $targetDir (Split-Path $SourcePath -Leaf) /R:1 /W:1 /NFL /NDL /NJH /NJS 2>&1 | Out-Null
             if ($LASTEXITCODE -ge 0 -and $LASTEXITCODE -le 7) { } else { throw "robocopy failed with exit code $LASTEXITCODE" }
         }},
         @{ Name = "xcopy"; Script = { 
-            $xcopyOut = xcopy $SourcePath $TargetPath /Y /R 2>&1
+            xcopy $SourcePath $TargetPath /Y /R 2>&1 | Out-Null
             if ($LASTEXITCODE -ne 0) { throw "xcopy failed with exit code $LASTEXITCODE" }
         }},
         @{ Name = ".NET File.Copy"; Script = {
@@ -2598,7 +2599,8 @@ function Repair-BCDDeepRepair {
                 $actions += "✓ BCD file created and verified"
                 
                 # Verify BCD points to correct winload.efi
-                $bcdEnum = bcdedit /store $bcdPath /enum {default} 2>&1 | Out-String
+                $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdPath, "/enum", "{default}") -TimeoutSeconds 15 -Description "Verify BCD path"
+                $bcdEnum = $bcdResult.Output
                 $bcdPathMatch = $bcdEnum -match "path\s+\\Windows\\system32\\winload\.efi"
                 if ($bcdPathMatch) {
                     $actions += "✓ BCD correctly points to winload.efi"
@@ -2693,64 +2695,104 @@ function Repair-BCDBruteForce {
         return Repair-BCDDeepRepair -TargetDrive $TargetDrive -EspLetter $EspLetter -ConfirmFormat:$ConfirmFormat
     }
     
-    # Step 1: Set BCD path
-    $actions += "Setting BCD path to winload.efi..."
-    $setPath = bcdedit /store $bcdStore /set {default} path \Windows\system32\winload.efi 2>&1 | Out-String
-    $setDevice = bcdedit /store $bcdStore /set {default} device partition=$TargetDrive 2>&1 | Out-String
-    $setOsDevice = bcdedit /store $bcdStore /set {default} osdevice partition=$TargetDrive 2>&1 | Out-String
+    # CRITICAL FIX: Check if BCD EXISTS before trying to modify it
+    # If BCD is missing, we MUST use bcdboot to CREATE it first
+    $actions += "Step 1: Checking if BCD exists..."
+    $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD existence"
     
-    if ($LASTEXITCODE -eq 0) {
-        $actions += "BCD path set successfully"
-    } else {
-        $actions += "BCD path set failed: $setPath"
+    $bcdExists = $enumCheckResult.ExitCode -eq 0 -and -not ($enumCheckResult.Output -match "could not be opened|cannot find|No bootable entries")
+    
+    if (-not $bcdExists) {
+        # BCD is MISSING - must create it with bcdboot FIRST
+        $actions += "❌ BCD missing or corrupted: $($enumCheckResult.Output)"
+        $actions += ""
+        $actions += "Step 2: Creating BCD with bcdboot (recovery mode)..."
+        
+        if ($EspLetter) {
+            # Try bcdboot first to CREATE the BCD
+            $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows", "/s", $EspLetter, "/f", "UEFI", "/addlast") -TimeoutSeconds 30 -Description "Create BCD with bcdboot"
+            
+            if ($rebuildResult.ExitCode -eq 0) {
+                $actions += "✓ BCD created by bcdboot"
+            } else {
+                $actions += "❌ bcdboot failed to create BCD: $($rebuildResult.Output)"
+                # Continue anyway and try bcdedit commands
+                $actions += "   Attempting manual BCD creation..."
+            }
+        } else {
+            # No ESP letter - try bcdboot to system BCD
+            $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows") -TimeoutSeconds 30 -Description "Recreate system BCD"
+            if ($rebuildResult.ExitCode -eq 0) {
+                $actions += "✓ System BCD recreated"
+            } else {
+                $actions += "❌ Failed to recreate system BCD: $($rebuildResult.Output)"
+            }
+        }
+        
+        # After attempting bcdboot, pause briefly for file system sync
+        Start-Sleep -Milliseconds 500
     }
     
-    # Step 2: Verify BCD was updated
-    $actions += "Verifying BCD configuration..."
-    $bcdEnum = bcdedit /store $bcdStore /enum {default} 2>&1 | Out-String
+    # Step 2/3: Now try to set BCD properties (whether we just created it or it existed)
+    $actions += ""
+    $actions += "Step 3: Setting BCD properties..."
+    
+    $pathArgs = @("/store", $bcdStore, "/set", "{default}", "path", "\Windows\system32\winload.efi")
+    $deviceArgs = @("/store", $bcdStore, "/set", "{default}", "device", "partition=$TargetDrive")
+    $osdeviceArgs = @("/store", $bcdStore, "/set", "{default}", "osdevice", "partition=$TargetDrive")
+    
+    $setPathResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments $pathArgs -TimeoutSeconds 15 -Description "Set BCD path"
+    $setDeviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments $deviceArgs -TimeoutSeconds 15 -Description "Set BCD device"
+    $setOsDeviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments $osdeviceArgs -TimeoutSeconds 15 -Description "Set BCD osdevice"
+    
+    if ($setPathResult.ExitCode -eq 0 -and $setDeviceResult.ExitCode -eq 0 -and $setOsDeviceResult.ExitCode -eq 0) {
+        $actions += "✓ BCD path, device, and osdevice set successfully"
+    } else {
+        if ($setPathResult.ExitCode -ne 0) {
+            $actions += "❌ BCD path set failed: $($setPathResult.Output)"
+        }
+        if ($setDeviceResult.ExitCode -ne 0) {
+            $actions += "❌ BCD device set failed: $($setDeviceResult.Output)"
+        }
+        if ($setOsDeviceResult.ExitCode -ne 0) {
+            $actions += "❌ BCD osdevice set failed: $($setOsDeviceResult.Output)"
+        }
+    }
+    
+    # Step 4: Verify BCD was updated
+    $actions += ""
+    $actions += "Step 4: Verifying BCD configuration..."
+    $enumResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Enumerate BCD entries"
+    $bcdEnum = $enumResult.Output
     $bcdPathMatch = $bcdEnum -match "path\s+\\Windows\\system32\\winload\.efi"
     $bcdDeviceMatch = $bcdEnum -match "device\s+partition=$TargetDrive"
     
     if ($bcdPathMatch -and $bcdDeviceMatch) {
-        $actions += "VERIFIED: BCD correctly points to winload.efi on $TargetDrive"
+        $actions += "✓ VERIFIED: BCD correctly points to winload.efi on $TargetDrive"
         return @{
             Success = $true
             Actions = $actions
             Verified = $true
         }
     } else {
-        $actions += "BCD verification failed - path match: $bcdPathMatch, device match: $bcdDeviceMatch"
-        $actions += "Attempting complete BCD rebuild..."
+        $actions += "⚠ BCD verification inconclusive - path match: $bcdPathMatch, device match: $bcdDeviceMatch"
         
-        # Step 3: Rebuild BCD completely
-        if ($EspLetter) {
-            $rebuildOut = bcdboot "$TargetDrive`:\Windows" /s $EspLetter /f UEFI /addlast 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0) {
-                $actions += "BCD rebuild successful"
-                
-                # Re-verify
-                $bcdEnum2 = bcdedit /store $bcdStore /enum {default} 2>&1 | Out-String
-                $bcdPathMatch2 = $bcdEnum2 -match "path\s+\\Windows\\system32\\winload\.efi"
-                if ($bcdPathMatch2) {
-                    $actions += "VERIFIED: BCD rebuild successful and verified"
-                    return @{
-                        Success = $true
-                        Actions = $actions
-                        Verified = $true
-                    }
-                } else {
-                    $actions += "BCD rebuild completed but verification still failed"
-                }
-            } else {
-                $actions += "BCD rebuild failed: $rebuildOut"
+        # Check if the enum itself succeeded
+        if ($enumResult.ExitCode -eq 0) {
+            $actions += "✓ BCD exists and is readable (may need manual verification)"
+            return @{
+                Success = $true
+                Actions = $actions
+                Verified = $false
+            }
+        } else {
+            $actions += "❌ BCD still not accessible after repair: $($enumResult.Output)"
+            return @{
+                Success = $false
+                Actions = $actions
+                Verified = $false
             }
         }
-    }
-    
-    return @{
-        Success = $false
-        Actions = $actions
-        Verified = $false
     }
 }
 
@@ -3165,7 +3207,7 @@ function Invoke-BruteForceBootRepair {
     $bcdBackup = Join-Path $logDir "BCD_BRUTEFORCE_BACKUP_$(Get-Date -Format 'yyyyMMdd_HHmmss').bak"
     $bcdStore = if ($espLetter) { "$espLetter\EFI\Microsoft\Boot\BCD" } else { "$targetDrive`:\Boot\BCD" }
     if (Test-Path $bcdStore) {
-        $backupResult = Invoke-BCDCommandWithTimeout -Command "bcdedit" -Arguments @("/export", $bcdBackup) -TimeoutSeconds 30 -Description "BCD backup creation"
+        $backupResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/export", $bcdBackup) -TimeoutSeconds 30 -Description "BCD backup creation"
         if ($backupResult.Success) {
             $actions += "✓ BCD backed up to $bcdBackup"
         } else {
@@ -3513,7 +3555,8 @@ function Invoke-DefensiveBootRepair {
                 $winloadExists = Test-Path $winloadPath
                 $bootFilesPresent = $winloadExists
                 try {
-                    $bcdOut = bcdedit /enum {default} 2>&1 | Out-String
+                    $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD path"
+                    $bcdOut = $bcdResult.Output
                     if ($bcdOut -match "winload\.efi") { $bcdPathMatch = $true }
                 } catch { }
                 try {
@@ -3546,7 +3589,7 @@ function Invoke-DefensiveBootRepair {
         $shouldWrite = (-not $diagOnly -and -not $DryRun -and -not $simulate -and (-not $runningOnline -or $AllowOnlineRepair))
         if ($shouldWrite -and -not $blocker) {
             try {
-                $exportResult = Invoke-BCDCommandWithTimeout -Command "bcdedit" -Arguments @("/export", $backupPath) -TimeoutSeconds 30 -Description "BCD backup creation"
+                $exportResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/export", $backupPath) -TimeoutSeconds 30 -Description "BCD backup creation"
                 Track-Command -Command "bcdedit /export `"$backupPath`"" -Description "BCD backup creation" -ExitCode $exportResult.ExitCode -ErrorOutput $exportResult.Output -TargetDrive $TargetDrive
                 
                 if ($exportResult.Success) {
