@@ -2799,8 +2799,10 @@ function Repair-BCDBruteForce {
     )
     
     $actions = @()
-    $bcdStore = if ($EspLetter) { "$EspLetter\EFI\Microsoft\Boot\BCD" } else { "BCD" }
-    $bcdPath = if ($EspLetter) { "$EspLetter`:\EFI\Microsoft\Boot\BCD" } else { "$TargetDrive`:\Boot\BCD" }
+    # Normalize ESP letter - strip colon if present for /store parameter
+    $espLetterClean = if ($EspLetter) { $EspLetter.TrimEnd(':') } else { $null }
+    $bcdStore = if ($espLetterClean) { "$espLetterClean\EFI\Microsoft\Boot\BCD" } else { "BCD" }
+    $bcdPath = if ($espLetterClean) { "$espLetterClean`:\EFI\Microsoft\Boot\BCD" } else { "$TargetDrive`:\Boot\BCD" }
     
     # Pre-flight: Check BitLocker
     $bitlockerUnlocked = Test-BitLockerUnlocked -TargetDrive $TargetDrive
@@ -2853,9 +2855,9 @@ function Repair-BCDBruteForce {
         $actions += ""
         
         # NEW: Try to restore from WinPE X: drive first
-        if ($EspLetter -and (Test-Path $bcdPath -ErrorAction SilentlyContinue)) {
+        if ($espLetterClean -and (Test-Path $bcdPath -ErrorAction SilentlyContinue)) {
             $actions += "Step 1a: Attempting to restore BCD from WinPE X: drive..."
-            $restoreResult = Restore-BCDFromWinPE -TargetBcdPath $bcdPath -EspLetter $EspLetter
+            $restoreResult = Restore-BCDFromWinPE -TargetBcdPath $bcdPath -EspLetter $espLetterClean
             $actions += $restoreResult.Actions
             if ($restoreResult.Restored) {
                 # Re-check after restore
@@ -2885,9 +2887,9 @@ function Repair-BCDBruteForce {
             $actions += ""
             $actions += "Step 2: Creating BCD with bcdboot (recovery mode)..."
             
-            if ($EspLetter) {
+            if ($espLetterClean) {
                 # Try bcdboot first to CREATE the BCD
-                $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows", "/s", $EspLetter, "/f", "UEFI", "/addlast") -TimeoutSeconds 30 -Description "Create BCD with bcdboot"
+                $rebuildResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$TargetDrive`:\Windows", "/s", $espLetterClean, "/f", "UEFI", "/addlast") -TimeoutSeconds 30 -Description "Create BCD with bcdboot"
                 
                 if ($rebuildResult.ExitCode -eq 0) {
                     $actions += "✓ BCD created by bcdboot"
@@ -3527,7 +3529,9 @@ function Invoke-BruteForceBootRepair {
             Blocked = "BitLocker locked"
         }
     } else {
-        $bcdResult = Repair-BCDBruteForce -TargetDrive $targetDrive -EspLetter $espLetter -WinloadPath $targetPath
+        # Normalize ESP letter - strip colon if present
+        $espLetterForRepair = if ($espLetter) { $espLetter.TrimEnd(':') } else { $null }
+        $bcdResult = Repair-BCDBruteForce -TargetDrive $targetDrive -EspLetter $espLetterForRepair -WinloadPath $targetPath
         $actions += $bcdResult.Actions
     }
     
