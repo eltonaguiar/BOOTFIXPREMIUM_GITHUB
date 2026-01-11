@@ -137,28 +137,73 @@ if (-not (Test-Path variable:script:progressSteps)) {
 }
 
 # Load centralized logging system
+# CRITICAL: Use defensive loading to prevent call depth overflow from recursive Write-Warning wrappers
 $script:LoggingAvailable = $false
-try {
-    if (Test-Path "$script:ScriptRootSafe\ErrorLogging.ps1") {
-        . "$script:ScriptRootSafe\ErrorLogging.ps1"
-        $null = Initialize-ErrorLogging -ScriptRoot $script:ScriptRootSafe -RetentionDays 7
-        try { Add-MiracleBootLog -Level "INFO" -Message "WinRepairGUI.ps1 loaded" -Location "WinRepairGUI.ps1" -ErrorAction SilentlyContinue } catch { $script:LoggingAvailable = $false }
-        $script:LoggingAvailable = $true
-    } else {
-        # Fallback if ErrorLogging.ps1 not found - define stub function
+$script:ErrorLoggingLoaded = $false
+
+# Prevent infinite recursion by tracking if we're already loading ErrorLogging
+if (-not $script:ErrorLoggingLoading) {
+    $script:ErrorLoggingLoading = $true
+    try {
+        $errorLoggingPath = "$script:ScriptRootSafe\ErrorLogging.ps1"
+        if (Test-Path $errorLoggingPath) {
+            # Load with error action stop to catch any issues immediately
+            try {
+                . $errorLoggingPath -ErrorAction Stop
+                
+                # Check if Initialize-ErrorLogging exists before calling it
+                if (Get-Command Initialize-ErrorLogging -ErrorAction SilentlyContinue) {
+                    try {
+                        $null = Initialize-ErrorLogging -ScriptRoot $script:ScriptRootSafe -RetentionDays 7 -ErrorAction Stop
+                        $script:ErrorLoggingLoaded = $true
+                    } catch {
+                        # Initialize failed - continue without logging
+                        Write-Host "Warning: ErrorLogging initialization failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                    }
+                }
+                
+                # Only try to log if initialization succeeded
+                if ($script:ErrorLoggingLoaded -and (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
+                    try {
+                        Add-MiracleBootLog -Level "INFO" -Message "WinRepairGUI.ps1 loaded" -Location "WinRepairGUI.ps1" -NoConsole -ErrorAction Stop
+                        $script:LoggingAvailable = $true
+                    } catch {
+                        # Logging call failed - continue without logging
+                        $script:LoggingAvailable = $false
+                    }
+                }
+            } catch {
+                # ErrorLogging.ps1 exists but failed to load - define stub to prevent errors
+                Write-Host "Warning: ErrorLogging.ps1 failed to load: $($_.Exception.Message)" -ForegroundColor Yellow
+                $script:ErrorLoggingLoaded = $false
+            }
+        }
+        
+        # Always define stub function if Add-MiracleBootLog doesn't exist (prevents errors)
+        if (-not (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
+            function Add-MiracleBootLog {
+                param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
+                # Stub function - does nothing, just prevents errors
+                # This prevents "command not found" errors if ErrorLogging.ps1 is missing or broken
+            }
+        }
+    } catch {
+        # Catch-all: if anything goes wrong, define stub and continue
         if (-not (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
             function Add-MiracleBootLog {
                 param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
                 # Stub function - does nothing, just prevents errors
             }
         }
+    } finally {
+        $script:ErrorLoggingLoading = $false
     }
-} catch {
-    # Silently continue if logging fails - define stub
+} else {
+    # Already loading - define stub to prevent recursion
     if (-not (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
         function Add-MiracleBootLog {
             param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
-            # Stub function - does nothing, just prevents errors
+            # Stub function - prevents recursion during loading
         }
     }
 }
@@ -3354,10 +3399,27 @@ if ($null -ne $W) {
         $W.WindowState = [System.Windows.WindowState]::Normal
         $W.ShowInTaskbar = $true
         
+        # CRITICAL: Ensure all script-level variables are initialized before ShowDialog
+        # This prevents "variable not set" errors that can trigger recursive logging
+        if (-not (Test-Path variable:script:stepIndex)) {
+            $script:stepIndex = 0
+        }
+        if (-not (Test-Path variable:script:progressSteps)) {
+            $script:progressSteps = @()
+        }
+        
         # Show the window - this blocks until window is closed
+        # Use error action stop to catch issues immediately and prevent recursion
+        $ErrorActionPreference = "Stop"
         $result = $W.ShowDialog()
+        $ErrorActionPreference = "Continue"
     } catch {
-        Write-Error "Failed to show GUI window: $_"
+        # Use direct Write-Host to avoid potential recursion from Write-Error/Write-Warning wrappers
+        Write-Host "Failed to show GUI window: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Error type: $($_.Exception.GetType().Name)" -ForegroundColor Red
+        if ($_.Exception.InnerException) {
+            Write-Host "Inner exception: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+        }
         throw
     }
 } else {
