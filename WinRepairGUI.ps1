@@ -8570,7 +8570,9 @@ try {
 } catch {
     # Log the failure that could cause TUI fallback
     $errorDetails = "Failed to show GUI window: $_`n`nStack Trace: $($_.ScriptStackTrace)"
-    Log-GUIFailure -Location "Start-GUI ShowDialog" -Error "Window Display Failed" -Details $errorDetails -Exception $_
+    # Extract Exception from ErrorRecord (catch block gives ErrorRecord, not Exception)
+    $exceptionObj = if ($_.Exception) { $_.Exception } else { $null }
+    Log-GUIFailure -Location "Start-GUI ShowDialog" -Error "Window Display Failed" -Details $errorDetails -Exception $exceptionObj
     
     # Generate and open diagnostic report
     $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
