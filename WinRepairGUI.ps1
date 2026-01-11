@@ -2713,7 +2713,8 @@ if ($null -ne $W) {
                     Update-StatusBar -Message "One-Click Repair: Starting diagnostics and repair..." -ShowProgress
                     
                     # Set up progress update timer to show activity during repair
-                    $progressSteps = @(
+                    # Use script scope for progressSteps so it's accessible in the timer callback
+                    $script:progressSteps = @(
                         "One-Click Repair: Scanning Windows installations...",
                         "One-Click Repair: Checking boot configuration...",
                         "One-Click Repair: Analyzing boot files...",
@@ -2725,13 +2726,13 @@ if ($null -ne $W) {
                     $progressTimer = New-Object System.Windows.Threading.DispatcherTimer
                     $progressTimer.Interval = [TimeSpan]::FromSeconds(2)
                     $progressTimer.Add_Tick({
-                        if ($script:stepIndex -lt $progressSteps.Count - 1) {
+                        if ($script:stepIndex -lt $script:progressSteps.Count - 1) {
                             $script:stepIndex++
-                            Update-StatusBar -Message $progressSteps[$script:stepIndex] -ShowProgress
+                            Update-StatusBar -Message $script:progressSteps[$script:stepIndex] -ShowProgress
                         } else {
                             # Cycle back to show activity
                             $script:stepIndex = 0
-                            Update-StatusBar -Message $progressSteps[$script:stepIndex] -ShowProgress
+                            Update-StatusBar -Message $script:progressSteps[$script:stepIndex] -ShowProgress
                         }
                     })
                     $progressTimer.Start()
@@ -7154,19 +7155,20 @@ if ($btnComprehensiveLogAnalysis) {
         }
         
         # Progress steps for status updates
-        $progressSteps = @(
+        # Use script scope so it's accessible in Dispatcher.Invoke scriptblock
+        $script:progressSteps = @(
             "Step 1/4: Gathering Tier 1 logs (crash dumps, memory dumps)...",
             "Step 2/4: Gathering Tier 2 logs (boot pipeline, setup logs)...",
             "Step 3/4: Gathering Tier 3 logs (system events, SRT trail)...",
             "Step 4/4: Analyzing logs and generating report..."
         )
         
-        Update-StatusBar -Message $progressSteps[0] -ShowProgress
+        Update-StatusBar -Message $script:progressSteps[0] -ShowProgress
         if ($logAnalysisBox) {
             $logAnalysisBox.Text = "COMPREHENSIVE LOG ANALYSIS`n" +
                                                 "===============================================================`n" +
                                                 "Target Drive: $drive`:`n`n" +
-                                                $progressSteps[0] + "`n" +
+                                                $script:progressSteps[0] + "`n" +
                                                 "This may take several moments...`n`n" +
                                                 "Please wait..."
         }
@@ -7182,21 +7184,21 @@ if ($btnComprehensiveLogAnalysis) {
             } -ArgumentList $drive, $scriptRoot
             
             # Update status bar while job is running (simulate progress)
-            $stepIndex = 0
+            $script:stepIndex = 0
             $lastUpdate = Get-Date
             while ($analysisJob.State -eq 'Running') {
                 Start-Sleep -Milliseconds 500
                 
                 # Update status every 3 seconds to show progress
-                if (((Get-Date) - $lastUpdate).TotalSeconds -ge 3 -and $stepIndex -lt $progressSteps.Count - 1) {
-                    $stepIndex++
+                if (((Get-Date) - $lastUpdate).TotalSeconds -ge 3 -and $script:stepIndex -lt $script:progressSteps.Count - 1) {
+                    $script:stepIndex++
                     $lastUpdate = Get-Date
                     $W.Dispatcher.Invoke([action]{
-                        Update-StatusBar -Message $progressSteps[$stepIndex] -ShowProgress
+                        Update-StatusBar -Message $script:progressSteps[$script:stepIndex] -ShowProgress
                         if ($logAnalysisBox) {
                             $currentText = $logAnalysisBox.Text
                             # Update the step in the text box
-                            $newText = $currentText -replace "Step \d+/4:.*", $progressSteps[$stepIndex]
+                            $newText = $currentText -replace "Step \d+/4:.*", $script:progressSteps[$script:stepIndex]
                             if ($newText -ne $currentText) {
                                 $logAnalysisBox.Text = $newText
                                 $logAnalysisBox.ScrollToEnd()
