@@ -127,6 +127,15 @@ if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = Split-Path -Parent $
 if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = Split-Path -Parent $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue }
 if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = (Get-Location).ProviderPath }
 
+# Initialize script-level variables used by timer callbacks to prevent "variable not set" errors
+# These are used in progress update timers and must be initialized before ShowDialog() is called
+if (-not (Test-Path variable:script:stepIndex)) {
+    $script:stepIndex = 0
+}
+if (-not (Test-Path variable:script:progressSteps)) {
+    $script:progressSteps = @()
+}
+
 # Load centralized logging system
 $script:LoggingAvailable = $false
 try {
@@ -2848,10 +2857,18 @@ if ($null -ne $W) {
                     $progressTimer = New-Object System.Windows.Threading.DispatcherTimer
                     $progressTimer.Interval = [TimeSpan]::FromSeconds(2)
                     $progressTimer.Add_Tick({
-                        if ($script:stepIndex -lt $script:progressSteps.Count - 1) {
+                        # Defensive: Ensure variables are initialized before accessing
+                        if (-not (Test-Path variable:script:stepIndex)) {
+                            $script:stepIndex = 0
+                        }
+                        if (-not (Test-Path variable:script:progressSteps)) {
+                            $script:progressSteps = @()
+                        }
+                        
+                        if ($script:progressSteps.Count -gt 0 -and $script:stepIndex -lt $script:progressSteps.Count - 1) {
                             $script:stepIndex++
                             Update-StatusBar -Message $script:progressSteps[$script:stepIndex] -ShowProgress
-                        } else {
+                        } elseif ($script:progressSteps.Count -gt 0) {
                             # Cycle back to show activity
                             $script:stepIndex = 0
                             Update-StatusBar -Message $script:progressSteps[$script:stepIndex] -ShowProgress
