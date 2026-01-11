@@ -2993,14 +2993,25 @@ function Repair-BCDBruteForce {
                         $actions += "⚠ bcdboot reported success but BCD file not found at $bcdPath"
                     }
                     # After bcdboot, check if {default} entry exists
-                    $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD after bcdboot"
+                    # CRITICAL: In WinPE, always use /store parameter - system BCD doesn't exist on X:
+                    $envState = Get-EnvState
+                    if ($envState.IsWinPE) {
+                        # In WinPE, we must use /store with the full path to the BCD
+                        $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdPath, "/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD after bcdboot (WinPE)"
+                    } else {
+                        # In full Windows, can use system BCD without /store
+                        $enumCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Check BCD after bcdboot"
+                    }
                     if ($enumCheckResult.Output -match "specified entry type is invalid") {
                         $actions += "⚠ bcdboot created BCD but {default} entry missing - creating it..."
-                        $createEntryResult = Create-BCDDefaultEntry -BcdStore "BCD" -TargetDrive $TargetDrive
+                        $createEntryResult = Create-BCDDefaultEntry -BcdStore $bcdPath -TargetDrive $TargetDrive
                         $actions += $createEntryResult.Actions
                     } elseif ($enumCheckResult.ExitCode -eq 0) {
                         $actions += "✓ BCD is readable and {default} entry exists"
                         $bcdExists = $true
+                    } elseif ($enumCheckResult.Output -match "could not be opened|cannot find") {
+                        $actions += "⚠ BCD still not accessible after bcdboot: $($enumCheckResult.Output)"
+                        $actions += "   This may indicate the Windows installation is on a different drive in WinPE"
                     }
                 } else {
                     $actions += "❌ Failed to recreate system BCD: $($rebuildResult.Output)"
@@ -3455,8 +3466,40 @@ function Test-BootabilityComprehensive {
     $bcdStorePath = $null
     
     # Step 1: Try system BCD first (most reliable - if this works, BCD exists)
+    # CRITICAL: In WinPE, system BCD doesn't exist on X: - must use /store with actual Windows installation BCD
+    $envState = Get-EnvState
     $verification.Actions += "Checking system BCD accessibility..."
-    $systemBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Check system BCD accessibility"
+    
+    if ($envState.IsWinPE) {
+        # In WinPE, we must use /store with the ESP BCD or system BCD from actual Windows installation
+        if ($EspLetter) {
+            $espLetterClean = $EspLetter.TrimEnd(':')
+            $bcdStore = "$espLetterClean\EFI\Microsoft\Boot\BCD"
+            $verification.Actions += "WinPE detected - using ESP BCD: $bcdStore"
+            $systemBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Check ESP BCD in WinPE"
+        } else {
+            # No ESP - try system BCD from target drive
+            $systemBcdPath = "$TargetDrive`:\Boot\BCD"
+            if (Test-Path $systemBcdPath -ErrorAction SilentlyContinue) {
+                $verification.Actions += "WinPE detected - using system BCD from target drive: $systemBcdPath"
+                $systemBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $systemBcdPath, "/enum", "{default}") -TimeoutSeconds 15 -Description "Check system BCD in WinPE"
+                $bcdStore = $systemBcdPath
+            } else {
+                # System BCD doesn't exist - create a result indicating failure
+                $verification.Actions += "⚠ WinPE detected but system BCD not found at $systemBcdPath"
+                $systemBcdResult = @{
+                    ExitCode = 1
+                    Output = "The boot configuration data store could not be opened. The system cannot find the file specified."
+                    TimedOut = $false
+                }
+                $bcdStore = $null
+            }
+        }
+    } else {
+        # In full Windows, can use system BCD without /store
+        $systemBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Check system BCD accessibility"
+        $bcdStore = "BCD"  # System BCD - no /store parameter needed
+    }
     
     if ($systemBcdResult.ExitCode -eq 0 -and -not ($systemBcdResult.Output -match "could not be opened|cannot find|specified entry type is invalid")) {
         # System BCD works! This is evidence that BCD exists and is accessible
@@ -3465,16 +3508,20 @@ function Test-BootabilityComprehensive {
         $bcdEnum = $systemBcdResult.Output
         $bcdExitCode = 0
         $verification.Actions += "✓ System BCD is accessible (bcdedit /enum succeeded)"
-        $bcdStore = "BCD"  # System BCD - no /store parameter needed
     } elseif ($systemBcdResult.Output -match "specified entry type is invalid|The parameter is incorrect") {
         # BCD exists but {default} entry is invalid - try to create it
         $verification.Actions += "⚠ System BCD exists but {default} entry is invalid. Attempting to create entry..."
         try {
-            $createEntryResult = Create-BCDDefaultEntry -BcdStore "BCD" -TargetDrive $TargetDrive
+            $createBcdStore = if ($bcdStore) { $bcdStore } else { "BCD" }
+            $createEntryResult = Create-BCDDefaultEntry -BcdStore $createBcdStore -TargetDrive $TargetDrive
             $verification.Actions += $createEntryResult.Actions
             if ($createEntryResult.Success) {
                 Start-Sleep -Milliseconds 500
-                $systemBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Re-check system BCD after creating entry"
+                if ($envState.IsWinPE -and $bcdStore) {
+                    $systemBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Re-check system BCD after creating entry (WinPE)"
+                } else {
+                    $systemBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Re-check system BCD after creating entry"
+                }
                 if ($systemBcdResult.ExitCode -eq 0 -and -not ($systemBcdResult.Output -match "could not be opened|cannot find|specified entry type is invalid")) {
                     $verification.BCDExists = $true
                     $verification.BCDReadable = $true
