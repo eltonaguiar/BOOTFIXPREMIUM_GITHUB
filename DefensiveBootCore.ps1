@@ -1419,10 +1419,10 @@ function New-ComprehensiveRepairReport {
     $report += ""
     if ($InitialIssues.Count -gt 0) {
         foreach ($issue in $InitialIssues) {
-            $report += "  • $issue"
+            $report += "  - $issue"
         }
     } else {
-        $report += "  • winload.efi: $(if ($WinloadExists) { 'Present' } else { 'MISSING' })"
+        $report += "  - winload.efi: $(if ($WinloadExists) { 'Present' } else { 'MISSING' })"
         $report += "  • BCD path match: $(if ($BcdPathMatch) { 'YES' } else { 'NO - MISMATCH' })"
         $report += "  • BitLocker: $(if ($BitlockerLocked) { 'LOCKED' } else { 'Unlocked or N/A' })"
     }
