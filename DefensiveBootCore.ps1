@@ -4664,10 +4664,20 @@ function Invoke-DefensiveBootRepair {
         # Combine remaining issues with verification issues
         $allIssues = @()
         if ($script:RemainingIssues) {
-            $allIssues += $script:RemainingIssues
+            # Ensure RemainingIssues is an array
+            if ($script:RemainingIssues -is [array]) {
+                $allIssues += $script:RemainingIssues
+            } else {
+                $allIssues += @($script:RemainingIssues)
+            }
         }
         if ($finalVerification -and $finalVerification.Issues) {
-            $allIssues += $finalVerification.Issues
+            # Ensure Verification.Issues is an array
+            if ($finalVerification.Issues -is [array]) {
+                $allIssues += $finalVerification.Issues
+            } else {
+                $allIssues += @($finalVerification.Issues)
+            }
         }
         $allIssues = $allIssues | Select-Object -Unique
         

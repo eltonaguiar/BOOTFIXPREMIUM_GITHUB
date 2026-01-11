@@ -2832,17 +2832,41 @@ if ($null -ne $W) {
                         # Get issues from result object (preferred method - includes exact paths)
                         try {
                             if ($result.PSObject.Properties.Name -contains 'Issues' -and $result.Issues) {
-                                $remainingIssues = $result.Issues
+                                $issuesValue = $result.Issues
+                                # Ensure it's always an array
+                                if ($null -eq $issuesValue) {
+                                    $remainingIssues = @()
+                                } elseif ($issuesValue -is [array]) {
+                                    $remainingIssues = $issuesValue
+                                } else {
+                                    $remainingIssues = @($issuesValue)
+                                }
                             } elseif ($result.PSObject.Properties.Name -contains 'Verification' -and $result.Verification) {
                                 # Safely access Verification.Issues (Verification is a hashtable, not pscustomobject)
                                 try {
                                     if ($result.Verification -is [hashtable]) {
                                         if ($result.Verification.ContainsKey('Issues') -and $result.Verification.Issues) {
-                                            $remainingIssues = $result.Verification.Issues
+                                            $issuesValue = $result.Verification.Issues
+                                            # Ensure it's always an array
+                                            if ($null -eq $issuesValue) {
+                                                $remainingIssues = @()
+                                            } elseif ($issuesValue -is [array]) {
+                                                $remainingIssues = $issuesValue
+                                            } else {
+                                                $remainingIssues = @($issuesValue)
+                                            }
                                         }
                                     } elseif ($result.Verification -is [pscustomobject] -or $result.Verification -is [psobject]) {
                                         if ($result.Verification.PSObject.Properties.Name -contains 'Issues' -and $result.Verification.Issues) {
-                                            $remainingIssues = $result.Verification.Issues
+                                            $issuesValue = $result.Verification.Issues
+                                            # Ensure it's always an array
+                                            if ($null -eq $issuesValue) {
+                                                $remainingIssues = @()
+                                            } elseif ($issuesValue -is [array]) {
+                                                $remainingIssues = $issuesValue
+                                            } else {
+                                                $remainingIssues = @($issuesValue)
+                                            }
                                         }
                                     }
                                 } catch {
@@ -2852,6 +2876,13 @@ if ($null -ne $W) {
                             }
                         } catch {
                             Write-Host "Warning: Could not access result.Issues or Verification: $_" -ForegroundColor Yellow
+                        }
+                        
+                        # Ensure $remainingIssues is always an array before accessing .Count
+                        if ($null -eq $remainingIssues) {
+                            $remainingIssues = @()
+                        } elseif ($remainingIssues -isnot [array]) {
+                            $remainingIssues = @($remainingIssues)
                         }
                         
                         # Fallback: Extract issues from output text if we didn't get them from the object
