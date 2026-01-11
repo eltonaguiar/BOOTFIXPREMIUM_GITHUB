@@ -10,19 +10,19 @@ Write-Host "[1/4] Checking prerequisites..." -ForegroundColor Yellow
 # Check WPF availability
 try {
     Add-Type -AssemblyName PresentationFramework -ErrorAction Stop | Out-Null
-    Write-Host "  ✓ WPF available" -ForegroundColor Green
+    Write-Host "  [OK] WPF available" -ForegroundColor Green
     $wpfAvailable = $true
 } catch {
-    Write-Host "  ✗ WPF not available: $_" -ForegroundColor Red
+    Write-Host "  [FAIL] WPF not available: $_" -ForegroundColor Red
     $wpfAvailable = $false
 }
 
 # Check STA thread
 $isSta = ([System.Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA')
 if ($isSta) {
-    Write-Host "  ✓ Running in STA thread" -ForegroundColor Green
+    Write-Host "  [OK] Running in STA thread" -ForegroundColor Green
 } else {
-    Write-Host "  ✗ Not running in STA thread" -ForegroundColor Red
+    Write-Host "  [FAIL] Not running in STA thread" -ForegroundColor Red
 }
 
 if (-not $wpfAvailable -or -not $isSta) {
@@ -44,16 +44,16 @@ $guiScript = Join-Path $scriptPath "WinRepairGUI.ps1"
 $xamlFile = Join-Path $scriptPath "WinRepairGUI.xaml"
 
 if (Test-Path $guiScript) {
-    Write-Host "  ✓ WinRepairGUI.ps1 found" -ForegroundColor Green
+    Write-Host "  [OK] WinRepairGUI.ps1 found" -ForegroundColor Green
 } else {
-    Write-Host "  ✗ WinRepairGUI.ps1 not found at: $guiScript" -ForegroundColor Red
+    Write-Host "  [FAIL] WinRepairGUI.ps1 not found at: $guiScript" -ForegroundColor Red
     exit 1
 }
 
 if (Test-Path $xamlFile) {
-    Write-Host "  ✓ WinRepairGUI.xaml found" -ForegroundColor Green
+    Write-Host "  [OK] WinRepairGUI.xaml found" -ForegroundColor Green
 } else {
-    Write-Host "  ✗ WinRepairGUI.xaml not found at: $xamlFile" -ForegroundColor Red
+    Write-Host "  [FAIL] WinRepairGUI.xaml not found at: $xamlFile" -ForegroundColor Red
     exit 1
 }
 
@@ -65,16 +65,16 @@ $syntaxErrors = $null
 try {
     $null = [System.Management.Automation.PSParser]::Tokenize((Get-Content $guiScript -Raw), [ref]$syntaxErrors)
     if ($syntaxErrors.Count -eq 0) {
-        Write-Host "  ✓ No syntax errors detected" -ForegroundColor Green
+        Write-Host "  [OK] No syntax errors detected" -ForegroundColor Green
     } else {
-        Write-Host "  ✗ Syntax errors found:" -ForegroundColor Red
+        Write-Host "  [FAIL] Syntax errors found:" -ForegroundColor Red
         foreach ($error in $syntaxErrors) {
             Write-Host "    Line $($error.Token.StartLine): $($error.Message)" -ForegroundColor Red
         }
         exit 1
     }
 } catch {
-    Write-Host "  ✗ Syntax check failed: $_" -ForegroundColor Red
+    Write-Host "  [FAIL] Syntax check failed: $_" -ForegroundColor Red
     exit 1
 }
 
@@ -88,17 +88,17 @@ try {
     
     # Check if Start-GUI function exists
     if (Get-Command Start-GUI -ErrorAction SilentlyContinue) {
-        Write-Host "  ✓ Start-GUI function loaded" -ForegroundColor Green
+        Write-Host "  [OK] Start-GUI function loaded" -ForegroundColor Green
     } else {
-        Write-Host "  ✗ Start-GUI function not found after loading" -ForegroundColor Red
+        Write-Host "  [FAIL] Start-GUI function not found after loading" -ForegroundColor Red
         exit 1
     }
     
     # Check if Get-Control function exists
     if (Get-Command Get-Control -ErrorAction SilentlyContinue) {
-        Write-Host "  ✓ Get-Control function loaded" -ForegroundColor Green
+        Write-Host "  [OK] Get-Control function loaded" -ForegroundColor Green
     } else {
-        Write-Host "  ✗ Get-Control function not found after loading" -ForegroundColor Red
+        Write-Host "  [FAIL] Get-Control function not found after loading" -ForegroundColor Red
         exit 1
     }
     
@@ -113,7 +113,8 @@ try {
     Write-Host "      It only verifies that the module can be loaded without errors." -ForegroundColor Gray
     
 } catch {
-    Write-Host "  ✗ Module loading failed: $_" -ForegroundColor Red
-    Write-Host "  Stack Trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+    Write-Host "  [FAIL] Module loading failed: $_" -ForegroundColor Red
+    $stackTrace = $_.ScriptStackTrace
+    Write-Host "  Stack Trace: $stackTrace" -ForegroundColor Red
     exit 1
 }
