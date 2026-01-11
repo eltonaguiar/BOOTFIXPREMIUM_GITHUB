@@ -466,9 +466,19 @@ function Start-GUI {
     # CRITICAL: Test that WPF can actually initialize (not just load assemblies)
     # This catches C++ module failures that occur during appdomain initialization
     # (common in WinPE where Visual C++ runtime may be missing)
+    # IMPORTANT: Must test XAML parsing, not just Window creation, as XAML parsing
+    # triggers the deeper C++ module initialization that fails in WinPE
     try {
+        # Test 1: Simple Window creation (basic WPF initialization)
         $testWindow = New-Object System.Windows.Window -ErrorAction Stop
-        $testWindow = $null  # Dispose immediately
+        $testWindow = $null
+        
+        # Test 2: XAML parsing (triggers C++ module initialization)
+        # This is the actual operation that fails in WinPE
+        $minimalXaml = '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />'
+        $testXamlWindow = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$minimalXaml))) -ErrorAction Stop
+        $testXamlWindow = $null
+        
         [System.GC]::Collect()  # Force cleanup
     } catch {
         $cppError = $_.Exception.Message
@@ -639,11 +649,37 @@ try {
             $script:GUIWindowInstance = $null
         }
         
-        $script:W=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$XAML)))
-        $W = $script:W  # Also set local variable for backward compatibility
-        
-        # LAYER 5: Store window instance for tracking
-        $script:GUIWindowInstance = $W
+        # CRITICAL: XAML parsing is where C++ module initialization actually happens
+        # This is the operation that fails in WinPE when Visual C++ runtime is missing
+        # Even though we tested with minimal XAML earlier, the full XAML might trigger
+        # additional C++ module dependencies
+        try {
+            $script:W=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$XAML)))
+            $W = $script:W  # Also set local variable for backward compatibility
+            
+            # LAYER 5: Store window instance for tracking
+            $script:GUIWindowInstance = $W
+        } catch {
+            $xamlError = $_.Exception.Message
+            $xamlInner = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $null }
+            
+            # Check for C++ module failure during XAML loading
+            if ($xamlError -match "type initializer|C\+\+ module|appdomain initialization" -or 
+                ($xamlInner -and $xamlInner -match "C\+\+ module")) {
+                $errorMsg = "WPF C++ module failed to initialize during XAML loading.`n"
+                $errorMsg += "Error: $xamlError`n"
+                if ($xamlInner) {
+                    $errorMsg += "Inner: $xamlInner`n"
+                }
+                $errorMsg += "`nThis typically occurs in WinPE/WinRE environments where Visual C++ runtime libraries are missing.`n"
+                $errorMsg += "The minimal XAML test passed, but full XAML loading requires additional C++ modules.`n"
+                $errorMsg += "Please use TUI mode instead or ensure Visual C++ Redistributables are available."
+                throw $errorMsg
+            } else {
+                # Re-throw other XAML loading errors
+                throw
+            }
+        }
     } catch {
         $innerEx = if ($_.Exception.InnerException) { $_.Exception.InnerException } else { $null }
         $errorDetails = "Failed to load XAML window:`n"

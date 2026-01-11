@@ -1756,13 +1756,23 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
         # (common in WinPE where Visual C++ runtime may be missing)
         Write-Host "  [CHECK] Testing WPF initialization..." -ForegroundColor Gray -NoNewline
         try {
-            # Try to create a minimal WPF window to verify C++ modules can load
-            # This will fail if Visual C++ runtime is missing (common in WinPE)
+            # CRITICAL: Test both Window creation AND XAML parsing
+            # XAML parsing triggers deeper C++ module initialization that simple Window creation doesn't
+            # This is what actually fails in WinPE when Visual C++ runtime is missing
+            
+            # Test 1: Simple Window creation (basic WPF initialization)
             $testWindow = New-Object System.Windows.Window -ErrorAction Stop
-            $testWindow = $null  # Dispose immediately
+            $testWindow = $null
+            
+            # Test 2: XAML parsing (triggers C++ module initialization)
+            # This is the actual operation that fails in WinPE
+            $minimalXaml = '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />'
+            $testXamlWindow = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$minimalXaml))) -ErrorAction Stop
+            $testXamlWindow = $null
+            
             [System.GC]::Collect()  # Force cleanup
             $wpfAvailable = $true
-            Write-ToLog "WPF assemblies loaded and initialized successfully" "INFO"
+            Write-ToLog "WPF assemblies loaded and initialized successfully (Window + XAML parsing)" "INFO"
             Write-Host " ✓" -ForegroundColor Green
         } catch {
             $wpfInitError = $_.Exception.Message
