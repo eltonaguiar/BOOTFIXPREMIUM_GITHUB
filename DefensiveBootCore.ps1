@@ -2602,7 +2602,8 @@ function Repair-BCDDeepRepair {
                 # Verify BCD points to correct winload.efi
                 $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdPath, "/enum", "{default}") -TimeoutSeconds 15 -Description "Verify BCD path"
                 $bcdEnum = $bcdResult.Output
-                $bcdPathMatch = $bcdEnum -match "path\s+\\Windows\\system32\\winload\.efi"
+                # More flexible regex: case-insensitive, handles both single and double backslashes
+                $bcdPathMatch = $bcdEnum -match "(?i)path\s+[\\/]?Windows[\\/]system32[\\/]winload\.efi"
                 if ($bcdPathMatch) {
                     $actions += "✓ BCD correctly points to winload.efi"
                     return @{
@@ -2765,8 +2766,11 @@ function Repair-BCDBruteForce {
     $actions += "Step 4: Verifying BCD configuration..."
     $enumResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Enumerate BCD entries"
     $bcdEnum = $enumResult.Output
-    $bcdPathMatch = $bcdEnum -match "path\s+\\Windows\\system32\\winload\.efi"
-    $bcdDeviceMatch = $bcdEnum -match "device\s+partition=$TargetDrive"
+    # More flexible regex: case-insensitive, handles both single and double backslashes
+    $bcdPathMatch = $bcdEnum -match "(?i)path\s+[\\/]?Windows[\\/]system32[\\/]winload\.efi"
+    # Device match: handle both "partition=C" and "partition=C:" formats, case-insensitive
+    $targetDriveClean = $TargetDrive.TrimEnd(':').ToUpper()
+    $bcdDeviceMatch = $bcdEnum -match "(?i)device\s+partition=$targetDriveClean" -or $bcdEnum -match "(?i)device\s+partition=$targetDriveClean`:"
     
     if ($bcdPathMatch -and $bcdDeviceMatch) {
         $actions += "✓ VERIFIED: BCD correctly points to winload.efi on $TargetDrive"
@@ -2919,8 +2923,11 @@ function Test-BootabilityComprehensive {
             
             if ($bcdExitCode -eq 0) {
                 $verification.BCDReadable = $true
-                $verification.BCDPathMatch = $bcdEnum -match "path\s+\\Windows\\system32\\winload\.efi"
-                $verification.BCDDeviceMatch = $bcdEnum -match "device\s+partition=$TargetDrive"
+                # More flexible regex: case-insensitive, handles both single and double backslashes
+                $verification.BCDPathMatch = $bcdEnum -match "(?i)path\s+[\\/]?Windows[\\/]system32[\\/]winload\.efi"
+                # Device match: handle both "partition=C" and "partition=C:" formats, case-insensitive
+                $targetDriveClean = $TargetDrive.TrimEnd(':').ToUpper()
+                $verification.BCDDeviceMatch = $bcdEnum -match "(?i)device\s+partition=$targetDriveClean" -or $bcdEnum -match "(?i)device\s+partition=$targetDriveClean`:"
                 
                 if ($verification.BCDPathMatch) {
                     $verification.Actions += "✓ BCD path correctly points to winload.efi"
@@ -4149,11 +4156,14 @@ function Invoke-DefensiveBootRepair {
                 
                 # Try enumeration (with /store if ESP is mounted)
                 if ($espLetter -and (Test-Path $bcdStorePath)) {
-                    $finalBcdCheck = bcdedit /store $bcdStorePath /enum {default} 2>&1 | Out-String
+                    $bcdCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStorePath, "/enum", "{default}") -TimeoutSeconds 15 -Description "Final BCD verification"
+                    $finalBcdCheck = $bcdCheckResult.Output
+                    $bcdExitCode = $bcdCheckResult.ExitCode
                 } else {
-                    $finalBcdCheck = bcdedit /enum {default} 2>&1 | Out-String
+                    $bcdCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Final BCD verification"
+                    $finalBcdCheck = $bcdCheckResult.Output
+                    $bcdExitCode = $bcdCheckResult.ExitCode
                 }
-                $bcdExitCode = $LASTEXITCODE
                 
                 # If enumeration failed, try taking ownership of BCD file
                 if ($bcdExitCode -ne 0 -and (Test-Path $bcdStorePath)) {
@@ -4168,11 +4178,14 @@ function Invoke-DefensiveBootRepair {
                             
                             # Try enumeration again
                             if ($espLetter) {
-                                $finalBcdCheck = bcdedit /store $bcdStorePath /enum {default} 2>&1 | Out-String
+                                $bcdCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStorePath, "/enum", "{default}") -TimeoutSeconds 15 -Description "Re-enumerate BCD after permission fix"
+                                $finalBcdCheck = $bcdCheckResult.Output
+                                $bcdExitCode = $bcdCheckResult.ExitCode
                             } else {
-                                $finalBcdCheck = bcdedit /enum {default} 2>&1 | Out-String
+                                $bcdCheckResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Re-enumerate BCD after permission fix"
+                                $finalBcdCheck = $bcdCheckResult.Output
+                                $bcdExitCode = $bcdCheckResult.ExitCode
                             }
-                            $bcdExitCode = $LASTEXITCODE
                         }
                     } catch {
                         $actions += "  ⚠ Could not fix BCD permissions: $($_.Exception.Message)"
@@ -4180,9 +4193,9 @@ function Invoke-DefensiveBootRepair {
                 }
                 
                 if ($bcdExitCode -eq 0) {
-                    # Use strict regex to match the actual path field format
-                    # Matches: "path                \Windows\system32\winload.efi"
-                    if ($finalBcdCheck -match "path\s+\\Windows\\system32\\winload\.efi") {
+                    # Use flexible regex to match the actual path field format (case-insensitive, handles variations)
+                    # Matches: "path                \Windows\system32\winload.efi" or "/Windows/system32/winload.efi"
+                    if ($finalBcdCheck -match "(?i)path\s+[\\/]?Windows[\\/]system32[\\/]winload\.efi") {
                         $actions += "✓ BCD path correctly points to winload.efi"
                         if ($bcdPermissionsModified) {
                             $actions += "  (BCD permissions were modified to enable verification)"
