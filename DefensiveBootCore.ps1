@@ -1043,7 +1043,7 @@ function Test-VersionCompatibility {
         # Same build = perfect match
         if ($sourceBuild -eq $targetBuild) {
             $result.Score += 30
-            $result.Details += "✓ Build number match: $sourceBuild"
+            $result.Details += "[OK] Build number match: $sourceBuild"
         }
         # Within same major version (e.g., both Windows 10 or both Windows 11)
         elseif (($sourceBuild -lt 22000 -and $targetBuild -lt 22000) -or 
@@ -1131,7 +1131,7 @@ function Find-WinloadSourceUltimate {
                             Compatibility = $compatibility
                             CompatibilityScore = $compatibility.Score
                         }
-                        $actions += "✓ Found winload.efi in WinRE (PRIORITIZED): $resolvedPath ($($integrity.FileInfo.Length) bytes)"
+                        $actions += "[OK] Found winload.efi in WinRE (PRIORITIZED): $resolvedPath ($($integrity.FileInfo.Length) bytes)"
                     }
                 }
             }
@@ -1395,7 +1395,7 @@ function New-ComprehensiveRepairReport {
         $report += "The following commands FAILED during repair:"
         $report += ""
         foreach ($failed in $FailedCommands) {
-            $report += "❌ FAILED COMMAND:"
+            $report += "[X] FAILED COMMAND:"
             $report += "   Time: $($failed.Timestamp)"
             $report += "   Command: $($failed.Command)"
             $report += "   Description: $($failed.Description)"
@@ -1492,7 +1492,7 @@ function New-ComprehensiveRepairReport {
         
         if ($remainingIssuesList.Count -gt 0) {
             foreach ($issue in $remainingIssuesList) {
-                $report += "  ❌ $issue"
+                $report += "  [X] $issue"
             }
         } else {
             $report += "  (No specific remaining issues identified)"
@@ -1721,7 +1721,7 @@ function New-WinloadRepairGuidanceDocument {
         $doc += "Your drive is BitLocker-locked. You MUST unlock it before attempting repairs."
         $doc += ""
         $doc += "Command:"
-        $doc += "  manage-bde -unlock $TargetDrive`: -RecoveryPassword <YOUR_48_DIGIT_KEY>"
+        $doc += "  manage-bde -unlock $TargetDrive`: -RecoveryPassword `"YOUR_48_DIGIT_KEY`""
         $doc += ""
         $doc += "To find your recovery key:"
         $doc += "  1. Check your Microsoft account: https://account.microsoft.com/devices/recoverykey"
@@ -1752,9 +1752,9 @@ function New-WinloadRepairGuidanceDocument {
         $doc += "    exit"
         $doc += ""
         $doc += "What to look for:"
-        $doc += "  ✓ FileSystem: FAT32"
-        $doc += "  ✓ Size: Usually 100-550 MB (less than 600 MB)"
-        $doc += "  ✓ GPT Type: {c12a7328-f81f-11d2-ba4b-00a0c93ec93b} (EFI System Partition)"
+        $doc += "  [OK] FileSystem: FAT32"
+        $doc += "  [OK] Size: Usually 100-550 MB (less than 600 MB)"
+        $doc += "  [OK] GPT Type: {c12a7328-f81f-11d2-ba4b-00a0c93ec93b} (EFI System Partition)"
         $doc += ""
         $doc += "STEP 2: MOUNT THE ESP (If Not Already Mounted)"
         $doc += "───────────────────────────────────────────────────────────────────────────────"
@@ -1934,7 +1934,7 @@ function New-WinloadRepairGuidanceDocument {
     $doc += ""
     $doc += "Problem: BitLocker is active"
     $doc += "  Solution:"
-    $doc += "    • Unlock the drive first: manage-bde -unlock $TargetDrive`: -RecoveryPassword <key>"
+    $doc += "    - Unlock the drive first: manage-bde -unlock $TargetDrive`: -RecoveryPassword `"key`""
     $doc += "    • Find recovery key at: https://account.microsoft.com/devices/recoverykey"
     $doc += ""
     $doc += "Problem: winload.efi is missing from install.wim"
