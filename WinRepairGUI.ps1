@@ -253,12 +253,14 @@ function Show-SymbolHelper {
 # Defined at script level so handlers can use it (returns null if $W doesn't exist yet)
 function Get-Control {
     param([string]$Name, [switch]$Silent)  # Silent flag to suppress logging for optional controls
-    if (-not $W) {
+    # Check if $W exists and is not null (safe check that won't error if variable doesn't exist)
+    if (-not (Get-Variable -Name "W" -Scope Script -ErrorAction SilentlyContinue) -or $null -eq $script:W) {
         if (-not $Silent) {
             try { Add-MiracleBootLog -Level "WARNING" -Message "Window object not available" -Location "Get-Control" -NoConsole -ErrorAction SilentlyContinue } catch {}
         }
         return $null
     }
+    $W = $script:W
     $control = $W.FindName($Name)
     if (-not $control) {
         if (-not $Silent) {
@@ -396,7 +398,8 @@ try {
         throw "XAML XML structure is invalid: $_"
     }
     
-    $W=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$XAML)))
+    $script:W=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$XAML)))
+    $W = $script:W  # Also set local variable for backward compatibility
     
     # #region agent log
     try {
