@@ -436,13 +436,26 @@ function Invoke-BCDCommandWithTimeout {
     }
     
     try {
-        # Build full command
+        # Build full command for logging
         $fullCommand = "$Command " + ($Arguments -join " ")
+        
+        # Properly escape arguments for ProcessStartInfo
+        # Each argument needs to be quoted if it contains spaces or special characters
+        $escapedArgs = @()
+        foreach ($arg in $Arguments) {
+            if ($arg -match '\s|[{}\(\)]') {
+                # Quote arguments with spaces or special characters (like {default})
+                $escapedArgs += "`"$arg`""
+            } else {
+                $escapedArgs += $arg
+            }
+        }
+        $argumentString = $escapedArgs -join " "
         
         # Use Start-Process with timeout to prevent hanging
         $processInfo = New-Object System.Diagnostics.ProcessStartInfo
         $processInfo.FileName = $Command
-        $processInfo.Arguments = ($Arguments | ForEach-Object { if ($_ -match '\s') { "`"$_`"" } else { $_ } }) -join " "
+        $processInfo.Arguments = $argumentString
         $processInfo.UseShellExecute = $false
         $processInfo.RedirectStandardOutput = $true
         $processInfo.RedirectStandardError = $true
@@ -460,12 +473,24 @@ function Invoke-BCDCommandWithTimeout {
         if (-not $completed) {
             # Timeout - kill the process
             try {
-                $process.Kill()
+                if (-not $process.HasExited) {
+                    $process.Kill()
+                }
             } catch {
                 # Process may have already exited
             }
             $result.TimedOut = $true
             $result.Error = "Command timed out after $TimeoutSeconds seconds: $fullCommand"
+            try {
+                $stdout = $process.StandardOutput.ReadToEnd()
+                $stderr = $process.StandardError.ReadToEnd()
+                $result.Output = $stdout + $stderr
+            } catch {
+                $result.Output = "Timeout occurred - output unavailable"
+            }
+            try {
+                $process.Dispose()
+            } catch { }
             return $result
         }
         
@@ -481,6 +506,14 @@ function Invoke-BCDCommandWithTimeout {
     } catch {
         $result.Error = $_.Exception.Message
         $result.Output = $_.Exception.Message
+        try {
+            if ($process -and -not $process.HasExited) {
+                $process.Kill()
+            }
+            if ($process) {
+                $process.Dispose()
+            }
+        } catch { }
     }
     
     return $result
