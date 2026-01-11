@@ -3108,6 +3108,24 @@ function Test-BootabilityComprehensive {
         [string]$EspLetter
     )
     
+    # Validate TargetDrive is not empty
+    if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
+        return @{
+            WinloadExists = $false
+            WinloadReadable = $false
+            WinloadSize = $null
+            BootmgfwExists = $false
+            BCDExists = $false
+            BCDReadable = $false
+            BCDPathMatch = $false
+            BCDDeviceMatch = $false
+            AllBootFilesPresent = $false
+            Bootable = $false
+            Issues = @("TargetDrive parameter is empty or invalid")
+            Actions = @("ERROR: TargetDrive is required but was empty")
+        }
+    }
+    
     $verification = @{
         WinloadExists = $false
         WinloadReadable = $false
@@ -3463,6 +3481,24 @@ function Invoke-BruteForceBootRepair {
         [switch]$DryRun,
         [switch]$AllowOnlineRepair
     )
+    
+    # Validate TargetDrive is not empty
+    if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
+        $errorMsg = "ERROR: TargetDrive parameter is required but was empty or null."
+        Write-Error $errorMsg -ErrorAction Stop
+        return @{
+            Output = $errorMsg
+            Bundle = ""
+            Bootable = $false
+            Confidence = "UNKNOWN"
+            Blocker = "TargetDrive is empty"
+            RemainingIssues = @("TargetDrive parameter is empty or invalid")
+            Verification = @{
+                Bootable = $false
+                Issues = @("TargetDrive parameter is empty or invalid")
+            }
+        }
+    }
     
     $actions = @()
     $verificationResults = @()
@@ -3886,6 +3922,20 @@ function Invoke-DefensiveBootRepair {
         [switch]$Force,
         [switch]$BruteForce
     )
+
+    # Validate TargetDrive is not empty
+    if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
+        $errorMsg = "ERROR: TargetDrive parameter is required but was empty or null."
+        Write-Error $errorMsg -ErrorAction Stop
+        return @{
+            Output = $errorMsg
+            Bundle = ""
+            Bootable = $false
+            Confidence = "UNKNOWN"
+            Blocker = "TargetDrive is empty"
+            RemainingIssues = @("TargetDrive parameter is empty or invalid")
+        }
+    }
 
     $actions = @()
     $rollbackPlan = @(

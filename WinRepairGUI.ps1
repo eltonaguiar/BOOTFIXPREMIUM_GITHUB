@@ -2537,6 +2537,24 @@ if ($null -ne $W) {
                     if ($sel -match '^([A-Z]):') { $targetDrive = $matches[1] }
                 }
                 
+                # Validate targetDrive is not empty
+                if ([string]::IsNullOrWhiteSpace($targetDrive)) {
+                    $errorMsg = "ERROR: Target drive is empty or invalid.`nPlease select a valid drive from the dropdown."
+                    if ($W -and $W.Dispatcher) {
+                        $W.Dispatcher.Invoke([action]{
+                            if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                            if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                            $btnOneClickRepair.IsEnabled = $true
+                        }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                    } else {
+                        if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                        if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                        $btnOneClickRepair.IsEnabled = $true
+                    }
+                    [System.Windows.MessageBox]::Show($errorMsg, "Invalid Drive", "OK", "Error") | Out-Null
+                    return
+                }
+                
                 # Update status before showing dialog - use dispatcher for immediate update
                 if ($W -and $W.Dispatcher) {
                     $W.Dispatcher.Invoke([action]{
@@ -2758,6 +2776,26 @@ if ($null -ne $W) {
                         }
                     })
                     $progressTimer.Start()
+                    
+                    # Final validation: Ensure targetDrive is not empty before calling repair functions
+                    if ([string]::IsNullOrWhiteSpace($targetDrive)) {
+                        $progressTimer.Stop()
+                        $errorMsg = "ERROR: Target drive is empty. Cannot proceed with repair."
+                        if ($W -and $W.Dispatcher) {
+                            $W.Dispatcher.Invoke([action]{
+                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                                if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                                $btnOneClickRepair.IsEnabled = $true
+                                Update-StatusBar -Message "One-Click Repair: Failed - Invalid drive" -HideProgress
+                            }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                        } else {
+                            if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                            if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                            $btnOneClickRepair.IsEnabled = $true
+                        }
+                        [System.Windows.MessageBox]::Show($errorMsg, "Repair Error", "OK", "Error") | Out-Null
+                        return
+                    }
                     
                     # Run repair synchronously (functions need access to same environment)
                     if ($bruteForceMode) {
