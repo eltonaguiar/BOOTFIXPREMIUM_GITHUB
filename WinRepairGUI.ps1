@@ -8517,7 +8517,8 @@ if ($btnBootOpsNotepad) {
 }
 
 try {
-    $W.ShowDialog() | Out-Null
+    if ($null -eq $script:W) { throw "Window object not initialized" }
+    $script:W.ShowDialog() | Out-Null
     
     # #region agent log
     try {
