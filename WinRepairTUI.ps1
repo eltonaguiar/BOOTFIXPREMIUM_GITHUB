@@ -81,6 +81,41 @@
             [string]$SimulationScenario = $null
         )
 
+        # Run readiness check first
+        if (Get-Command Test-BootRepairReadiness -ErrorAction SilentlyContinue) {
+            Write-Host "Running readiness checks..." -ForegroundColor Cyan
+            try {
+                $readiness = Test-BootRepairReadiness -TargetDrive $TargetDrive -RequiredFunctions @("Invoke-DefensiveBootRepair") -CheckPermissions -CheckPaths
+                if (-not $readiness.Ready) {
+                    Write-Host "`nREADINESS CHECK FAILED:" -ForegroundColor Red
+                    foreach ($issue in $readiness.Issues) {
+                        Write-Host "  [X] $issue" -ForegroundColor Red
+                    }
+                    if ($readiness.Warnings.Count -gt 0) {
+                        Write-Host "`nWarnings:" -ForegroundColor Yellow
+                        foreach ($warning in $readiness.Warnings) {
+                            Write-Host "  [!] $warning" -ForegroundColor Yellow
+                        }
+                    }
+                    Write-Host "`nCannot proceed with repair. Please fix the issues above." -ForegroundColor Red
+                    Write-Host "Press any key to continue..." -ForegroundColor Gray
+                    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    return
+                } else {
+                    Write-Host "Readiness check passed: $($readiness.Summary)" -ForegroundColor Green
+                    if ($readiness.Warnings.Count -gt 0) {
+                        Write-Host "Warnings:" -ForegroundColor Yellow
+                        foreach ($warning in $readiness.Warnings) {
+                            Write-Host "  [!] $warning" -ForegroundColor Yellow
+                        }
+                    }
+                }
+            } catch {
+                Write-Host "WARNING: Readiness check failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "Proceeding with basic validation..." -ForegroundColor Yellow
+            }
+        }
+
         # Verify function is available before calling
         if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
             throw "Invoke-DefensiveBootRepair function not found. Please ensure DefensiveBootCore.ps1 is loaded."

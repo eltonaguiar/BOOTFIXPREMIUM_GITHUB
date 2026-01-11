@@ -3098,6 +3098,213 @@ function Repair-BCDBruteForce {
     }
 }
 
+function Test-BootRepairReadiness {
+    <#
+    .SYNOPSIS
+    Comprehensive pre-flight validation before boot repair operations.
+    
+    .DESCRIPTION
+    Validates all inputs, environment, and prerequisites before executing repair operations.
+    This prevents common errors like empty parameters, missing functions, and invalid paths.
+    
+    .PARAMETER TargetDrive
+    The target drive letter (without colon) to validate.
+    
+    .PARAMETER RequiredFunctions
+    Array of function names that must be available.
+    
+    .PARAMETER CheckPermissions
+    Whether to check if running with adequate permissions.
+    
+    .PARAMETER CheckPaths
+    Whether to validate critical file paths exist.
+    
+    .EXAMPLE
+    $readiness = Test-BootRepairReadiness -TargetDrive "C" -RequiredFunctions @("Invoke-DefensiveBootRepair")
+    if (-not $readiness.Ready) {
+        Write-Error "Readiness check failed: $($readiness.Issues -join '; ')"
+        return
+    }
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TargetDrive,
+        
+        [string[]]$RequiredFunctions = @(),
+        
+        [switch]$CheckPermissions = $true,
+        
+        [switch]$CheckPaths = $true
+    )
+    
+    $result = @{
+        Ready = $true
+        Issues = @()
+        Warnings = @()
+        Checks = @{}
+    }
+    
+    # Check 1: TargetDrive is not empty
+    $result.Checks["TargetDriveNotEmpty"] = @{
+        Passed = $false
+        Message = ""
+    }
+    if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
+        $result.Ready = $false
+        $result.Issues += "TargetDrive parameter is empty or null"
+        $result.Checks["TargetDriveNotEmpty"].Message = "TargetDrive is empty"
+    } else {
+        $result.Checks["TargetDriveNotEmpty"].Passed = $true
+        $result.Checks["TargetDriveNotEmpty"].Message = "TargetDrive is set to: $TargetDrive"
+    }
+    
+    # Check 2: TargetDrive format is valid (single letter)
+    if (-not [string]::IsNullOrWhiteSpace($TargetDrive)) {
+        $result.Checks["TargetDriveFormat"] = @{
+            Passed = $false
+            Message = ""
+        }
+        $cleanDrive = $TargetDrive.TrimEnd(':').Trim()
+        if ($cleanDrive -notmatch '^[A-Z]$') {
+            $result.Ready = $false
+            $result.Issues += "TargetDrive format is invalid: '$TargetDrive' (expected single letter A-Z)"
+            $result.Checks["TargetDriveFormat"].Message = "Invalid format: $TargetDrive"
+        } else {
+            $result.Checks["TargetDriveFormat"].Passed = $true
+            $result.Checks["TargetDriveFormat"].Message = "Format valid: $cleanDrive"
+        }
+    }
+    
+    # Check 3: TargetDrive exists and is accessible
+    if (-not [string]::IsNullOrWhiteSpace($TargetDrive) -and $TargetDrive -match '^[A-Z]') {
+        $result.Checks["TargetDriveExists"] = @{
+            Passed = $false
+            Message = ""
+        }
+        $cleanDrive = $TargetDrive.TrimEnd(':').Trim()
+        $drivePath = "${cleanDrive}:"
+        try {
+            $drive = Get-PSDrive -Name $cleanDrive -ErrorAction Stop
+            if ($drive) {
+                $result.Checks["TargetDriveExists"].Passed = $true
+                $result.Checks["TargetDriveExists"].Message = "Drive $drivePath exists and is accessible"
+            } else {
+                $result.Ready = $false
+                $result.Issues += "Drive $drivePath does not exist or is not accessible"
+                $result.Checks["TargetDriveExists"].Message = "Drive not found: $drivePath"
+            }
+        } catch {
+            $result.Ready = $false
+            $result.Issues += "Cannot access drive $drivePath : $($_.Exception.Message)"
+            $result.Checks["TargetDriveExists"].Message = "Access error: $($_.Exception.Message)"
+        }
+    }
+    
+    # Check 4: Required functions are loaded
+    if ($RequiredFunctions.Count -gt 0) {
+        $result.Checks["RequiredFunctions"] = @{
+            Passed = $false
+            Message = ""
+            Missing = @()
+        }
+        $missingFunctions = @()
+        foreach ($funcName in $RequiredFunctions) {
+            if (-not (Get-Command $funcName -ErrorAction SilentlyContinue)) {
+                $missingFunctions += $funcName
+            }
+        }
+        if ($missingFunctions.Count -gt 0) {
+            $result.Ready = $false
+            $result.Issues += "Required functions not loaded: $($missingFunctions -join ', ')"
+            $result.Checks["RequiredFunctions"].Missing = $missingFunctions
+            $result.Checks["RequiredFunctions"].Message = "Missing: $($missingFunctions -join ', ')"
+        } else {
+            $result.Checks["RequiredFunctions"].Passed = $true
+            $result.Checks["RequiredFunctions"].Message = "All required functions available"
+        }
+    }
+    
+    # Check 5: Permissions check
+    if ($CheckPermissions) {
+        $result.Checks["Permissions"] = @{
+            Passed = $false
+            Message = ""
+        }
+        try {
+            $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+            $isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+            if (-not $isAdmin) {
+                $result.Ready = $false
+                $result.Issues += "Not running with Administrator privileges (required for boot repair)"
+                $result.Checks["Permissions"].Message = "Not running as Administrator"
+            } else {
+                $result.Checks["Permissions"].Passed = $true
+                $result.Checks["Permissions"].Message = "Running with Administrator privileges"
+            }
+        } catch {
+            $result.Warnings += "Could not verify permissions: $($_.Exception.Message)"
+            $result.Checks["Permissions"].Message = "Permission check failed: $($_.Exception.Message)"
+        }
+    }
+    
+    # Check 6: Critical paths validation
+    if ($CheckPaths -and -not [string]::IsNullOrWhiteSpace($TargetDrive) -and $TargetDrive -match '^[A-Z]') {
+        $result.Checks["CriticalPaths"] = @{
+            Passed = $false
+            Message = ""
+            MissingPaths = @()
+        }
+        $cleanDrive = $TargetDrive.TrimEnd(':').Trim()
+        $criticalPaths = @(
+            "$cleanDrive`:\Windows",
+            "$cleanDrive`:\Windows\System32"
+        )
+        $missingPaths = @()
+        foreach ($path in $criticalPaths) {
+            if (-not (Test-Path $path -ErrorAction SilentlyContinue)) {
+                $missingPaths += $path
+            }
+        }
+        if ($missingPaths.Count -gt 0) {
+            $result.Warnings += "Some critical paths are missing: $($missingPaths -join ', ') (repair may still proceed)"
+            $result.Checks["CriticalPaths"].MissingPaths = $missingPaths
+            $result.Checks["CriticalPaths"].Message = "Missing paths: $($missingPaths.Count)"
+        } else {
+            $result.Checks["CriticalPaths"].Passed = $true
+            $result.Checks["CriticalPaths"].Message = "All critical paths accessible"
+        }
+    }
+    
+    # Check 7: Environment state
+    $result.Checks["Environment"] = @{
+        Passed = $false
+        Message = ""
+    }
+    try {
+        $envState = Get-EnvState
+        if ($envState) {
+            $result.Checks["Environment"].Passed = $true
+            $envType = if ($envState.IsWinPE) { "WinPE/WinRE" } else { "Full Windows" }
+            $result.Checks["Environment"].Message = "Environment: $envType"
+        } else {
+            $result.Warnings += "Could not determine environment state"
+            $result.Checks["Environment"].Message = "Environment state unknown"
+        }
+    } catch {
+        $result.Warnings += "Environment check failed: $($_.Exception.Message)"
+        $result.Checks["Environment"].Message = "Error: $($_.Exception.Message)"
+    }
+    
+    # Summary
+    $result.Summary = if ($result.Ready) {
+        "All readiness checks passed"
+    } else {
+        "Readiness check failed: $($result.Issues.Count) issue(s) found"
+    }
+    
+    return $result
+}
+
 function Test-BootabilityComprehensive {
     <#
     .SYNOPSIS
@@ -3482,7 +3689,33 @@ function Invoke-BruteForceBootRepair {
         [switch]$AllowOnlineRepair
     )
     
-    # Validate TargetDrive is not empty
+    # Run comprehensive readiness check first
+    if (Get-Command Test-BootRepairReadiness -ErrorAction SilentlyContinue) {
+        try {
+            $readiness = Test-BootRepairReadiness -TargetDrive $TargetDrive -RequiredFunctions @() -CheckPermissions -CheckPaths
+            if (-not $readiness.Ready) {
+                $errorMsg = "Readiness check failed: $($readiness.Issues -join '; ')"
+                Write-Error $errorMsg -ErrorAction Stop
+                return @{
+                    Output = $errorMsg
+                    Bundle = ""
+                    Bootable = $false
+                    Confidence = "UNKNOWN"
+                    Blocker = "Readiness check failed"
+                    RemainingIssues = $readiness.Issues
+                    Verification = @{
+                        Bootable = $false
+                        Issues = $readiness.Issues
+                    }
+                }
+            }
+        } catch {
+            # If readiness check itself fails, fall through to basic validation
+            Write-Warning "Readiness check failed: $($_.Exception.Message) - proceeding with basic validation"
+        }
+    }
+    
+    # Validate TargetDrive is not empty (fallback if readiness check not available)
     if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
         $errorMsg = "ERROR: TargetDrive parameter is required but was empty or null."
         Write-Error $errorMsg -ErrorAction Stop
@@ -3923,7 +4156,29 @@ function Invoke-DefensiveBootRepair {
         [switch]$BruteForce
     )
 
-    # Validate TargetDrive is not empty
+    # Run comprehensive readiness check first
+    if (Get-Command Test-BootRepairReadiness -ErrorAction SilentlyContinue) {
+        try {
+            $readiness = Test-BootRepairReadiness -TargetDrive $TargetDrive -RequiredFunctions @() -CheckPermissions -CheckPaths
+            if (-not $readiness.Ready) {
+                $errorMsg = "Readiness check failed: $($readiness.Issues -join '; ')"
+                Write-Error $errorMsg -ErrorAction Stop
+                return @{
+                    Output = $errorMsg
+                    Bundle = ""
+                    Bootable = $false
+                    Confidence = "UNKNOWN"
+                    Blocker = "Readiness check failed"
+                    RemainingIssues = $readiness.Issues
+                }
+            }
+        } catch {
+            # If readiness check itself fails, fall through to basic validation
+            Write-Warning "Readiness check failed: $($_.Exception.Message) - proceeding with basic validation"
+        }
+    }
+    
+    # Validate TargetDrive is not empty (fallback if readiness check not available)
     if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
         $errorMsg = "ERROR: TargetDrive parameter is required but was empty or null."
         Write-Error $errorMsg -ErrorAction Stop

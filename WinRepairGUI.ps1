@@ -2710,39 +2710,121 @@ if ($null -ne $W) {
                     return
                 }
                 
-                # Check if required functions exist
-                if ($bruteForceMode) {
-                    if (-not (Get-Command Invoke-BruteForceBootRepair -ErrorAction SilentlyContinue)) {
-                        $errorMsg = "ERROR: Invoke-BruteForceBootRepair function not found.`nPlease ensure DefensiveBootCore.ps1 is loaded."
-                        if ($W -and $W.Dispatcher) {
-                            $W.Dispatcher.Invoke([action]{
+                # Run comprehensive readiness check before proceeding
+                $requiredFunctions = if ($bruteForceMode) { @("Invoke-BruteForceBootRepair") } else { @("Invoke-DefensiveBootRepair") }
+                
+                if (-not (Get-Command Test-BootRepairReadiness -ErrorAction SilentlyContinue)) {
+                    # Fallback to basic function check if readiness function not available
+                    Write-Host "WARNING: Test-BootRepairReadiness not available, using basic checks" -ForegroundColor Yellow
+                    if ($bruteForceMode) {
+                        if (-not (Get-Command Invoke-BruteForceBootRepair -ErrorAction SilentlyContinue)) {
+                            $errorMsg = "ERROR: Invoke-BruteForceBootRepair function not found.`nPlease ensure DefensiveBootCore.ps1 is loaded."
+                            if ($W -and $W.Dispatcher) {
+                                $W.Dispatcher.Invoke([action]{
+                                    if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                                    if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                                    $btnOneClickRepair.IsEnabled = $true
+                                }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                            } else {
                                 if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
                                 if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
                                 $btnOneClickRepair.IsEnabled = $true
-                            }, [System.Windows.Threading.DispatcherPriority]::Normal)
-                        } else {
-                            if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
-                            if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
-                            $btnOneClickRepair.IsEnabled = $true
+                            }
+                            [System.Windows.MessageBox]::Show($errorMsg, "Function Not Found", "OK", "Error") | Out-Null
+                            return
                         }
-                        [System.Windows.MessageBox]::Show($errorMsg, "Function Not Found", "OK", "Error") | Out-Null
-                        return
+                    } else {
+                        if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
+                            $errorMsg = "ERROR: Invoke-DefensiveBootRepair function not found.`nPlease ensure DefensiveBootCore.ps1 is loaded."
+                            if ($W -and $W.Dispatcher) {
+                                $W.Dispatcher.Invoke([action]{
+                                    if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                                    if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                                    $btnOneClickRepair.IsEnabled = $true
+                                }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                            } else {
+                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                                if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                                $btnOneClickRepair.IsEnabled = $true
+                            }
+                            [System.Windows.MessageBox]::Show($errorMsg, "Function Not Found", "OK", "Error") | Out-Null
+                            return
+                        }
                     }
                 } else {
-                    if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
-                        $errorMsg = "ERROR: Invoke-DefensiveBootRepair function not found.`nPlease ensure DefensiveBootCore.ps1 is loaded."
-                        if ($W -and $W.Dispatcher) {
-                            $W.Dispatcher.Invoke([action]{
-                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                    # Run comprehensive readiness check
+                    try {
+                        Update-StatusBar -Message "One-Click Repair: Running readiness checks..." -ShowProgress
+                        $readiness = Test-BootRepairReadiness -TargetDrive $targetDrive -RequiredFunctions $requiredFunctions -CheckPermissions -CheckPaths
+                        
+                        if (-not $readiness.Ready) {
+                            $errorDetails = @()
+                            $errorDetails += "READINESS CHECK FAILED"
+                            $errorDetails += ""
+                            $errorDetails += "Issues found:"
+                            foreach ($issue in $readiness.Issues) {
+                                $errorDetails += "  - $issue"
+                            }
+                            if ($readiness.Warnings.Count -gt 0) {
+                                $errorDetails += ""
+                                $errorDetails += "Warnings:"
+                                foreach ($warning in $readiness.Warnings) {
+                                    $errorDetails += "  - $warning"
+                                }
+                            }
+                            $errorDetails += ""
+                            $errorDetails += "Check details:"
+                            foreach ($checkName in $readiness.Checks.Keys) {
+                                $check = $readiness.Checks[$checkName]
+                                $status = if ($check.Passed) { "[OK]" } else { "[FAIL]" }
+                                $errorDetails += "  $status $checkName : $($check.Message)"
+                            }
+                            
+                            $errorMsg = $errorDetails -join "`n"
+                            
+                            if ($W -and $W.Dispatcher) {
+                                $W.Dispatcher.Invoke([action]{
+                                    if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Readiness check failed - see details" }
+                                    if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                                    $btnOneClickRepair.IsEnabled = $true
+                                    Update-StatusBar -Message "One-Click Repair: Readiness check failed" -HideProgress
+                                }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                            } else {
+                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Readiness check failed - see details" }
                                 if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
                                 $btnOneClickRepair.IsEnabled = $true
+                            }
+                            
+                            [System.Windows.MessageBox]::Show(
+                                "Readiness check failed. Cannot proceed with repair.`n`n$($readiness.Issues -join '`n')",
+                                "Readiness Check Failed",
+                                "OK",
+                                "Error"
+                            ) | Out-Null
+                            return
+                        } else {
+                            # Log successful readiness check
+                            Write-Host "Readiness check passed: $($readiness.Summary)" -ForegroundColor Green
+                            if ($readiness.Warnings.Count -gt 0) {
+                                Write-Host "Warnings: $($readiness.Warnings -join '; ')" -ForegroundColor Yellow
+                            }
+                        }
+                    } catch {
+                        $errorMsg = "ERROR: Readiness check failed with exception: $($_.Exception.Message)"
+                        Write-Host $errorMsg -ForegroundColor Red
+                        if ($W -and $W.Dispatcher) {
+                            $W.Dispatcher.Invoke([action]{
+                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Readiness check error" }
+                                if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                                $btnOneClickRepair.IsEnabled = $true
+                                Update-StatusBar -Message "One-Click Repair: Readiness check error" -HideProgress
                             }, [System.Windows.Threading.DispatcherPriority]::Normal)
                         } else {
-                            if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                            if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Readiness check error" }
                             if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
                             $btnOneClickRepair.IsEnabled = $true
                         }
-                        [System.Windows.MessageBox]::Show($errorMsg, "Function Not Found", "OK", "Error") | Out-Null
+                        [System.Windows.MessageBox]::Show($errorMsg, "Readiness Check Error", "OK", "Error") | Out-Null
                         return
                     }
                 }
