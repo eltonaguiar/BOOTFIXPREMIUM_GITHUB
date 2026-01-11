@@ -2171,7 +2171,7 @@ try {
     }
 }
 
-    # Footer buttons: resize toggle and summary shortcut
+# Footer buttons: resize toggle and summary shortcut
     $btnResizeWindow = Get-Control -Name "BtnResizeWindow"
     if ($btnResizeWindow) {
         $btnResizeWindow.Add_Click({
@@ -2417,6 +2417,7 @@ try {
             }
         })
     }
+}
 
 # Store BCD entries globally for real-time updates
 $script:BCDEntriesCache = $null
