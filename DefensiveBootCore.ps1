@@ -3188,8 +3188,21 @@ function Invoke-BruteForceBootRepair {
         $actions += $bcdResult.Actions
     }
     
-    if ($bcdResult.Blocked) {
-        $actions += "⚠ BCD repair blocked: $($bcdResult.Blocked)"
+    # Safely check for Blocked property
+    $isBlocked = $false
+    $blockedReason = $null
+    if ($bcdResult -is [hashtable] -and $bcdResult.ContainsKey('Blocked')) {
+        $isBlocked = $true
+        $blockedReason = $bcdResult.Blocked
+    } elseif ($bcdResult -is [pscustomobject] -or $bcdResult -is [psobject]) {
+        if ($bcdResult.PSObject.Properties.Name -contains 'Blocked') {
+            $isBlocked = $true
+            $blockedReason = $bcdResult.Blocked
+        }
+    }
+    
+    if ($isBlocked) {
+        $actions += "⚠ BCD repair blocked: $blockedReason"
     } elseif (-not $bcdResult.Success -or -not $bcdResult.Verified) {
         $actions += "⚠ BCD repair completed but verification had issues"
     } else {
