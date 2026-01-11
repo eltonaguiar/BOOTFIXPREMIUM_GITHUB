@@ -1,1 +1,1 @@
-﻿-NoNewline
+﻿-
