@@ -3218,110 +3218,111 @@ function Test-BootabilityComprehensive {
         
         # If system BCD still doesn't work after permission fix, fall through to ESP BCD check
         if ($bcdExitCode -ne 0) {
-        # System BCD failed - try ESP BCD
-        $verification.Actions += "System BCD not accessible, checking ESP BCD..."
-        
-        # Try to detect/mount ESP if not provided
-        $actualEspLetter = $EspLetter
-        if (-not $actualEspLetter) {
-            # Try to detect ESP
-            $esp = Get-EspCandidate
-            if ($esp -and $esp.DriveLetter) {
-                $actualEspLetter = "$($esp.DriveLetter):"
-                $verification.Actions += "✓ ESP detected at $actualEspLetter (auto-detected for BCD verification)"
-            } else {
-                # Try to mount ESP temporarily for verification
-                $mount = Mount-EspTemp -PreferredLetter "S"
-                if ($mount) {
-                    $actualEspLetter = "$($mount.Letter):"
-                    $verification.Actions += "✓ ESP mounted at $actualEspLetter (temporarily mounted for BCD verification)"
-                }
-            }
-        }
-        
-        # Check ESP BCD file path
-        if ($actualEspLetter) {
-            $espLetterClean = $actualEspLetter.TrimEnd(':')
-            $bcdStore = "$espLetterClean\EFI\Microsoft\Boot\BCD"
-            $bcdStorePath = "$actualEspLetter\EFI\Microsoft\Boot\BCD"
-        } else {
-            $bcdStore = "BCD"
-            $bcdStorePath = "$TargetDrive`:\Boot\BCD"
-        }
-        
-        # Check if BCD file exists on disk
-        if (Test-Path $bcdStorePath -ErrorAction SilentlyContinue) {
-            $verification.BCDExists = $true
-            $verification.Actions += "✓ BCD file exists at $bcdStorePath"
+            # System BCD failed - try ESP BCD
+            $verification.Actions += "System BCD not accessible, checking ESP BCD..."
             
-            try {
-                # Try to enumerate ESP BCD with timeout to prevent hanging
-                $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Enumerate BCD entries"
-                $bcdEnum = $bcdResult.Output
-                $bcdExitCode = $bcdResult.ExitCode
-            
-                # Check for timeout
-                if ($bcdResult.TimedOut) {
-                    $verification.Issues += "BCD enumeration timed out after 15 seconds - BCD may be locked or corrupted"
-                    $verification.Actions += "⚠ bcdedit enumeration timed out (BCD may be locked)"
-                }
-                # If enumeration failed, try taking ownership of BCD file and parent directory
-                elseif ($bcdExitCode -ne 0) {
-                    $verification.Actions += "⚠ bcdedit enumeration failed (exit code $bcdExitCode), attempting permission fix..."
-                    try {
-                        # Fix parent directory permissions first (ESP or Boot directory)
-                        $bcdParentDir = Split-Path -Path $bcdStorePath -Parent
-                        if (Test-Path $bcdParentDir -ErrorAction SilentlyContinue) {
-                            Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$bcdParentDir`"", "/r", "/d", "y" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue | Out-Null
-                            Start-Process -FilePath "icacls.exe" -ArgumentList "`"$bcdParentDir`"", "/grant", "Administrators:F", "/t" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue | Out-Null
-                            $verification.Actions += "  ✓ Fixed permissions on parent directory: $bcdParentDir"
-                        }
-                        
-                        # Fix BCD file permissions
-                        $takeownResult = Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$bcdStorePath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
-                        if ($takeownResult.ExitCode -eq 0) {
-                            $bcdPermissionsModified = $true
-                            $icaclsResult = Start-Process -FilePath "icacls.exe" -ArgumentList "`"$bcdStorePath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
-                            $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$bcdStorePath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
-                            $verification.Actions += "  ✓ Took ownership and fixed permissions on BCD file"
-                            
-                            # Wait for file system to sync
-                            Start-Sleep -Milliseconds 500
-                            
-                            # Try enumeration again with timeout
-                            $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Re-enumerate BCD after permission fix"
-                            $bcdEnum = $bcdResult.Output
-                            $bcdExitCode = $bcdResult.ExitCode
-                            
-                            if ($bcdResult.TimedOut) {
-                                $verification.Issues += "BCD enumeration still timed out after permission fix"
-                            } elseif ($bcdExitCode -eq 0) {
-                                $verification.Actions += "  ✓ BCD enumeration succeeded after permission fix"
-                            }
-                        } else {
-                            $verification.Actions += "  ⚠ takeown failed (exit code $($takeownResult.ExitCode)) - may need administrator privileges"
-                        }
-                    } catch {
-                        $verification.Actions += "  ⚠ Could not fix BCD permissions: $($_.Exception.Message)"
+            # Try to detect/mount ESP if not provided
+            $actualEspLetter = $EspLetter
+            if (-not $actualEspLetter) {
+                # Try to detect ESP
+                $esp = Get-EspCandidate
+                if ($esp -and $esp.DriveLetter) {
+                    $actualEspLetter = "$($esp.DriveLetter):"
+                    $verification.Actions += "✓ ESP detected at $actualEspLetter (auto-detected for BCD verification)"
+                } else {
+                    # Try to mount ESP temporarily for verification
+                    $mount = Mount-EspTemp -PreferredLetter "S"
+                    if ($mount) {
+                        $actualEspLetter = "$($mount.Letter):"
+                        $verification.Actions += "✓ ESP mounted at $actualEspLetter (temporarily mounted for BCD verification)"
                     }
                 }
-            } catch {
-                $verification.Issues += "BCD exists but not readable: $($_.Exception.Message)"
             }
-        } else {
-            # BCD file doesn't exist on disk - but try system BCD enumeration one more time
-            # Sometimes BCD is accessible via bcdedit even if file path check fails
-            $verification.Actions += "⚠ BCD file not found at $bcdStorePath, but checking if system BCD is accessible..."
-            $finalSystemCheck = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Final system BCD check")
-            if ($finalSystemCheck.ExitCode -eq 0 -and -not ($finalSystemCheck.Output -match "could not be opened|cannot find|specified entry type is invalid")) {
-                $verification.BCDExists = $true
-                $verification.BCDReadable = $true
-                $bcdEnum = $finalSystemCheck.Output
-                $bcdExitCode = 0
-                $verification.Actions += "✓ System BCD is accessible via bcdedit (file path check may be misleading)"
-                $bcdStore = "BCD"
+            
+            # Check ESP BCD file path
+            if ($actualEspLetter) {
+                $espLetterClean = $actualEspLetter.TrimEnd(':')
+                $bcdStore = "$espLetterClean\EFI\Microsoft\Boot\BCD"
+                $bcdStorePath = "$actualEspLetter\EFI\Microsoft\Boot\BCD"
             } else {
-                $verification.Actions += "❌ BCD file not found and system BCD enumeration also failed"
+                $bcdStore = "BCD"
+                $bcdStorePath = "$TargetDrive`:\Boot\BCD"
+            }
+            
+            # Check if BCD file exists on disk
+            if (Test-Path $bcdStorePath -ErrorAction SilentlyContinue) {
+                $verification.BCDExists = $true
+                $verification.Actions += "✓ BCD file exists at $bcdStorePath"
+                
+                try {
+                    # Try to enumerate ESP BCD with timeout to prevent hanging
+                    $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Enumerate BCD entries"
+                    $bcdEnum = $bcdResult.Output
+                    $bcdExitCode = $bcdResult.ExitCode
+                
+                    # Check for timeout
+                    if ($bcdResult.TimedOut) {
+                        $verification.Issues += "BCD enumeration timed out after 15 seconds - BCD may be locked or corrupted"
+                        $verification.Actions += "⚠ bcdedit enumeration timed out (BCD may be locked)"
+                    }
+                    # If enumeration failed, try taking ownership of BCD file and parent directory
+                    elseif ($bcdExitCode -ne 0) {
+                        $verification.Actions += "⚠ bcdedit enumeration failed (exit code $bcdExitCode), attempting permission fix..."
+                        try {
+                            # Fix parent directory permissions first (ESP or Boot directory)
+                            $bcdParentDir = Split-Path -Path $bcdStorePath -Parent
+                            if (Test-Path $bcdParentDir -ErrorAction SilentlyContinue) {
+                                Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$bcdParentDir`"", "/r", "/d", "y" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue | Out-Null
+                                Start-Process -FilePath "icacls.exe" -ArgumentList "`"$bcdParentDir`"", "/grant", "Administrators:F", "/t" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue | Out-Null
+                                $verification.Actions += "  ✓ Fixed permissions on parent directory: $bcdParentDir"
+                            }
+                            
+                            # Fix BCD file permissions
+                            $takeownResult = Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$bcdStorePath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+                            if ($takeownResult.ExitCode -eq 0) {
+                                $bcdPermissionsModified = $true
+                                $icaclsResult = Start-Process -FilePath "icacls.exe" -ArgumentList "`"$bcdStorePath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+                                $attribResult = Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$bcdStorePath`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+                                $verification.Actions += "  ✓ Took ownership and fixed permissions on BCD file"
+                                
+                                # Wait for file system to sync
+                                Start-Sleep -Milliseconds 500
+                                
+                                # Try enumeration again with timeout
+                                $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Re-enumerate BCD after permission fix"
+                                $bcdEnum = $bcdResult.Output
+                                $bcdExitCode = $bcdResult.ExitCode
+                                
+                                if ($bcdResult.TimedOut) {
+                                    $verification.Issues += "BCD enumeration still timed out after permission fix"
+                                } elseif ($bcdExitCode -eq 0) {
+                                    $verification.Actions += "  ✓ BCD enumeration succeeded after permission fix"
+                                }
+                            } else {
+                                $verification.Actions += "  ⚠ takeown failed (exit code $($takeownResult.ExitCode)) - may need administrator privileges"
+                            }
+                        } catch {
+                            $verification.Actions += "  ⚠ Could not fix BCD permissions: $($_.Exception.Message)"
+                        }
+                    }
+                } catch {
+                    $verification.Issues += "BCD exists but not readable: $($_.Exception.Message)"
+                }
+            } else {
+                # BCD file doesn't exist on disk - but try system BCD enumeration one more time
+                # Sometimes BCD is accessible via bcdedit even if file path check fails
+                $verification.Actions += "⚠ BCD file not found at $bcdStorePath, but checking if system BCD is accessible..."
+                $finalSystemCheck = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Final system BCD check"
+                if ($finalSystemCheck.ExitCode -eq 0 -and -not ($finalSystemCheck.Output -match "could not be opened|cannot find|specified entry type is invalid")) {
+                    $verification.BCDExists = $true
+                    $verification.BCDReadable = $true
+                    $bcdEnum = $finalSystemCheck.Output
+                    $bcdExitCode = 0
+                    $verification.Actions += "✓ System BCD is accessible via bcdedit (file path check may be misleading)"
+                    $bcdStore = "BCD"
+                } else {
+                    $verification.Actions += "❌ BCD file not found and system BCD enumeration also failed"
+                }
             }
         }
     }
