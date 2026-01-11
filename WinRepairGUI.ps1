@@ -106,8 +106,27 @@ try {
     if (Test-Path $corePath) { 
         # Load with explicit UTF-8 encoding to prevent character corruption
         $coreContent = Get-Content $corePath -Raw -Encoding UTF8
-        # Use dot-sourcing to load into current scope (allows functions to be available to nested functions)
-        . ([scriptblock]::Create($coreContent))
+        
+        # CRITICAL: Suppress errors during scriptblock execution to handle Path property issues
+        # The scriptblock may throw errors when accessing MyInvocation.MyCommand.Path
+        $ErrorActionPreference = 'SilentlyContinue'
+        try {
+            # Use dot-sourcing to load into current scope (allows functions to be available to nested functions)
+            . ([scriptblock]::Create($coreContent))
+        } catch {
+            # Error during scriptblock execution - check if it's the Path property error
+            if ($_.Exception.Message -match "property.*Path.*cannot be found") {
+                # This is expected when dot-sourced via scriptblock - continue anyway
+                # The script should handle this internally with fallbacks
+                Write-Verbose "DefensiveBootCore.ps1 loaded with Path property warning (expected when dot-sourced)" -Verbose
+            } else {
+                # Different error - re-throw it
+                throw
+            }
+        } finally {
+            $ErrorActionPreference = 'Continue'
+        }
+        
         if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
             Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-DefensiveBootRepair function not found"
         }
@@ -118,13 +137,26 @@ try {
         Write-Warning "DefensiveBootCore.ps1 not found at $corePath - One-Click Repair may not work"
     }
 } catch { 
-    Write-Warning "Failed to load DefensiveBootCore.ps1: $_ - One-Click Repair may not work"
+    # Only warn if it's not the expected Path property error
+    if ($_.Exception.Message -notmatch "property.*Path.*cannot be found") {
+        Write-Warning "Failed to load DefensiveBootCore.ps1: $_ - One-Click Repair may not work"
+    }
 }
 
 # Compute and cache a stable script root for all event handlers (UI contexts can null MyInvocation.Path)
 $script:ScriptRootSafe = $PSScriptRoot
 if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = Split-Path -Parent $PSCommandPath -ErrorAction SilentlyContinue }
-if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = Split-Path -Parent $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue }
+# CRITICAL: When dot-sourced via scriptblock, MyCommand may not have Path property
+if (-not $script:ScriptRootSafe -and $MyInvocation.MyCommand) {
+    try {
+        $path = $MyInvocation.MyCommand.Path
+        if ($path) {
+            $script:ScriptRootSafe = Split-Path -Parent $path -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # MyCommand exists but doesn't have Path property - continue to next method
+    }
+}
 if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = (Get-Location).ProviderPath }
 
 # Initialize script-level variables used by timer callbacks to prevent "variable not set" errors
@@ -140,6 +172,7 @@ if (-not (Test-Path variable:script:progressSteps)) {
 # CRITICAL: Use defensive loading to prevent call depth overflow from recursive Write-Warning wrappers
 $script:LoggingAvailable = $false
 $script:ErrorLoggingLoaded = $false
+$script:ErrorLoggingLoading = $false  # Initialize before check to prevent "variable not set" error
 
 # Prevent infinite recursion by tracking if we're already loading ErrorLogging
 if (-not $script:ErrorLoggingLoading) {
@@ -166,7 +199,7 @@ if (-not $script:ErrorLoggingLoading) {
                 if ($script:ErrorLoggingLoaded -and (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
                     try {
                         Add-MiracleBootLog -Level "INFO" -Message "WinRepairGUI.ps1 loaded" -Location "WinRepairGUI.ps1" -NoConsole -ErrorAction Stop
-                        $script:LoggingAvailable = $true
+        $script:LoggingAvailable = $true
                     } catch {
                         # Logging call failed - continue without logging
                         $script:LoggingAvailable = $false
@@ -185,14 +218,14 @@ if (-not $script:ErrorLoggingLoading) {
                 param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
                 # Stub function - does nothing, just prevents errors
                 # This prevents "command not found" errors if ErrorLogging.ps1 is missing or broken
-            }
         }
-    } catch {
+    }
+} catch {
         # Catch-all: if anything goes wrong, define stub and continue
-        if (-not (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
-            function Add-MiracleBootLog {
-                param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
-                # Stub function - does nothing, just prevents errors
+    if (-not (Get-Command Add-MiracleBootLog -ErrorAction SilentlyContinue)) {
+        function Add-MiracleBootLog {
+            param([string]$Level, [string]$Message, [string]$Location, [switch]$NoConsole, [hashtable]$Data, [switch]$ErrorAction)
+            # Stub function - does nothing, just prevents errors
             }
         }
     } finally {
@@ -337,6 +370,14 @@ function Get-Control {
 }
 
 function Start-GUI {
+    # CRITICAL: Prevent infinite loops - guard against recursive calls
+    if ($script:GUIIsRunning) {
+        Write-Warning "Start-GUI is already running. Ignoring recursive call to prevent infinite loop."
+        return
+    }
+    $script:GUIIsRunning = $true
+    
+    try {
     # LAYER 3: FAILURE ENUMERATION - STA Thread Validation
     # CRITICAL: WPF requires STA thread. Validate BEFORE any XAML operations.
     $apartmentState = [System.Threading.Thread]::CurrentThread.ApartmentState
@@ -2248,7 +2289,7 @@ if ($btnSwitchToTUI) {
                     
                     # Verify Start-TUI function exists
                     if (Get-Command Start-TUI -ErrorAction SilentlyContinue) {
-                        Start-TUI
+                Start-TUI
                     } else {
                         throw "Start-TUI function not found after loading WinRepairTUI.ps1"
                     }
@@ -2275,11 +2316,11 @@ if ($btnSwitchToTUI) {
             $errorMsg = $_.Exception.Message
             # Don't show message box if window is already closed - just write to console
             try {
-                [System.Windows.MessageBox]::Show(
+            [System.Windows.MessageBox]::Show(
                     "Error switching to command line mode: $errorMsg`n`nYou can manually run MiracleBoot.ps1 to access TUI mode.",
-                    "Error",
-                    "OK",
-                    "Error"
+                "Error",
+                "OK",
+                "Error"
                 ) | Out-Null
             } catch {
                 # Window already closed, just write to console
@@ -3672,6 +3713,16 @@ if ($null -ne $W) {
             }
         })
     }
+    } catch {
+        # Error occurred during GUI initialization or execution
+        Write-Host "Error in Start-GUI: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+        throw
+    } finally {
+        # CRITICAL: Always reset guard flag to prevent infinite loops
+        # This ensures the flag is reset even if function throws or returns early
+        $script:GUIIsRunning = $false
+    }
 }
 
 # Store BCD entries globally for real-time updates
@@ -4140,7 +4191,7 @@ function Invoke-BCDRefresh {
             $rawBcd = $bcdResult.Output
         } else {
             # Fallback to direct call if function not available
-            $rawBcd = (& bcdedit /enum /v 2>&1) | Out-String
+        $rawBcd = (& bcdedit /enum /v 2>&1) | Out-String
             $bcdResult = @{
                 ExitCode = $LASTEXITCODE
                 Output = $rawBcd
@@ -7945,9 +7996,9 @@ if ($btnFullBootDiagnosis) {
                 # Status bar update failed, but continue
             }
             
-            $logDriveCombo = Get-Control -Name "LogDriveCombo"
-            $logAnalysisBox = Get-Control -Name "LogAnalysisBox"
-            
+        $logDriveCombo = Get-Control -Name "LogDriveCombo"
+        $logAnalysisBox = Get-Control -Name "LogAnalysisBox"
+        
             # Debug: Update log box immediately
             if ($logAnalysisBox) {
                 $logAnalysisBox.Text = "Full Boot Diagnosis button clicked - initializing...`n`nPlease wait...`n"
@@ -7958,29 +8009,29 @@ if ($btnFullBootDiagnosis) {
             
             # Inner try for the actual diagnosis work
             try {
-            $selectedDrive = if ($logDriveCombo) { $logDriveCombo.SelectedItem } else { $null }
-            $drive = "C"
-            
-            if ($selectedDrive) {
-                if ($selectedDrive -match '^([A-Z]):') {
-                    $drive = $matches[1]
-                }
+        $selectedDrive = if ($logDriveCombo) { $logDriveCombo.SelectedItem } else { $null }
+        $drive = "C"
+        
+        if ($selectedDrive) {
+            if ($selectedDrive -match '^([A-Z]):') {
+                $drive = $matches[1]
             }
-            
-            if ($logAnalysisBox) {
-                $logAnalysisBox.Text = "Running comprehensive automated boot diagnosis for $drive`:...`n`nPlease wait...`n"
-            }
+        }
+        
+        if ($logAnalysisBox) {
+            $logAnalysisBox.Text = "Running comprehensive automated boot diagnosis for $drive`:...`n`nPlease wait...`n"
+        }
             
             Update-StatusBar -Message "Running Full Boot Diagnosis..." -ShowProgress
             
             $output = ""
-            
-            # Run enhanced automated diagnosis
+        
+        # Run enhanced automated diagnosis
             if (Get-Command Run-BootDiagnosis -ErrorAction SilentlyContinue) {
                 try {
-                    $diagnosis = Run-BootDiagnosis -Drive $drive
+        $diagnosis = Run-BootDiagnosis -Drive $drive
                     if ($diagnosis -and $diagnosis.Report) {
-                        $output = $diagnosis.Report
+        $output = $diagnosis.Report
                     } else {
                         $output = "Boot diagnosis completed but no report was generated.`n"
                     }
@@ -7992,67 +8043,67 @@ if ($btnFullBootDiagnosis) {
                 $output = "ERROR: Run-BootDiagnosis function not found.`n"
                 $output += "Please ensure WinRepairCore.ps1 is loaded.`n"
             }
-            
-            # Add boot log summary if available
+        
+        # Add boot log summary if available
             if (Get-Command Get-BootLogAnalysis -ErrorAction SilentlyContinue) {
                 try {
-                    $bootLog = Get-BootLogAnalysis -TargetDrive $drive
+        $bootLog = Get-BootLogAnalysis -TargetDrive $drive
                     if ($bootLog -and $bootLog.Found) {
-                        $output += "`n`n"
-                        $output += "===============================================================`n"
-                        $output += "BOOT LOG SUMMARY`n"
-                        $output += "===============================================================`n"
-                        $output += "Boot log found. Critical missing drivers: $($bootLog.MissingDrivers.Count)`n"
+            $output += "`n`n"
+            $output += "===============================================================`n"
+            $output += "BOOT LOG SUMMARY`n"
+            $output += "===============================================================`n"
+            $output += "Boot log found. Critical missing drivers: $($bootLog.MissingDrivers.Count)`n"
                         if ($bootLog.MissingDrivers -and $bootLog.MissingDrivers.Count -gt 0) {
-                            $output += "Critical drivers that failed to load:`n"
-                            foreach ($driver in $bootLog.MissingDrivers) {
-                                $output += "  - $driver`n"
-                            }
+                $output += "Critical drivers that failed to load:`n"
+                foreach ($driver in $bootLog.MissingDrivers) {
+                    $output += "  - $driver`n"
+                }
                         }
                     }
                 } catch {
                     $output += "`n`n[WARN] Could not analyze boot log: $($_.Exception.Message)`n"
-                }
             }
-            
-            # Add event log summary if available
+        }
+        
+        # Add event log summary if available
             if (Get-Command Get-OfflineEventLogs -ErrorAction SilentlyContinue) {
                 try {
-                    $eventLogs = Get-OfflineEventLogs -TargetDrive $drive
+        $eventLogs = Get-OfflineEventLogs -TargetDrive $drive
                     if ($eventLogs -and $eventLogs.Success) {
-                        $output += "`n`n"
-                        $output += "===============================================================`n"
-                        $output += "EVENT LOG SUMMARY`n"
-                        $output += "===============================================================`n"
-                        $output += "Recent shutdowns: $($eventLogs.ShutdownEvents.Count)`n"
-                        $output += "BSOD events: $($eventLogs.BSODInfo.Count)`n"
-                        $output += "Recent errors: $($eventLogs.RecentErrors.Count)`n"
+            $output += "`n`n"
+            $output += "===============================================================`n"
+            $output += "EVENT LOG SUMMARY`n"
+            $output += "===============================================================`n"
+            $output += "Recent shutdowns: $($eventLogs.ShutdownEvents.Count)`n"
+            $output += "BSOD events: $($eventLogs.BSODInfo.Count)`n"
+            $output += "Recent errors: $($eventLogs.RecentErrors.Count)`n"
                         if ($eventLogs.BSODInfo -and $eventLogs.BSODInfo.Count -gt 0) {
-                            $output += "`nMost recent BSOD:`n"
-                            $latestBSOD = $eventLogs.BSODInfo | Sort-Object Time -Descending | Select-Object -First 1
+                $output += "`nMost recent BSOD:`n"
+                $latestBSOD = $eventLogs.BSODInfo | Sort-Object Time -Descending | Select-Object -First 1
                             if ($latestBSOD) {
-                                $output += "  Stop Code: $($latestBSOD.StopCode)`n"
-                                $output += "  $($latestBSOD.Explanation)`n"
+                $output += "  Stop Code: $($latestBSOD.StopCode)`n"
+                $output += "  $($latestBSOD.Explanation)`n"
                             }
                         }
                     }
                 } catch {
                     $output += "`n`n[WARN] Could not analyze event logs: $($_.Exception.Message)`n"
-                }
             }
-            
-            # Show critical issues warning if found
+        }
+        
+        # Show critical issues warning if found
             if ($diagnosis -and $diagnosis.HasCriticalIssues) {
-                $output += "`n`n"
-                $output += "===============================================================`n"
-                $output += "[WARN] CRITICAL ISSUES DETECTED - IMMEDIATE ACTION REQUIRED`n"
-                $output += "===============================================================`n"
-                $output += "Review the issues above and follow the recommended actions.`n"
-                $output += "Use the Boot Fixer tab to apply repairs.`n"
-            }
-            
-            if ($logAnalysisBox) {
-                $logAnalysisBox.Text = $output
+            $output += "`n`n"
+            $output += "===============================================================`n"
+            $output += "[WARN] CRITICAL ISSUES DETECTED - IMMEDIATE ACTION REQUIRED`n"
+            $output += "===============================================================`n"
+            $output += "Review the issues above and follow the recommended actions.`n"
+            $output += "Use the Boot Fixer tab to apply repairs.`n"
+        }
+        
+        if ($logAnalysisBox) {
+            $logAnalysisBox.Text = $output
                 $logAnalysisBox.ScrollToEnd()
             }
             

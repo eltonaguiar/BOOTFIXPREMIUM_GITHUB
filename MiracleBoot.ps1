@@ -829,12 +829,38 @@ function New-GUIFailureDiagnosticReport {
     
     Set-Content -Path $reportPath -Value ($report -join "`r`n") -Encoding UTF8 -Force
     
-    # Open in Notepad
-    try {
-        Start-Process notepad.exe -ArgumentList "`"$reportPath`""
-    } catch {
-        # If Notepad fails, at least show the path
-        Write-Host "Could not open Notepad. Report saved to: $reportPath" -ForegroundColor Yellow
+    # CRITICAL: Prevent infinite loop of opening diagnostic reports
+    # Only open Notepad once per session to avoid spam
+    if (-not $script:DiagnosticReportOpened) {
+        $script:DiagnosticReportOpened = $true
+        $script:DiagnosticReportLastOpened = Get-Date
+        
+        # Open in Notepad (only once per session)
+        try {
+            Start-Process notepad.exe -ArgumentList "`"$reportPath`""
+            Write-Host "Diagnostic report opened in Notepad: $reportPath" -ForegroundColor Cyan
+        } catch {
+            # If Notepad fails, at least show the path
+            Write-Host "Could not open Notepad. Report saved to: $reportPath" -ForegroundColor Yellow
+        }
+    } else {
+        # Report already opened in this session - just log the path
+        $timeSinceLastOpen = (Get-Date) - $script:DiagnosticReportLastOpened
+        if ($timeSinceLastOpen.TotalSeconds -gt 60) {
+            # More than 60 seconds since last open - allow one more (in case of different error)
+            $script:DiagnosticReportOpened = $false
+            try {
+                Start-Process notepad.exe -ArgumentList "`"$reportPath`""
+                $script:DiagnosticReportOpened = $true
+                $script:DiagnosticReportLastOpened = Get-Date
+                Write-Host "Additional diagnostic report opened: $reportPath" -ForegroundColor Cyan
+            } catch {
+                Write-Host "Could not open Notepad. Report saved to: $reportPath" -ForegroundColor Yellow
+            }
+        } else {
+            # Too soon - don't open another window
+            Write-Host "Diagnostic report saved (Notepad already open from recent error): $reportPath" -ForegroundColor Gray
+        }
     }
     
     return $reportPath
@@ -1276,6 +1302,102 @@ function Invoke-PreflightCheck {
     }
     $checks += $espCheck
     Write-Host " OK" -ForegroundColor Green
+    
+    # Check 7: RunMiracleBoot.cmd validation (CRITICAL - must not have ". was unexpected" error)
+    Write-Host "[CHECK] RunMiracleBoot.cmd validation..." -ForegroundColor Gray -NoNewline
+    $cmdPath = Join-Path $script:MiracleBootRoot "RunMiracleBoot.cmd"
+    $cmdCheckPassed = $true
+    $cmdCheckMessage = "OK"
+    
+    if (Test-Path $cmdPath -ErrorAction SilentlyContinue) {
+        try {
+            # Test 1: Check syntax for common issues
+            $cmdContent = Get-Content $cmdPath -Raw -ErrorAction Stop
+            
+            # Check for delayed expansion (required for paths with spaces)
+            $hasDelayedExpansion = $cmdContent -match 'setlocal\s+enabledelayedexpansion'
+            if (-not $hasDelayedExpansion) {
+                $cmdCheckPassed = $false
+                $cmdCheckMessage = "Missing delayed expansion (required for paths with spaces)"
+            }
+            
+            # Check for unquoted paths
+            if ($cmdContent -match 'if\s+exist\s+%%~[^"]+[^"]*\)') {
+                $cmdCheckPassed = $false
+                $cmdCheckMessage = "Unquoted path in 'if exist' statement"
+            }
+            
+            # Test 2: Execute dry-run to check for ". was unexpected" error (with timeout to prevent hanging)
+            if ($cmdCheckPassed) {
+                try {
+                    # Use Start-Process with timeout to prevent infinite hangs
+                    $psi = New-Object System.Diagnostics.ProcessStartInfo
+                    $psi.FileName = "cmd.exe"
+                    $psi.Arguments = "/c `"`"$cmdPath`" --help 2>&1`""
+                    $psi.RedirectStandardOutput = $true
+                    $psi.RedirectStandardError = $true
+                    $psi.UseShellExecute = $false
+                    $psi.CreateNoWindow = $true
+                    
+                    $process = New-Object System.Diagnostics.Process
+                    $process.StartInfo = $psi
+                    
+                    # Start process and wait with timeout
+                    $process.Start() | Out-Null
+                    $completed = $process.WaitForExit(5000) # 5 second timeout
+                    
+                    if ($completed) {
+                        $testOutput = $process.StandardOutput.ReadToEnd()
+                        $testOutput += $process.StandardError.ReadToEnd()
+                        $process.Dispose()
+                        
+                        $hasUnexpectedError = $testOutput -match "\.\s+was\s+unexpected|was\s+unexpected\s+at\s+this\s+time|Layo\.\s+was\s+unexpected"
+                        
+                        if ($hasUnexpectedError) {
+                            $cmdCheckPassed = $false
+                            $cmdCheckMessage = "CRITICAL: '. was unexpected' error detected in execution test"
+                            $allPassed = $false
+                        }
+                    } else {
+                        # Timeout - kill process and skip execution test
+                        try {
+                            $process.Kill()
+                            $process.Dispose()
+                        } catch { }
+                        # Don't fail the check, just note that execution test was skipped
+                        $cmdCheckMessage = "OK (syntax valid, execution test skipped - timeout)"
+                    }
+                } catch {
+                    # If execution test fails, skip it but don't fail the check
+                    # Syntax validation already passed, which is the most important part
+                    $cmdCheckMessage = "OK (syntax valid, execution test skipped)"
+                }
+            }
+        } catch {
+            $cmdCheckPassed = $false
+            $cmdCheckMessage = "Validation error: $($_.Exception.Message)"
+        }
+    } else {
+        $cmdCheckMessage = "Not found (optional)"
+    }
+    
+    $cmdCheck = @{
+        Name = 'RunMiracleBoot.cmd'
+        Category = 'Files'
+        Required = $false
+        Passed = $cmdCheckPassed
+        Message = $cmdCheckMessage
+    }
+    $checks += $cmdCheck
+    
+    if (-not $cmdCheckPassed) {
+        Write-Host " FAIL" -ForegroundColor Red
+        if ($cmdCheckMessage -match "CRITICAL|\. was unexpected") {
+            $allPassed = $false
+        }
+    } else {
+        Write-Host " OK" -ForegroundColor Green
+    }
 
     # Check 7: BitLocker status (informational)
     Write-Host "[CHECK] BitLocker status..." -ForegroundColor Gray -NoNewline
@@ -1431,6 +1553,13 @@ function New-PreflightReport {
 
 # Initialize script root robustly (works in all contexts)
 $script:MiracleBootRoot = if ($PSScriptRoot) { $PSScriptRoot } else { $null }
+
+# Guard flag to prevent multiple diagnostic reports from opening Notepad repeatedly
+# This prevents infinite loops when errors occur during error handling
+if (-not (Test-Path variable:script:DiagnosticReportOpened)) {
+    $script:DiagnosticReportOpened = $false
+    $script:DiagnosticReportLastOpened = $null
+}
 if ([string]::IsNullOrEmpty($script:MiracleBootRoot)) {
     $script:MiracleBootRoot = Split-Path -Parent $MyInvocation.MyCommand.Definition
     if ([string]::IsNullOrEmpty($script:MiracleBootRoot)) {

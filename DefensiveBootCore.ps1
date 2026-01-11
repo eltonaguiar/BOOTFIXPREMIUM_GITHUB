@@ -1,13 +1,43 @@
 Set-StrictMode -Version Latest
 
 # ============================================================================
+# HELPER FUNCTION: Safely get Path property from MyCommand
+# ============================================================================
+function Get-MyCommandPath {
+    # This function safely accesses MyCommand.Path without throwing errors
+    # Returns $null if Path property doesn't exist
+    # CRITICAL: Must handle Set-StrictMode which throws on missing properties
+    if (-not $MyInvocation.MyCommand) {
+        return $null
+    }
+    
+    # Use Get-Member to check if Path property exists (works with Set-StrictMode)
+    $member = $MyInvocation.MyCommand | Get-Member -Name "Path" -ErrorAction SilentlyContinue
+    if (-not $member) {
+        return $null
+    }
+    
+    # Property exists - access it in a way that Set-StrictMode won't complain about
+    # Use a scriptblock in a new scope to bypass strict mode checking
+    $scriptBlock = [scriptblock]::Create('param($cmd) $cmd.Path')
+    try {
+        $path = & $scriptBlock -cmd $MyInvocation.MyCommand -ErrorAction SilentlyContinue
+        return $path
+    } catch {
+        return $null
+    }
+}
+
+# ============================================================================
 # SCRIPT ROOT DETECTION (Required for Join-Path operations)
 # ============================================================================
 # Set $PSScriptRoot if not already set (needed when dot-sourced)
 if (-not $PSScriptRoot) {
     # Try multiple methods to determine script root
-    if ($MyInvocation.MyCommand.Path) {
-        $PSScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue
+    # CRITICAL: When dot-sourced via scriptblock, MyCommand may not have Path property
+    $path = Get-MyCommandPath
+    if ($path) {
+        $PSScriptRoot = Split-Path -Parent $path -ErrorAction SilentlyContinue
     }
     if (-not $PSScriptRoot -and $PSCommandPath) {
         $PSScriptRoot = Split-Path -Parent $PSCommandPath -ErrorAction SilentlyContinue
@@ -35,8 +65,9 @@ function Get-ScriptRootSafe {
     }
     
     # Try multiple methods to determine script root
-    if ($MyInvocation.MyCommand.Path) {
-        $root = Split-Path -Parent $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue
+    $path = Get-MyCommandPath
+    if ($path) {
+        $root = Split-Path -Parent $path -ErrorAction SilentlyContinue
         if (-not [string]::IsNullOrWhiteSpace($root)) {
             return $root
         }
@@ -3367,6 +3398,72 @@ function Test-BootRepairReadiness {
     } catch {
         $result.Warnings += "Environment check failed: $($_.Exception.Message)"
         $result.Checks["Environment"].Message = "Error: $($_.Exception.Message)"
+    }
+    
+    # Check 8: RunMiracleBoot.cmd validation (if in script root)
+    $result.Checks["RunMiracleBootCmd"] = @{
+        Passed = $false
+        Message = ""
+    }
+    try {
+        $scriptRoot = Get-ScriptRootSafe
+        $cmdPath = Join-Path $scriptRoot "RunMiracleBoot.cmd"
+        
+        if (Test-Path $cmdPath -ErrorAction SilentlyContinue) {
+            # Test 1: Check for ". was unexpected" error by attempting to parse
+            $cmdContent = Get-Content $cmdPath -Raw -ErrorAction SilentlyContinue
+            if ($cmdContent) {
+                # Check for common issues that cause ". was unexpected"
+                $hasIssues = $false
+                $issueDetails = @()
+                
+                # Check for unquoted paths with variable expansion
+                if ($cmdContent -match 'if\s+exist\s+%%~[^"]+[^"]*\)') {
+                    $hasIssues = $true
+                    $issueDetails += "Unquoted path in 'if exist' statement"
+                }
+                
+                # Check for delayed expansion usage (should be enabled for paths with spaces)
+                $hasDelayedExpansion = $cmdContent -match 'setlocal\s+enabledelayedexpansion'
+                if (-not $hasDelayedExpansion) {
+                    $hasIssues = $true
+                    $issueDetails += "Delayed expansion not enabled (required for paths with spaces)"
+                }
+                
+                # Check for proper variable quoting
+                if ($cmdContent -match '%SCRIPT_DIR%[^"]+[^"]*"') {
+                    $hasIssues = $true
+                    $issueDetails += "Unquoted SCRIPT_DIR variable expansion"
+                }
+                
+                if (-not $hasIssues) {
+                    # Test 2: Try to execute it (dry run - just check syntax)
+                    $testOutput = & cmd.exe /c "`"$cmdPath`" --help 2>&1" 2>&1
+                    $hasUnexpectedError = $testOutput -match "\.\s+was\s+unexpected|was\s+unexpected\s+at\s+this\s+time"
+                    
+                    if ($hasUnexpectedError) {
+                        $hasIssues = $true
+                        $issueDetails += "Execution test found '. was unexpected' error"
+                        $result.Warnings += "RunMiracleBoot.cmd has execution issues: $($testOutput -join '; ')"
+                    }
+                }
+                
+                if (-not $hasIssues) {
+                    $result.Checks["RunMiracleBootCmd"].Passed = $true
+                    $result.Checks["RunMiracleBootCmd"].Message = "RunMiracleBoot.cmd syntax is valid"
+                } else {
+                    $result.Warnings += "RunMiracleBoot.cmd has potential issues: $($issueDetails -join '; ')"
+                    $result.Checks["RunMiracleBootCmd"].Message = "Issues found: $($issueDetails -join '; ')"
+                }
+            } else {
+                $result.Checks["RunMiracleBootCmd"].Message = "Could not read CMD file"
+            }
+        } else {
+            $result.Checks["RunMiracleBootCmd"].Message = "RunMiracleBoot.cmd not found (optional)"
+        }
+    } catch {
+        $result.Warnings += "RunMiracleBoot.cmd validation failed: $($_.Exception.Message)"
+        $result.Checks["RunMiracleBootCmd"].Message = "Validation error: $($_.Exception.Message)"
     }
     
     # Summary
