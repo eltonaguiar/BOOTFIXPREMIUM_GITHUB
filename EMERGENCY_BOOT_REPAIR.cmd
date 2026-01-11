@@ -48,18 +48,22 @@ if exist "X:\Windows\System32\winload.exe" (
     set "ENV_TYPE=WinPE"
     set "SYSTEM_DRIVE=X:"
     echo   Environment: WinPE/WinRE detected
-) else (
-    REM Check for full Windows installation
-    if exist "C:\Windows\System32\winload.exe" (
-        set "ENV_TYPE=FullOS"
-        set "SYSTEM_DRIVE=C:"
-        set "WINDOWS_DRIVE=C:"
-        echo   Environment: Full Windows OS detected
-    ) else (
-        echo   WARNING: Could not detect Windows installation
-        echo   Attempting to find Windows drive...
-    )
+    goto :ENV_DETECTED
 )
+
+REM Check for full Windows installation
+if exist "C:\Windows\System32\winload.exe" (
+    set "ENV_TYPE=FullOS"
+    set "SYSTEM_DRIVE=C:"
+    set "WINDOWS_DRIVE=C:"
+    echo   Environment: Full Windows OS detected
+    goto :ENV_DETECTED
+)
+
+echo   WARNING: Could not detect Windows installation
+echo   Attempting to find Windows drive...
+
+:ENV_DETECTED
 
 REM Try to find Windows installation on other drives
 if "%WINDOWS_DRIVE%"=="" (
