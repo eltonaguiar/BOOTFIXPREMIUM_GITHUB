@@ -1902,6 +1902,25 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
             
             # Launch GUI immediately - no blocking operations
             # GUI will display as soon as ShowDialog() is called
+            
+            # LAYER 0: Pre-flight check - ensure no GUI is already running
+            # Check if Start-GUI function exists and if it reports GUI is running
+            if (Get-Command Start-GUI -ErrorAction SilentlyContinue) {
+                # Check if GUI guard flag indicates GUI is already running
+                # This is a safety check before calling Start-GUI
+                $guiModuleCheck = @"
+                    if (`$script:GUIIsRunning) {
+                        Write-Host "[LAUNCH] WARNING: GUI appears to be already running. Skipping launch to prevent multiple instances." -ForegroundColor Yellow
+                        exit 1
+                    }
+"@
+                try {
+                    $null = Invoke-Expression $guiModuleCheck -ErrorAction Stop
+                } catch {
+                    # Flag check failed, but continue - Start-GUI will handle it
+                }
+            }
+            
             try {
                 Start-GUI
                 

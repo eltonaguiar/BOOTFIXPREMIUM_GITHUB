@@ -168,10 +168,16 @@ if (-not (Test-Path variable:script:progressSteps)) {
     $script:progressSteps = @()
 }
 
-# Initialize guard flag to prevent infinite loops in Start-GUI
+# Initialize guard flags to prevent infinite loops and multiple GUI instances
 # CRITICAL: Must be initialized before Start-GUI is called (Set-StrictMode requirement)
 if (-not (Test-Path variable:script:GUIIsRunning)) {
     $script:GUIIsRunning = $false
+}
+if (-not (Test-Path variable:script:GUIMutex)) {
+    $script:GUIMutex = $null
+}
+if (-not (Test-Path variable:script:GUIWindowInstance)) {
+    $script:GUIWindowInstance = $null
 }
 
 # Load centralized logging system
@@ -376,11 +382,73 @@ function Get-Control {
 }
 
 function Start-GUI {
-    # CRITICAL: Prevent infinite loops - guard against recursive calls
+    # LAYER 1: Process-level mutex to prevent multiple instances
+    # Create a named mutex that exists across the entire process
+    $mutexName = "Global\MiracleBoot_GUI_SingleInstance_{0}" -f [System.AppDomain]::CurrentDomain.Id
+    try {
+        if ($script:GUIMutex) {
+            try {
+                $script:GUIMutex.ReleaseMutex()
+                $script:GUIMutex.Dispose()
+            } catch {
+                # Ignore errors when releasing/disposing
+            }
+            $script:GUIMutex = $null
+        }
+        $script:GUIMutex = New-Object System.Threading.Mutex($false, $mutexName)
+        $mutexAcquired = $script:GUIMutex.WaitOne(0, $false)
+        if (-not $mutexAcquired) {
+            Write-Warning "Another GUI instance is already running. Only one GUI instance is allowed at a time."
+            Write-Host "If you believe this is an error, wait a few seconds and try again." -ForegroundColor Yellow
+            return
+        }
+    } catch {
+        Write-Warning "Failed to create process mutex: $($_.Exception.Message). Continuing with function-level guard only."
+    }
+    
+    # LAYER 2: Function-level guard flag to prevent recursive calls
     if ($script:GUIIsRunning) {
         Write-Warning "Start-GUI is already running. Ignoring recursive call to prevent infinite loop."
+        if ($script:GUIMutex) {
+            try {
+                $script:GUIMutex.ReleaseMutex()
+            } catch {
+                # Ignore errors
+            }
+        }
         return
     }
+    
+    # LAYER 3: Check if window instance already exists and is still valid
+    if ($script:GUIWindowInstance -and $null -ne $script:GUIWindowInstance) {
+        try {
+            # Check if window is still alive (hasn't been disposed)
+            $isAlive = $script:GUIWindowInstance.Dispatcher -ne $null
+            if ($isAlive) {
+                Write-Warning "GUI window instance already exists and is still active. Bringing it to foreground instead of creating a new one."
+                try {
+                    $script:GUIWindowInstance.Activate()
+                    $script:GUIWindowInstance.WindowState = [System.Windows.WindowState]::Normal
+                    $script:GUIWindowInstance.Focus()
+                } catch {
+                    # Window might be in a bad state, continue to create new one
+                    $script:GUIWindowInstance = $null
+                }
+                if ($script:GUIMutex) {
+                    try {
+                        $script:GUIMutex.ReleaseMutex()
+                    } catch {
+                        # Ignore errors
+                    }
+                }
+                return
+            }
+        } catch {
+            # Window is disposed or invalid, clear reference
+            $script:GUIWindowInstance = $null
+        }
+    }
+    
     $script:GUIIsRunning = $true
     
     try {
@@ -552,8 +620,30 @@ try {
     
     # Load XAML with detailed error handling
     try {
+        # LAYER 4: Ensure no existing window before creating new one
+        if ($script:GUIWindowInstance -and $null -ne $script:GUIWindowInstance) {
+            try {
+                # Try to dispose existing window if it's still alive
+                if ($script:GUIWindowInstance.Dispatcher -ne $null) {
+                    $script:GUIWindowInstance.Dispatcher.Invoke([action]{
+                        try {
+                            $script:GUIWindowInstance.Close()
+                        } catch {
+                            # Ignore errors when closing
+                        }
+                    }, [System.Windows.Threading.DispatcherPriority]::Send)
+                }
+            } catch {
+                # Ignore errors
+            }
+            $script:GUIWindowInstance = $null
+        }
+        
         $script:W=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$XAML)))
         $W = $script:W  # Also set local variable for backward compatibility
+        
+        # LAYER 5: Store window instance for tracking
+        $script:GUIWindowInstance = $W
     } catch {
         $innerEx = if ($_.Exception.InnerException) { $_.Exception.InnerException } else { $null }
         $errorDetails = "Failed to load XAML window:`n"
@@ -3754,9 +3844,34 @@ if ($null -ne $W) {
         Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
         throw
     } finally {
-        # CRITICAL: Always reset guard flag to prevent infinite loops
-        # This ensures the flag is reset even if function throws or returns early
+        # CRITICAL: Always reset guard flags and release resources
+        # This ensures cleanup even if function throws or returns early
         $script:GUIIsRunning = $false
+        
+        # Release mutex
+        if ($script:GUIMutex) {
+            try {
+                $script:GUIMutex.ReleaseMutex()
+                $script:GUIMutex.Dispose()
+            } catch {
+                # Ignore errors when releasing mutex
+            }
+            $script:GUIMutex = $null
+        }
+        
+        # Clear window instance reference if window was closed/disposed
+        if ($script:GUIWindowInstance) {
+            try {
+                # Check if window is still alive
+                $isAlive = $script:GUIWindowInstance.Dispatcher -ne $null
+                if (-not $isAlive) {
+                    $script:GUIWindowInstance = $null
+                }
+            } catch {
+                # Window is disposed, clear reference
+                $script:GUIWindowInstance = $null
+            }
+        }
     }
 }
 
