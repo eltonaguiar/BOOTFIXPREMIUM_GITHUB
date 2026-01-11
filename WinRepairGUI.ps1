@@ -2718,8 +2718,9 @@ if ($null -ne $W) {
                     # Stop progress timer
                     $progressTimer.Stop()
                     
-                    # Handle result with defensive checks
-                    if ($result) {
+                    # Handle result with defensive checks - wrap entire block in try-catch
+                    try {
+                        if ($result) {
                         $outputText = ""
                         $bundleText = ""
                         $bootable = $false
@@ -2901,6 +2902,48 @@ if ($null -ne $W) {
                         if ($fixerOutput) {
                             $fixerOutput.Text = "Error: Repair function returned no result. Check logs for details."
                         }
+                        }
+                    } catch {
+                        # Catch any property access errors (like PermissionsModified)
+                        $errorMsg = "❌ Error accessing repair result: $($_.Exception.Message)"
+                        Write-Host "Error details: $($_.Exception.GetType().FullName)" -ForegroundColor Red
+                        Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+                        
+                        # Try to extract at least the output text if available
+                        $outputText = ""
+                        $bundleText = ""
+                        try {
+                            if ($result -and $result.PSObject.Properties.Name -contains 'Output') {
+                                $outputText = $result.Output
+                            }
+                        } catch {
+                            Write-Host "Could not extract Output: $_" -ForegroundColor Yellow
+                        }
+                        try {
+                            if ($result -and $result.PSObject.Properties.Name -contains 'Bundle') {
+                                $bundleText = $result.Bundle
+                            }
+                        } catch {
+                            Write-Host "Could not extract Bundle: $_" -ForegroundColor Yellow
+                        }
+                        
+                        if ($fixerOutput) {
+                            $fixerOutput.Text = "Error processing repair result: $($_.Exception.Message)`n`n" + 
+                                                 "Output: $outputText`n`nBundle: $bundleText"
+                            $fixerOutput.ScrollToEnd()
+                        }
+                        
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = $errorMsg
+                        }
+                        
+                        Update-StatusBar -Message "One-Click Repair: Error processing result" -HideProgress
+                        [System.Windows.MessageBox]::Show(
+                            "One-Click Repair completed but encountered an error processing the result: $($_.Exception.Message)`n`nCheck the output box for details.",
+                            "Repair Error",
+                            "OK",
+                            "Error"
+                        ) | Out-Null
                     }
                     
                     Update-StatusBar -Message "One-Click Repair: Complete" -HideProgress
