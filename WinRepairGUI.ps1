@@ -2722,12 +2722,50 @@ if ($null -ne $W) {
                     if ($result) {
                         $outputText = ""
                         $bundleText = ""
+                        $bootable = $false
+                        $confidence = "UNKNOWN"
+                        $blocker = $null
+                        $remainingIssues = @()
                         
-                        if ($result.PSObject.Properties.Name -contains 'Output') {
-                            $outputText = $result.Output
+                        # Safely extract all properties with comprehensive error handling
+                        try {
+                            if ($result.PSObject.Properties.Name -contains 'Output') {
+                                $outputText = $result.Output
+                            }
+                        } catch {
+                            Write-Host "Warning: Could not access result.Output: $_" -ForegroundColor Yellow
                         }
-                        if ($result.PSObject.Properties.Name -contains 'Bundle') {
-                            $bundleText = $result.Bundle
+                        
+                        try {
+                            if ($result.PSObject.Properties.Name -contains 'Bundle') {
+                                $bundleText = $result.Bundle
+                            }
+                        } catch {
+                            Write-Host "Warning: Could not access result.Bundle: $_" -ForegroundColor Yellow
+                        }
+                        
+                        try {
+                            if ($result.PSObject.Properties.Name -contains 'Bootable') {
+                                $bootable = $result.Bootable
+                            }
+                        } catch {
+                            Write-Host "Warning: Could not access result.Bootable: $_" -ForegroundColor Yellow
+                        }
+                        
+                        try {
+                            if ($result.PSObject.Properties.Name -contains 'Confidence') {
+                                $confidence = $result.Confidence
+                            }
+                        } catch {
+                            Write-Host "Warning: Could not access result.Confidence: $_" -ForegroundColor Yellow
+                        }
+                        
+                        try {
+                            if ($result.PSObject.Properties.Name -contains 'Blocker') {
+                                $blocker = $result.Blocker
+                            }
+                        } catch {
+                            Write-Host "Warning: Could not access result.Blocker: $_" -ForegroundColor Yellow
                         }
                         
                         if ($fixerOutput) {
@@ -2740,26 +2778,26 @@ if ($null -ne $W) {
                         Set-Content -Path $summaryPath -Value ($outputText + "`n`n" + $bundleText) -Encoding UTF8 -Force
                         
                         # Enhanced validation result display with specific details
-                        $bootable = $false
-                        $confidence = "UNKNOWN"
-                        $blocker = $null
-                        $remainingIssues = @()
-                        
-                        if ($result.PSObject.Properties.Name -contains 'Bootable') {
-                            $bootable = $result.Bootable
-                        }
-                        if ($result.PSObject.Properties.Name -contains 'Confidence') {
-                            $confidence = $result.Confidence
-                        }
-                        if ($result.PSObject.Properties.Name -contains 'Blocker') {
-                            $blocker = $result.Blocker
-                        }
                         
                         # Get issues from result object (preferred method - includes exact paths)
                         if ($result.PSObject.Properties.Name -contains 'Issues' -and $result.Issues) {
                             $remainingIssues = $result.Issues
-                        } elseif ($result.PSObject.Properties.Name -contains 'Verification' -and $result.Verification -and $result.Verification.Issues) {
-                            $remainingIssues = $result.Verification.Issues
+                        } elseif ($result.PSObject.Properties.Name -contains 'Verification' -and $result.Verification) {
+                            # Safely access Verification.Issues (Verification is a hashtable, not pscustomobject)
+                            try {
+                                if ($result.Verification -is [hashtable]) {
+                                    if ($result.Verification.ContainsKey('Issues') -and $result.Verification.Issues) {
+                                        $remainingIssues = $result.Verification.Issues
+                                    }
+                                } elseif ($result.Verification -is [pscustomobject] -or $result.Verification -is [psobject]) {
+                                    if ($result.Verification.PSObject.Properties.Name -contains 'Issues' -and $result.Verification.Issues) {
+                                        $remainingIssues = $result.Verification.Issues
+                                    }
+                                }
+                            } catch {
+                                # If accessing Verification fails, fall through to text extraction
+                                Write-Host "Warning: Could not access Verification.Issues: $_" -ForegroundColor Yellow
+                            }
                         } else {
                             # Fallback: Extract specific issues from output text (look for missing files, paths, etc.)
                             $issuePatterns = @(
