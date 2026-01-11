@@ -1751,9 +1751,40 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
         }
     }
     if ($wpfErrors.Count -eq 0) {
-        $wpfAvailable = $true
-        Write-ToLog "WPF assemblies loaded: PresentationFramework, PresentationCore, WindowsBase" "INFO"
-        Write-Host "  [CHECK] WPF assemblies: ✓" -ForegroundColor Green
+        # CRITICAL: Test actual WPF initialization, not just assembly loading
+        # This catches C++ module failures that occur during appdomain initialization
+        # (common in WinPE where Visual C++ runtime may be missing)
+        Write-Host "  [CHECK] Testing WPF initialization..." -ForegroundColor Gray -NoNewline
+        try {
+            # Try to create a minimal WPF window to verify C++ modules can load
+            # This will fail if Visual C++ runtime is missing (common in WinPE)
+            $testWindow = New-Object System.Windows.Window -ErrorAction Stop
+            $testWindow = $null  # Dispose immediately
+            [System.GC]::Collect()  # Force cleanup
+            $wpfAvailable = $true
+            Write-ToLog "WPF assemblies loaded and initialized successfully" "INFO"
+            Write-Host " ✓" -ForegroundColor Green
+        } catch {
+            $wpfInitError = $_.Exception.Message
+            $wpfInitInner = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $null }
+            
+            # Check for C++ module failure (common in WinPE)
+            if ($wpfInitError -match "type initializer|C\+\+ module|appdomain initialization" -or 
+                ($wpfInitInner -and $wpfInitInner -match "C\+\+ module")) {
+                $wpfAvailable = $false
+                $wpfErrors += "WPF initialization failed: C++ module failed to load (Visual C++ runtime may be missing)"
+                Write-ToLog "WPF initialization failed - C++ module error: $wpfInitError" "ERROR"
+                Write-Host " ✗" -ForegroundColor Red
+                Write-Host "    [DETAIL] C++ module initialization failed - Visual C++ runtime may be missing" -ForegroundColor Yellow
+                Write-Host "    [DETAIL] This is common in WinPE environments" -ForegroundColor Yellow
+            } else {
+                # Other initialization error
+                $wpfAvailable = $false
+                $wpfErrors += "WPF initialization failed: $wpfInitError"
+                Write-ToLog "WPF initialization failed: $wpfInitError" "ERROR"
+                Write-Host " ✗" -ForegroundColor Red
+            }
+        }
     } else {
         Write-ErrorLog ("WPF assemblies missing: " + ($wpfErrors -join "; "))
         Write-Host "  [CHECK] WPF assemblies: ✗ - $($wpfErrors -join '; ')" -ForegroundColor Red
@@ -1899,6 +1930,23 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
                     Write-Host "Inner Exception: $($_.Exception.InnerException.Message)" -ForegroundColor DarkRed
                 }
                 Write-Host ""
+                
+                # Provide specific guidance for C++ module failures
+                if ($isCppModuleFailure) {
+                    Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Yellow
+                    Write-Host "║              C++ MODULE INITIALIZATION FAILURE                    ║" -ForegroundColor Yellow
+                    Write-Host "╚══════════════════════════════════════════════════════════════════╝" -ForegroundColor Yellow
+                    Write-Host ""
+                    Write-Host "WPF requires Visual C++ runtime libraries that may be missing in" -ForegroundColor Yellow
+                    Write-Host "this environment (common in WinPE/WinRE)." -ForegroundColor Yellow
+                    Write-Host ""
+                    Write-Host "Solutions:" -ForegroundColor Cyan
+                    Write-Host "  1. Use TUI mode instead (text-based interface)" -ForegroundColor White
+                    Write-Host "  2. If in WinPE, ensure Visual C++ Redistributables are included" -ForegroundColor White
+                    Write-Host "  3. Try running from FullOS (normal Windows) instead of WinPE" -ForegroundColor White
+                    Write-Host ""
+                }
+                
                 Write-Host "Stack Trace:" -ForegroundColor Yellow
                 Write-Host $_.ScriptStackTrace -ForegroundColor Gray
                 Write-Host ""
@@ -1918,9 +1966,18 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
             # GUI launch failure - show detailed error
             Write-ErrorLog "GUI launch failed: $($_.Exception.Message)" -Exception $_
             
+            # Detect C++ module initialization failures
+            $isCppModuleFailure = $false
+            $failureReason = "GUI module loading failed"
+            if ($_.Exception.Message -match "type initializer|C\+\+ module|appdomain initialization" -or
+                ($_.Exception.InnerException -and $_.Exception.InnerException.Message -match "C\+\+ module")) {
+                $isCppModuleFailure = $true
+                $failureReason = "WPF C++ module initialization failed (Visual C++ runtime may be missing)"
+            }
+            
             # Generate and open diagnostic report
             $innerExMsg = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $null }
-            New-GUIFailureDiagnosticReport -FailureReason "GUI module loading failed" -ErrorMessage $_.Exception.Message -InnerException $innerExMsg -StackTrace $_.ScriptStackTrace -Location "$($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -WpfAvailable $(if ($wpfAvailable) { "Yes" } else { "No" }) -StaThread $(if ($isSta) { "Yes" } else { "No" }) -EnvironmentType $envType
+            New-GUIFailureDiagnosticReport -FailureReason $failureReason -ErrorMessage $_.Exception.Message -InnerException $innerExMsg -StackTrace $_.ScriptStackTrace -Location "$($_.InvocationInfo.ScriptName):$($_.InvocationInfo.ScriptLineNumber)" -WpfAvailable $(if ($wpfAvailable) { "Yes" } else { "No" }) -StaThread $(if ($isSta) { "Yes" } else { "No" }) -EnvironmentType $envType
             
             Write-Host ""
             Write-Host "╔══════════════════════════════════════════════════════════════════╗" -ForegroundColor Red

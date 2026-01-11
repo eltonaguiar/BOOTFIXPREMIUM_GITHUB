@@ -394,6 +394,35 @@ function Start-GUI {
         throw $errorMsg
     }
     
+    # LAYER 3: WPF C++ Module Initialization Test
+    # CRITICAL: Test that WPF can actually initialize (not just load assemblies)
+    # This catches C++ module failures that occur during appdomain initialization
+    # (common in WinPE where Visual C++ runtime may be missing)
+    try {
+        $testWindow = New-Object System.Windows.Window -ErrorAction Stop
+        $testWindow = $null  # Dispose immediately
+        [System.GC]::Collect()  # Force cleanup
+    } catch {
+        $cppError = $_.Exception.Message
+        $cppInner = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $null }
+        
+        # Check for C++ module failure
+        if ($cppError -match "type initializer|C\+\+ module|appdomain initialization" -or 
+            ($cppInner -and $cppInner -match "C\+\+ module")) {
+            $errorMsg = "WPF C++ module failed to initialize.`n"
+            $errorMsg += "Error: $cppError`n"
+            if ($cppInner) {
+                $errorMsg += "Inner: $cppInner`n"
+            }
+            $errorMsg += "`nThis typically occurs in WinPE/WinRE environments where Visual C++ runtime libraries are missing.`n"
+            $errorMsg += "Please use TUI mode instead or ensure Visual C++ Redistributables are available."
+            throw $errorMsg
+        } else {
+            # Re-throw other initialization errors
+            throw
+        }
+    }
+    
     # XAML definition for the main window
     # Resolve XAML path - check multiple possible locations
     $xamlPath = $null
