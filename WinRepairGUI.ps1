@@ -2930,6 +2930,12 @@ if ($null -ne $W) {
                                 $statusText += "`nSpecific Issues Found:`n"
                                 $statusText += "────────────────────────────────────────`n"
                                 $uniqueIssues = $remainingIssues | Select-Object -Unique
+                                # Ensure $uniqueIssues is always an array
+                                if ($null -eq $uniqueIssues) {
+                                    $uniqueIssues = @()
+                                } elseif ($uniqueIssues -isnot [array]) {
+                                    $uniqueIssues = @($uniqueIssues)
+                                }
                                 foreach ($issue in $uniqueIssues) {
                                     $statusText += "  • $issue`n"
                                 }
