@@ -1,4 +1,4 @@
-﻿Set-StrictMode -Version Latest
+Set-StrictMode -Version Latest
 
 # ============================================================================
 # ADVANCED PLAN B TROUBLESHOOTING FUNCTIONS (For High-End Builds)
@@ -1024,13 +1024,13 @@ function Test-VersionCompatibility {
     # Architecture compatibility (CRITICAL)
     if ($sourceInfo.Architecture -eq $TargetInfo.Architecture) {
         $result.Score += 50
-        $result.Details += "✓ Architecture match: $($sourceInfo.Architecture)"
+        $result.Details += "[OK] Architecture match: $($sourceInfo.Architecture)"
     } elseif ($sourceInfo.Architecture -eq "Unknown" -or $TargetInfo.Architecture -eq "Unknown") {
         $result.Score += 25
         $result.Warnings += "⚠ Architecture unknown - assuming compatible"
         $result.Details += "⚠ Architecture detection failed - proceeding with caution"
     } else {
-        $result.Details += "❌ Architecture mismatch: Source=$($sourceInfo.Architecture), Target=$($TargetInfo.Architecture)"
+        $result.Details += "[X] Architecture mismatch: Source=$($sourceInfo.Architecture), Target=$($TargetInfo.Architecture)"
         $result.Warnings += "CRITICAL: Architecture mismatch - winload.efi may not work!"
         return $result  # Architecture mismatch is critical
     }
@@ -1049,7 +1049,7 @@ function Test-VersionCompatibility {
         elseif (($sourceBuild -lt 22000 -and $targetBuild -lt 22000) -or 
                 ($sourceBuild -ge 22000 -and $targetBuild -ge 22000)) {
             $result.Score += 20
-            $result.Details += "✓ Same Windows version family (builds: $sourceBuild vs $targetBuild)"
+            $result.Details += "[OK] Same Windows version family (builds: $sourceBuild vs $targetBuild)"
         }
         # Different major versions (e.g., Win10 vs Win11)
         else {
@@ -1435,7 +1435,7 @@ function New-ComprehensiveRepairReport {
     $report += ""
     if ($CommandHistory.Count -gt 0) {
         foreach ($cmd in $CommandHistory) {
-            $status = if ($cmd.Success) { "✓ SUCCESS" } else { "❌ FAILED" }
+            $status = if ($cmd.Success) { "[OK] SUCCESS" } else { "[X] FAILED" }
             $report += "$status - $($cmd.Description)"
             $report += "   Command: $($cmd.Command)"
             $report += "   Time: $($cmd.Timestamp)"
@@ -1515,7 +1515,7 @@ function New-ComprehensiveRepairReport {
             $triedDism = $executedCommands | Where-Object { $_ -match "dism.*mount.*wim" }
             if (-not $triedDism) {
                 $suggestedCommands += @{
-                    Command = "dism /Mount-Wim /WimFile:<ISO_PATH>\sources\install.wim /Index:1 /MountDir:C:\Mount /ReadOnly"
+                    Command = "dism /Mount-Wim /WimFile:`"ISO_PATH`"\sources\install.wim /Index:1 /MountDir:C:\Mount /ReadOnly"
                     Description = "Extract winload.efi from Windows installation media"
                     Why = "If no other source was found, extract from install.wim"
                     ErrorToLookUp = "DISM mount errors, install.wim not found"
@@ -1543,7 +1543,7 @@ function New-ComprehensiveRepairReport {
             $triedDismRestore = $executedCommands | Where-Object { $_ -match "dism.*restorehealth" }
             if (-not $triedDismRestore) {
                 $suggestedCommands += @{
-                    Command = "dism /Online /Cleanup-Image /RestoreHealth /Source:<ISO_PATH>\sources\install.wim"
+                    Command = "dism /Online /Cleanup-Image /RestoreHealth /Source:`"ISO_PATH`"\sources\install.wim"
                     Description = "DISM restore health - repair Windows image"
                     Why = "DISM can restore corrupted Windows image files"
                     ErrorToLookUp = "DISM restore health errors, source not found"
@@ -1583,7 +1583,7 @@ function New-ComprehensiveRepairReport {
         
         if ($BitlockerLocked) {
             $suggestedCommands += @{
-                Command = "manage-bde -unlock $TargetDrive`: -RecoveryPassword <YOUR_48_DIGIT_KEY>"
+                Command = "manage-bde -unlock $TargetDrive`: -RecoveryPassword `"YOUR_48_DIGIT_KEY`""
                 Description = "Unlock BitLocker-encrypted drive"
                 Why = "Drive must be unlocked before any repairs can be applied"
                 ErrorToLookUp = "BitLocker unlock errors, invalid recovery key"
@@ -1744,12 +1744,12 @@ function New-WinloadRepairGuidanceDocument {
         $doc += ""
         $doc += "Method 2: Using diskpart"
         $doc += "  diskpart"
-        $doc += "  > list disk"
-        $doc += "  > select disk X  (where X is your Windows disk number)"
-        $doc += "  > list partition"
-        $doc += "  > select partition Y  (look for 'System' or 'EFI' type, FAT32, ~100-550 MB)"
-        $doc += "  > detail partition"
-        $doc += "  > exit"
+        $doc += "    list disk"
+        $doc += "    select disk X  (where X is your Windows disk number)"
+        $doc += "    list partition"
+        $doc += "    select partition Y  (look for 'System' or 'EFI' type, FAT32, ~100-550 MB)"
+        $doc += "    detail partition"
+        $doc += "    exit"
         $doc += ""
         $doc += "What to look for:"
         $doc += "  ✓ FileSystem: FAT32"
@@ -4325,11 +4325,28 @@ function Invoke-DefensiveBootRepair {
                                         New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
                                     }
                                     
-                                    # Force permissions before copy
+                                    # Force permissions before copy - handle TrustedInstaller ownership
                                     if (Test-Path $targetPath) {
-                                        Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$targetPath`"" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
-                                        Start-Process -FilePath "icacls.exe" -ArgumentList "`"$targetPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                                        # Take ownership from TrustedInstaller (use /a flag to give to Administrators group)
+                                        $takeownProc = Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$targetPath`"", "/a" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+                                        if ($takeownProc.ExitCode -ne 0) {
+                                            $actions += "⚠ takeown failed (exit code $($takeownProc.ExitCode)) - ensure running as Administrator"
+                                            # Try alternative: take ownership without /a flag
+                                            Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$targetPath`"" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                                        }
+                                        # Grant full control to Administrators
+                                        $icaclsProc = Start-Process -FilePath "icacls.exe" -ArgumentList "`"$targetPath`"", "/grant", "Administrators:F" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
+                                        if ($icaclsProc.ExitCode -ne 0) {
+                                            $actions += "⚠ icacls failed (exit code $($icaclsProc.ExitCode)) - permissions may not be set correctly"
+                                        }
+                                        # Remove system/hidden/read-only attributes
                                         Start-Process -FilePath "attrib.exe" -ArgumentList "-s", "-h", "-r", "`"$targetPath`"" -NoNewWindow -Wait -ErrorAction SilentlyContinue | Out-Null
+                                        # Fallback: Use Set-ItemProperty if attrib fails
+                                        try {
+                                            Set-ItemProperty -Path $targetPath -Name IsReadOnly -Value $false -ErrorAction SilentlyContinue
+                                        } catch {
+                                            # Ignore - attrib may have already worked
+                                        }
                                     }
                                     
                                     # Execute copy method
@@ -4394,17 +4411,69 @@ function Invoke-DefensiveBootRepair {
             # Auto-fix BCD path if winload.efi now exists but BCD doesn't point to it
             if ($winloadExists -and -not $bcdPathMatch) {
                 try {
-                    # Use timeout wrapper to prevent hanging
-                    $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/set", "{default}", "path", "\Windows\system32\winload.efi") -TimeoutSeconds 15 -Description "Set BCD path to winload.efi"
+                    # Ensure ESP is mounted before BCD operations
+                    if (-not $espMounted -and $espLetter) {
+                        $mount = Mount-EspTemp -PreferredLetter "S"
+                        if ($mount) {
+                            $espMounted = $true
+                            $espLetter = "$($mount.Letter):"
+                            $mountedByUs = $true
+                            $actions += "✓ ESP mounted to $espLetter for BCD repair"
+                        }
+                    }
+                    
+                    # Determine BCD store path
+                    $bcdStore = if ($espLetter) { "$espLetter\EFI\Microsoft\Boot\BCD" } else { "BCD" }
+                    $bcdStorePath = if ($espLetter) { "$espLetter\EFI\Microsoft\Boot\BCD" } else { "$($selectedOS.Drive.TrimEnd(':'))`:\Boot\BCD" }
+                    
+                    # Verify ESP mount and BCD file exists before attempting repair
+                    if ($espLetter -and -not (Test-Path $bcdStorePath -ErrorAction SilentlyContinue)) {
+                        $actions += "⚠ BCD file not found at $bcdStorePath - ESP may not be properly mounted"
+                        # Try to verify ESP mount
+                        if (-not (Test-Path "$espLetter\EFI\Microsoft\Boot" -ErrorAction SilentlyContinue)) {
+                            $actions += "❌ ESP mount verification failed - $espLetter\EFI\Microsoft\Boot does not exist"
+                            $actions += "⚠ Cannot proceed with BCD repair without valid ESP mount"
+                        }
+                    }
+                    
+                    # Use timeout wrapper to prevent hanging - ensure proper quoting for {default}
+                    $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/set", "{default}", "path", "\Windows\system32\winload.efi") -TimeoutSeconds 15 -Description "Set BCD path to winload.efi"
                     $bcdOut = $bcdResult.Output
                     $exitCode = $bcdResult.ExitCode
                     
                     if ($bcdResult.TimedOut) {
                         $actions += "⚠ BCD path set command timed out - BCD may be locked"
-                        Track-Command -Command "bcdedit /set {default} path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi (TIMED OUT)" -ExitCode -1 -ErrorOutput "Command timed out after 15 seconds" -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                        Track-Command -Command "bcdedit /store $bcdStore /set `"{default}`" path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi (TIMED OUT)" -ExitCode -1 -ErrorOutput "Command timed out after 15 seconds" -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    } elseif ($exitCode -eq 0) {
+                        Track-Command -Command "bcdedit /store $bcdStore /set `"{default}`" path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi" -ExitCode $exitCode -ErrorOutput $bcdOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                        
+                        # ENHANCED VERIFICATION: Verify BCD path was actually set correctly
+                        Start-Sleep -Milliseconds 500
+                        $verifyBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Verify BCD path after setting"
+                        if ($verifyBcdResult.ExitCode -eq 0) {
+                            $bcdEnum = $verifyBcdResult.Output
+                            # Check if path actually points to winload.efi
+                            if ($bcdEnum -match "(?i)path\s+[\\/]?Windows[\\/]system32[\\/]winload\.efi") {
+                                $actions += "✓ BCD path verified: correctly points to winload.efi"
+                                $bcdPathMatch = $true
+                            } else {
+                                $actions += "⚠ BCD path set command succeeded but verification shows path mismatch"
+                                $actions += "  BCD output: $($bcdEnum.Substring(0, [Math]::Min(200, $bcdEnum.Length)))"
+                            }
+                        } else {
+                            $actions += "⚠ Could not verify BCD path after setting (enumeration failed)"
+                        }
+                        
+                        # Set device and osdevice with timeout
+                        $driveLetter = $selectedOS.Drive.TrimEnd(':')
+                        $deviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/set", "{default}", "device", "partition=$driveLetter`:") -TimeoutSeconds 15 -Description "Set BCD device partition"
+                        $osdeviceResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/set", "{default}", "osdevice", "partition=$driveLetter`:") -TimeoutSeconds 15 -Description "Set BCD osdevice partition"
+                        
+                        if ($deviceResult.ExitCode -eq 0 -and $osdeviceResult.ExitCode -eq 0) {
+                            $actions += "✓ BCD device/osdevice set to partition=$driveLetter`:"
+                        }
                     } else {
-                        Track-Command -Command "bcdedit /set {default} path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi" -ExitCode $exitCode -ErrorOutput $bcdOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
-                    }
+                        Track-Command -Command "bcdedit /store $bcdStore /set `"{default}`" path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi" -ExitCode $exitCode -ErrorOutput $bcdOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
                     
                     if ($exitCode -eq 0 -and -not $bcdResult.TimedOut) {
                         $actions += "BCD path set to \\Windows\\system32\\winload.efi"
