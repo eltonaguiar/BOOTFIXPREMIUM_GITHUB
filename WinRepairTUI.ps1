@@ -12,15 +12,20 @@
         if (Test-Path $corePath) {
             # Load with explicit UTF-8 encoding to prevent character corruption
             $coreContent = Get-Content $corePath -Raw -Encoding UTF8
-            Invoke-Expression $coreContent
+            Invoke-Expression $coreContent -ErrorAction Stop
             if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
                 Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-DefensiveBootRepair function not found"
+            }
+            if (-not (Get-Command Invoke-BruteForceBootRepair -ErrorAction SilentlyContinue)) {
+                Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-BruteForceBootRepair function not found"
             }
         } else {
             Write-Warning "DefensiveBootCore.ps1 not found at $corePath - One-Click Repair may not work"
         }
     } catch {
         Write-Warning "Failed to load DefensiveBootCore.ps1: $_ - One-Click Repair may not work"
+        Write-Warning "Error details: $($_.Exception.Message)"
+        Write-Warning "Stack trace: $($_.ScriptStackTrace)"
     }
     
     # Load global settings for read-only mode if available
