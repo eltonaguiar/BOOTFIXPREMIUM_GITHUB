@@ -5630,3 +5630,529 @@ function Invoke-DefensiveBootRepair {
         }
     }
 }
+
+# ============================================================================
+# BACKUP REPAIR FUNCTIONS (Failover Mode - Independent of Primary Functions)
+# ============================================================================
+# These functions use simpler, more direct methods and have fewer dependencies
+# They are used when primary repair functions fail or are unavailable
+
+function Invoke-BackupBootRepair {
+    <#
+    .SYNOPSIS
+    Backup boot repair function using simpler, more direct methods.
+    
+    .DESCRIPTION
+    This is a failover repair function that uses basic Windows commands directly.
+    It has minimal dependencies and focuses on core boot repair only.
+    Used when primary repair functions fail or are unavailable.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TargetDrive,
+        [switch]$DryRun
+    )
+    
+    $actions = @()
+    $issues = @()
+    
+    # Validate input
+    if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
+        return @{
+            Output = "ERROR: TargetDrive is required"
+            Bootable = $false
+            Confidence = "UNKNOWN"
+            Blocker = "TargetDrive is empty"
+        }
+    }
+    
+    $targetDrive = $TargetDrive.TrimEnd(':').Trim()
+    $targetPath = "${targetDrive}:"
+    
+    $actions += "================================================================================"
+    $actions += "BACKUP BOOT REPAIR MODE (Failover)"
+    $actions += "================================================================================"
+    $actions += "Using simplified repair methods with minimal dependencies"
+    $actions += "Target Drive: $targetPath"
+    $actions += ""
+    
+    # Step 1: Verify winload.efi exists (simple check)
+    $winloadPath = "$targetPath\Windows\System32\winload.efi"
+    $actions += "Step 1: Checking winload.efi..."
+    
+    if (-not (Test-Path $winloadPath -ErrorAction SilentlyContinue)) {
+        $actions += "  [X] winload.efi MISSING at $winloadPath"
+        $issues += "winload.efi is missing"
+        
+        # Try to find winload.efi on other drives
+        $actions += "  Searching for winload.efi on other drives..."
+        $foundWinload = $null
+        
+        foreach ($drive in Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue) {
+            if ($drive.Name -eq $targetDrive) { continue }
+            $candidate = "$($drive.Name):\Windows\System32\winload.efi"
+            if (Test-Path $candidate -ErrorAction SilentlyContinue) {
+                $foundWinload = $candidate
+                $actions += "  [OK] Found winload.efi at $candidate"
+                break
+            }
+        }
+        
+        # Copy winload.efi if found
+        if ($foundWinload -and -not $DryRun) {
+            $actions += "  Copying winload.efi to $winloadPath..."
+            try {
+                # Simple copy with basic permission fix
+                $targetDir = Split-Path $winloadPath -Parent
+                if (-not (Test-Path $targetDir)) {
+                    New-Item -ItemType Directory -Path $targetDir -Force -ErrorAction Stop | Out-Null
+                }
+                
+                # Use basic copy command
+                Copy-Item -Path $foundWinload -Destination $winloadPath -Force -ErrorAction Stop
+                $actions += "  [OK] winload.efi copied successfully"
+            } catch {
+                $actions += "  [X] Failed to copy winload.efi: $($_.Exception.Message)"
+                $issues += "Failed to copy winload.efi: $($_.Exception.Message)"
+            }
+        } elseif (-not $foundWinload) {
+            $actions += "  [X] No winload.efi source found"
+            $issues += "No winload.efi source available"
+        }
+    } else {
+        $actions += "  [OK] winload.efi exists at $winloadPath"
+    }
+    
+    # Step 2: Basic BCD repair using bcdboot (simplest method)
+    $actions += ""
+    $actions += "Step 2: Repairing BCD with bcdboot..."
+    
+    if (-not $DryRun) {
+        try {
+            # Try to find ESP
+            $espLetter = $null
+            $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.FileSystem -eq 'FAT32' -and $_.DriveLetter }
+            if ($volumes) {
+                $espVolume = $volumes | Select-Object -First 1
+                $espLetter = "$($espVolume.DriveLetter):"
+                $actions += "  ESP found at $espLetter"
+            } else {
+                # Try to mount ESP
+                $actions += "  Attempting to mount ESP..."
+                $mountResult = & mountvol.exe "${targetDrive}:" /S 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    # Find which drive letter was assigned
+                    $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.FileSystem -eq 'FAT32' -and $_.DriveLetter }
+                    if ($volumes) {
+                        $espVolume = $volumes | Select-Object -First 1
+                        $espLetter = "$($espVolume.DriveLetter):"
+                        $actions += "  ESP mounted to $espLetter"
+                    }
+                }
+            }
+            
+            # Use bcdboot to rebuild BCD (simplest method)
+            if ($espLetter) {
+                $actions += "  Running bcdboot to rebuild BCD..."
+                $bcdbootArgs = @("$targetPath\Windows", "/s", $espLetter, "/f", "UEFI")
+                $bcdbootResult = & bcdboot.exe $bcdbootArgs 2>&1
+                $bcdbootExitCode = $LASTEXITCODE
+                
+                if ($bcdbootExitCode -eq 0) {
+                    $actions += "  [OK] BCD rebuilt successfully"
+                } else {
+                    $actions += "  [X] bcdboot failed (exit code $bcdbootExitCode): $bcdbootResult"
+                    $issues += "bcdboot failed: $bcdbootResult"
+                }
+            } else {
+                # No ESP - use system BCD
+                $actions += "  No ESP found, using system BCD..."
+                $bcdbootArgs = @("$targetPath\Windows", "/f", "UEFI")
+                $bcdbootResult = & bcdboot.exe $bcdbootArgs 2>&1
+                $bcdbootExitCode = $LASTEXITCODE
+                
+                if ($bcdbootExitCode -eq 0) {
+                    $actions += "  [OK] System BCD rebuilt successfully"
+                } else {
+                    $actions += "  [X] bcdboot failed (exit code $bcdbootExitCode): $bcdbootResult"
+                    $issues += "bcdboot failed: $bcdbootResult"
+                }
+            }
+        } catch {
+            $actions += "  [X] BCD repair failed: $($_.Exception.Message)"
+            $issues += "BCD repair failed: $($_.Exception.Message)"
+        }
+    } else {
+        $actions += "  [DRY RUN] Would run bcdboot to rebuild BCD"
+    }
+    
+    # Step 3: Basic verification
+    $actions += ""
+    $actions += "Step 3: Basic verification..."
+    
+    $winloadExists = Test-Path $winloadPath -ErrorAction SilentlyContinue
+    $bcdExists = $false
+    
+    if ($espLetter) {
+        $bcdPath = "$espLetter\EFI\Microsoft\Boot\BCD"
+        $bcdExists = Test-Path $bcdPath -ErrorAction SilentlyContinue
+    } else {
+        $bcdPath = "$targetPath\Boot\BCD"
+        $bcdExists = Test-Path $bcdPath -ErrorAction SilentlyContinue
+    }
+    
+    if ($winloadExists) {
+        $actions += "  [OK] winload.efi exists"
+    } else {
+        $actions += "  [X] winload.efi missing"
+        $issues += "winload.efi still missing"
+    }
+    
+    if ($bcdExists) {
+        $actions += "  [OK] BCD file exists"
+    } else {
+        $actions += "  [X] BCD file missing"
+        $issues += "BCD file still missing"
+    }
+    
+    # Determine bootability
+    $bootable = $winloadExists -and $bcdExists
+    $confidence = if ($bootable -and $issues.Count -eq 0) { "MEDIUM" } elseif ($bootable) { "LOW" } else { "UNKNOWN" }
+    
+    $actions += ""
+    $actions += "================================================================================"
+    $actions += "BACKUP REPAIR COMPLETE"
+    $actions += "Bootable: $bootable"
+    $actions += "Confidence: $confidence"
+    if ($issues.Count -gt 0) {
+        $actions += "Remaining Issues:"
+        foreach ($issue in $issues) {
+            $actions += "  - $issue"
+        }
+    }
+    $actions += "================================================================================"
+    
+    return @{
+        Output = $actions -join "`n"
+        Bundle = ""
+        Bootable = $bootable
+        Confidence = $confidence
+        Blocker = if ($issues.Count -gt 0) { $issues[0] } else { $null }
+        RemainingIssues = $issues
+    }
+}
+
+function Invoke-LastEffortBootRepair {
+    <#
+    .SYNOPSIS
+    Last effort minimal boot repair - absolute bare minimum to fix boot.
+    
+    .DESCRIPTION
+    This is the absolute last resort repair function. It does the bare minimum:
+    1. Copy winload.efi if missing (from any available source)
+    2. Run bcdboot once to create/repair BCD
+    
+    No complex logic, no dependencies, just basic Windows commands.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TargetDrive
+    )
+    
+    $actions = @()
+    $errors = @()
+    
+    if ([string]::IsNullOrWhiteSpace($TargetDrive)) {
+        return @{
+            Output = "ERROR: TargetDrive is required"
+            Bootable = $false
+            Success = $false
+        }
+    }
+    
+    $targetDrive = $TargetDrive.TrimEnd(':').Trim()
+    $targetPath = "${targetDrive}:"
+    
+    $actions += "================================================================================"
+    $actions += "LAST EFFORT BOOT REPAIR (Bare Minimum Mode)"
+    $actions += "================================================================================"
+    $actions += "This is the absolute last resort repair."
+    $actions += "Performing minimal operations only:"
+    $actions += "  1. Copy winload.efi if missing"
+    $actions += "  2. Run bcdboot to create/repair BCD"
+    $actions += ""
+    
+    # Step 1: Copy winload.efi if missing (absolute minimum)
+    $winloadPath = "$targetPath\Windows\System32\winload.efi"
+    $actions += "Step 1: winload.efi check..."
+    
+    if (-not (Test-Path $winloadPath -ErrorAction SilentlyContinue)) {
+        $actions += "  winload.efi MISSING - searching for source..."
+        
+        # Find winload.efi on any drive
+        $sourceWinload = $null
+        foreach ($drive in Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue) {
+            if ($drive.Name -eq $targetDrive) { continue }
+            $candidate = "$($drive.Name):\Windows\System32\winload.efi"
+            if (Test-Path $candidate -ErrorAction SilentlyContinue) {
+                $sourceWinload = $candidate
+                $actions += "  Found source: $sourceWinload"
+                break
+            }
+        }
+        
+        if ($sourceWinload) {
+            try {
+                $targetDir = Split-Path $winloadPath -Parent
+                if (-not (Test-Path $targetDir)) {
+                    New-Item -ItemType Directory -Path $targetDir -Force -ErrorAction Stop | Out-Null
+                }
+                Copy-Item -Path $sourceWinload -Destination $winloadPath -Force -ErrorAction Stop
+                $actions += "  [OK] winload.efi copied"
+            } catch {
+                $errorMsg = "Failed to copy winload.efi: $($_.Exception.Message)"
+                $actions += "  [X] $errorMsg"
+                $errors += $errorMsg
+            }
+        } else {
+            $errorMsg = "No winload.efi source found"
+            $actions += "  [X] $errorMsg"
+            $errors += $errorMsg
+        }
+    } else {
+        $actions += "  [OK] winload.efi exists"
+    }
+    
+    # Step 2: Run bcdboot (absolute minimum BCD repair)
+    $actions += ""
+    $actions += "Step 2: Running bcdboot (minimal BCD repair)..."
+    
+    try {
+        # Try with ESP first
+        $espLetter = $null
+        $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.FileSystem -eq 'FAT32' -and $_.DriveLetter }
+        if ($volumes) {
+            $espVolume = $volumes | Select-Object -First 1
+            $espLetter = "$($espVolume.DriveLetter):"
+        }
+        
+        if ($espLetter) {
+            $bcdbootArgs = @("$targetPath\Windows", "/s", $espLetter, "/f", "UEFI")
+        } else {
+            $bcdbootArgs = @("$targetPath\Windows", "/f", "UEFI")
+        }
+        
+        $bcdbootOutput = & bcdboot.exe $bcdbootArgs 2>&1 | Out-String
+        $bcdbootExitCode = $LASTEXITCODE
+        
+        if ($bcdbootExitCode -eq 0) {
+            $actions += "  [OK] bcdboot completed successfully"
+        } else {
+            $errorMsg = "bcdboot failed (exit code $bcdbootExitCode)"
+            $actions += "  [X] $errorMsg"
+            $errors += $errorMsg
+        }
+    } catch {
+        $errorMsg = "bcdboot exception: $($_.Exception.Message)"
+        $actions += "  [X] $errorMsg"
+        $errors += $errorMsg
+    }
+    
+    # Final check
+    $actions += ""
+    $actions += "Final check..."
+    $winloadExists = Test-Path $winloadPath -ErrorAction SilentlyContinue
+    $bcdExists = if ($espLetter) {
+        Test-Path "$espLetter\EFI\Microsoft\Boot\BCD" -ErrorAction SilentlyContinue
+    } else {
+        Test-Path "$targetPath\Boot\BCD" -ErrorAction SilentlyContinue
+    }
+    
+    $success = $winloadExists -and $bcdExists -and $errors.Count -eq 0
+    
+    $actions += "  winload.efi: $(if ($winloadExists) { '[OK]' } else { '[X]' })"
+    $actions += "  BCD: $(if ($bcdExists) { '[OK]' } else { '[X]' })"
+    $actions += ""
+    $actions += "================================================================================"
+    $actions += "LAST EFFORT REPAIR $(if ($success) { 'COMPLETE' } else { 'FAILED' })"
+    $actions += "Success: $success"
+    if ($errors.Count -gt 0) {
+        $actions += "Errors:"
+        foreach ($error in $errors) {
+            $actions += "  - $error"
+        }
+    }
+    $actions += "================================================================================"
+    
+    return @{
+        Output = $actions -join "`n"
+        Bootable = $success
+        Success = $success
+        Errors = $errors
+    }
+}
+
+function Invoke-BootRepairWithFailover {
+    <#
+    .SYNOPSIS
+    Main repair function with automatic failover to backup and last effort modes.
+    
+    .DESCRIPTION
+    Attempts repair in this order:
+    1. Primary repair function (Invoke-DefensiveBootRepair or Invoke-BruteForceBootRepair)
+    2. Backup repair function (Invoke-BackupBootRepair) if primary fails
+    3. Last effort repair (Invoke-LastEffortBootRepair) if backup fails
+    
+    Returns result from first successful repair, or last attempt if all fail.
+    #>
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$TargetDrive,
+        [ValidateSet("Auto","DiagnoseOnly","RepairSafe","RepairForce","BruteForce")]
+        [string]$Mode = "Auto",
+        [string]$SimulationScenario = $null,
+        [switch]$DryRun,
+        [switch]$AllowOnlineRepair,
+        [switch]$Force,
+        [switch]$BruteForce
+    )
+    
+    $allResults = @()
+    $lastError = $null
+    
+    # Attempt 1: Primary repair function
+    Write-Host "Attempting primary repair function..." -ForegroundColor Cyan
+    
+    try {
+        if ($BruteForce -or $Mode -eq "BruteForce") {
+            if (Get-Command Invoke-BruteForceBootRepair -ErrorAction SilentlyContinue) {
+                $result = Invoke-BruteForceBootRepair -TargetDrive $TargetDrive -ExtractFromWim:$true -MaxRetries 3 -AllowOnlineRepair:$AllowOnlineRepair -DryRun:$DryRun
+                $allResults += @{ Attempt = "Primary (BruteForce)"; Result = $result }
+                
+                if ($result -and $result.Bootable) {
+                    Write-Host "Primary repair succeeded!" -ForegroundColor Green
+                    return @{
+                        Output = $result.Output
+                        Bundle = $result.Bundle
+                        Bootable = $result.Bootable
+                        Confidence = $result.Confidence
+                        Blocker = $result.Blocker
+                        RemainingIssues = $result.RemainingIssues
+                        RepairMode = "Primary (BruteForce)"
+                        FailoverUsed = $false
+                    }
+                }
+            }
+        } else {
+            if (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue) {
+                $result = Invoke-DefensiveBootRepair -TargetDrive $TargetDrive -Mode $Mode -SimulationScenario $SimulationScenario -DryRun:$DryRun -AllowOnlineRepair:$AllowOnlineRepair -Force:$Force
+                $allResults += @{ Attempt = "Primary (Defensive)"; Result = $result }
+                
+                if ($result -and $result.Bootable) {
+                    Write-Host "Primary repair succeeded!" -ForegroundColor Green
+                    return @{
+                        Output = $result.Output
+                        Bundle = $result.Bundle
+                        Bootable = $result.Bootable
+                        Confidence = $result.Confidence
+                        Blocker = $result.Blocker
+                        RemainingIssues = $result.RemainingIssues
+                        RepairMode = "Primary (Defensive)"
+                        FailoverUsed = $false
+                    }
+                }
+            }
+        }
+    } catch {
+        $lastError = $_.Exception.Message
+        Write-Host "Primary repair failed: $lastError" -ForegroundColor Yellow
+        $allResults += @{ Attempt = "Primary"; Result = $null; Error = $lastError }
+    }
+    
+    # Attempt 2: Backup repair function
+    Write-Host "Primary repair failed or unavailable. Attempting backup repair..." -ForegroundColor Yellow
+    
+    try {
+        if (Get-Command Invoke-BackupBootRepair -ErrorAction SilentlyContinue) {
+            $result = Invoke-BackupBootRepair -TargetDrive $TargetDrive -DryRun:$DryRun
+            $allResults += @{ Attempt = "Backup"; Result = $result }
+            
+            if ($result -and $result.Bootable) {
+                Write-Host "Backup repair succeeded!" -ForegroundColor Green
+                return @{
+                    Output = $result.Output
+                    Bundle = $result.Bundle
+                    Bootable = $result.Bootable
+                    Confidence = $result.Confidence
+                    Blocker = $result.Blocker
+                    RemainingIssues = $result.RemainingIssues
+                    RepairMode = "Backup (Failover)"
+                    FailoverUsed = $true
+                }
+            }
+        }
+    } catch {
+        $lastError = $_.Exception.Message
+        Write-Host "Backup repair failed: $lastError" -ForegroundColor Yellow
+        $allResults += @{ Attempt = "Backup"; Result = $null; Error = $lastError }
+    }
+    
+    # Attempt 3: Last effort repair
+    Write-Host "Backup repair failed. Attempting last effort repair (bare minimum)..." -ForegroundColor Red
+    
+    try {
+        if (Get-Command Invoke-LastEffortBootRepair -ErrorAction SilentlyContinue) {
+            $result = Invoke-LastEffortBootRepair -TargetDrive $TargetDrive
+            $allResults += @{ Attempt = "Last Effort"; Result = $result }
+            
+            Write-Host "Last effort repair completed. Success: $($result.Success)" -ForegroundColor $(if ($result.Success) { "Green" } else { "Red" })
+            
+            return @{
+                Output = $result.Output
+                Bundle = ""
+                Bootable = $result.Bootable
+                Confidence = if ($result.Success) { "LOW" } else { "UNKNOWN" }
+                Blocker = if ($result.Errors.Count -gt 0) { $result.Errors[0] } else { $null }
+                RemainingIssues = $result.Errors
+                RepairMode = "Last Effort (Bare Minimum)"
+                FailoverUsed = $true
+                LastResort = $true
+            }
+        }
+    } catch {
+        $lastError = $_.Exception.Message
+        Write-Host "Last effort repair failed: $lastError" -ForegroundColor Red
+        $allResults += @{ Attempt = "Last Effort"; Result = $null; Error = $lastError }
+    }
+    
+    # All attempts failed
+    $failureSummary = @()
+    $failureSummary += "================================================================================"
+    $failureSummary += "ALL REPAIR ATTEMPTS FAILED"
+    $failureSummary += "================================================================================"
+    $failureSummary += ""
+    $failureSummary += "Attempt Summary:"
+    foreach ($attempt in $allResults) {
+        $failureSummary += "  - $($attempt.Attempt): $(if ($attempt.Error) { "ERROR: $($attempt.Error)" } elseif ($attempt.Result) { "Completed but not bootable" } else { "Failed" })"
+    }
+    $failureSummary += ""
+    $failureSummary += "Last Error: $lastError"
+    $failureSummary += ""
+    $failureSummary += "Manual intervention required. Please check:"
+    $failureSummary += "  1. Drive is accessible and not corrupted"
+    $failureSummary += "  2. Windows installation is intact"
+    $failureSummary += "  3. Hardware is functioning properly"
+    $failureSummary += "================================================================================"
+    
+    return @{
+        Output = $failureSummary -join "`n"
+        Bundle = ""
+        Bootable = $false
+        Confidence = "UNKNOWN"
+        Blocker = "All repair attempts failed"
+        RemainingIssues = @("All repair attempts failed", $lastError)
+        RepairMode = "Failed (All Attempts)"
+        FailoverUsed = $true
+        AllAttempts = $allResults
+    }
+}

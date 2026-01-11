@@ -116,12 +116,89 @@
             }
         }
 
-        # Verify function is available before calling
-        if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
-            throw "Invoke-DefensiveBootRepair function not found. Please ensure DefensiveBootCore.ps1 is loaded."
+        # Try primary repair first, with automatic failover
+        $result = $null
+        $repairModeUsed = "Primary"
+        $useFailover = $false
+        
+        # Attempt primary repair
+        if (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue) {
+            try {
+                $result = Invoke-DefensiveBootRepair -TargetDrive $TargetDrive -Mode "Auto" -DryRun:$DryRun -SimulationScenario $SimulationScenario
+                
+                # Check if repair was successful
+                if (-not $result -or -not $result.Bootable) {
+                    $useFailover = $true
+                    Write-Host "Primary repair completed but system not bootable. Switching to failover..." -ForegroundColor Yellow
+                }
+            } catch {
+                $useFailover = $true
+                Write-Host "Primary repair failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "Switching to failover mode..." -ForegroundColor Yellow
+            }
+        } else {
+            $useFailover = $true
+            Write-Host "Primary repair function not available. Using failover mode..." -ForegroundColor Yellow
         }
-
-        $result = Invoke-DefensiveBootRepair -TargetDrive $TargetDrive -Mode "Auto" -DryRun:$DryRun -SimulationScenario $SimulationScenario
+        
+        # Failover to backup/last effort if needed
+        if ($useFailover) {
+            if (Get-Command Invoke-BootRepairWithFailover -ErrorAction SilentlyContinue) {
+                try {
+                    Write-Host "Attempting failover repair (backup -> last effort)..." -ForegroundColor Cyan
+                    $result = Invoke-BootRepairWithFailover -TargetDrive $TargetDrive -Mode "Auto" -SimulationScenario $SimulationScenario -DryRun:$DryRun
+                    $repairModeUsed = if ($result.RepairMode) { $result.RepairMode } else { "Failover" }
+                    
+                    if ($result.FailoverUsed) {
+                        Write-Host "Failover mode used: $($result.RepairMode)" -ForegroundColor Yellow
+                    }
+                } catch {
+                    Write-Host "Failover repair also failed: $($_.Exception.Message)" -ForegroundColor Red
+                    $result = @{
+                        Output = "All repair attempts failed. Last error: $($_.Exception.Message)"
+                        Bundle = ""
+                        Bootable = $false
+                        Confidence = "UNKNOWN"
+                        Blocker = "All repair attempts failed"
+                        RemainingIssues = @("All repair attempts failed", $_.Exception.Message)
+                    }
+                    $repairModeUsed = "Failed"
+                }
+            } else {
+                # Fallback: try backup function directly
+                Write-Host "Failover wrapper not available. Trying backup function directly..." -ForegroundColor Yellow
+                if (Get-Command Invoke-BackupBootRepair -ErrorAction SilentlyContinue) {
+                    try {
+                        $result = Invoke-BackupBootRepair -TargetDrive $TargetDrive -DryRun:$DryRun
+                        $repairModeUsed = "Backup (Direct)"
+                    } catch {
+                        # Last resort: try last effort function
+                        Write-Host "Backup repair failed. Trying last effort..." -ForegroundColor Red
+                        if (Get-Command Invoke-LastEffortBootRepair -ErrorAction SilentlyContinue) {
+                            try {
+                                $result = Invoke-LastEffortBootRepair -TargetDrive $TargetDrive
+                                $repairModeUsed = "Last Effort"
+                            } catch {
+                                Write-Host "All repair attempts failed!" -ForegroundColor Red
+                                $result = @{
+                                    Output = "All repair attempts failed. Last error: $($_.Exception.Message)"
+                                    Bundle = ""
+                                    Bootable = $false
+                                    Confidence = "UNKNOWN"
+                                    Blocker = "All repair attempts failed"
+                                    RemainingIssues = @("All repair attempts failed", $_.Exception.Message)
+                                }
+                                $repairModeUsed = "Failed"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (-not $result) {
+            throw "All repair attempts failed. No result returned."
+        }
         
         # Defensive checks for result properties
         $outputText = ""

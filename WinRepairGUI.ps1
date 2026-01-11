@@ -2879,15 +2879,99 @@ if ($null -ne $W) {
                         return
                     }
                     
-                    # Run repair synchronously (functions need access to same environment)
-                    if ($bruteForceMode) {
-                        # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
-                        # This allows safe repairs (like copying winload.efi) even when running in full Windows
-                        $result = Invoke-BruteForceBootRepair -TargetDrive $targetDrive -ExtractFromWim:$true -MaxRetries 3 -AllowOnlineRepair:(!$dryRunFlag)
-                    } else {
-                        # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
-                        # This allows safe repairs (like copying winload.efi) even when running in full Windows
-                        $result = Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag -AllowOnlineRepair:(!$dryRunFlag)
+                    # Run repair with automatic failover to backup and last effort modes
+                    # First try primary function, then backup, then last effort if needed
+                    $useFailover = $false
+                    $repairModeUsed = "Primary"
+                    
+                    try {
+                        if ($bruteForceMode) {
+                            # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
+                            # This allows safe repairs (like copying winload.efi) even when running in full Windows
+                            if (Get-Command Invoke-BruteForceBootRepair -ErrorAction SilentlyContinue) {
+                                $result = Invoke-BruteForceBootRepair -TargetDrive $targetDrive -ExtractFromWim:$true -MaxRetries 3 -AllowOnlineRepair:(!$dryRunFlag)
+                                $repairModeUsed = "Primary (BruteForce)"
+                            } else {
+                                $useFailover = $true
+                            }
+                        } else {
+                            # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
+                            # This allows safe repairs (like copying winload.efi) even when running in full Windows
+                            if (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue) {
+                                $result = Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag -AllowOnlineRepair:(!$dryRunFlag)
+                                $repairModeUsed = "Primary (Defensive)"
+                            } else {
+                                $useFailover = $true
+                            }
+                        }
+                        
+                        # Check if primary repair failed or returned non-bootable result
+                        if ($useFailover -or ($result -and -not $result.Bootable)) {
+                            $useFailover = $true
+                        }
+                    } catch {
+                        # Primary repair threw exception - use failover
+                        $useFailover = $true
+                        Write-Host "Primary repair failed with exception: $($_.Exception.Message)" -ForegroundColor Yellow
+                    }
+                    
+                    # Failover to backup/last effort if primary failed
+                    if ($useFailover) {
+                        Write-Host "Primary repair failed or unavailable. Switching to failover mode..." -ForegroundColor Yellow
+                        Update-StatusBar -Message "One-Click Repair: Primary repair failed - using failover mode..." -ShowProgress
+                        
+                        if (Get-Command Invoke-BootRepairWithFailover -ErrorAction SilentlyContinue) {
+                            try {
+                                $result = Invoke-BootRepairWithFailover -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag -AllowOnlineRepair:(!$dryRunFlag) -BruteForce:$bruteForceMode
+                                $repairModeUsed = if ($result.RepairMode) { $result.RepairMode } else { "Failover" }
+                                
+                                if ($result.FailoverUsed) {
+                                    Write-Host "Failover mode used: $($result.RepairMode)" -ForegroundColor Yellow
+                                    if ($txtOneClickStatus) {
+                                        $txtOneClickStatus.Text = "Repair completed using failover mode: $($result.RepairMode)"
+                                    }
+                                }
+                            } catch {
+                                Write-Host "Failover repair also failed: $($_.Exception.Message)" -ForegroundColor Red
+                                $result = @{
+                                    Output = "All repair attempts failed. Last error: $($_.Exception.Message)"
+                                    Bundle = ""
+                                    Bootable = $false
+                                    Confidence = "UNKNOWN"
+                                    Blocker = "All repair attempts failed"
+                                    RemainingIssues = @("All repair attempts failed", $_.Exception.Message)
+                                }
+                                $repairModeUsed = "Failed"
+                            }
+                        } else {
+                            # Fallback: try backup function directly
+                            Write-Host "Failover wrapper not available. Trying backup function directly..." -ForegroundColor Yellow
+                            if (Get-Command Invoke-BackupBootRepair -ErrorAction SilentlyContinue) {
+                                try {
+                                    $result = Invoke-BackupBootRepair -TargetDrive $targetDrive -DryRun:$dryRunFlag
+                                    $repairModeUsed = "Backup (Direct)"
+                                } catch {
+                                    # Last resort: try last effort function
+                                    Write-Host "Backup repair failed. Trying last effort..." -ForegroundColor Red
+                                    if (Get-Command Invoke-LastEffortBootRepair -ErrorAction SilentlyContinue) {
+                                        try {
+                                            $result = Invoke-LastEffortBootRepair -TargetDrive $targetDrive
+                                            $repairModeUsed = "Last Effort"
+                                        } catch {
+                                            $result = @{
+                                                Output = "All repair attempts failed. Last error: $($_.Exception.Message)"
+                                                Bundle = ""
+                                                Bootable = $false
+                                                Confidence = "UNKNOWN"
+                                                Blocker = "All repair attempts failed"
+                                                RemainingIssues = @("All repair attempts failed", $_.Exception.Message)
+                                            }
+                                            $repairModeUsed = "Failed"
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     
                     # Stop progress timer
