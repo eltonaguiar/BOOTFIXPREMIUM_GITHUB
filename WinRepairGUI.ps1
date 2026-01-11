@@ -8550,7 +8550,9 @@ if ($btnBootOpsNotepad) {
     }
 
 try {
-    if ($null -eq $script:W) { throw "Window object not initialized" }
+    # Safe check: use Get-Variable to verify $W exists before accessing
+    $wExists = (Get-Variable -Name "W" -Scope Script -ErrorAction SilentlyContinue) -and $null -ne $script:W
+    if (-not $wExists) { throw "Window object not initialized" }
     $script:W.ShowDialog() | Out-Null
     
     # #region agent log
