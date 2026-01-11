@@ -2739,23 +2739,121 @@ if ($null -ne $W) {
                         $summaryPath = Join-Path $summaryDir ("OneClick_GUI_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
                         Set-Content -Path $summaryPath -Value ($outputText + "`n`n" + $bundleText) -Encoding UTF8 -Force
                         
-                        # Comprehensive report is already opened in Notepad by DefensiveBootCore
-                        # But show status about it
+                        # Enhanced validation result display with specific details
                         $bootable = $false
+                        $confidence = "UNKNOWN"
+                        $blocker = $null
+                        $remainingIssues = @()
+                        
                         if ($result.PSObject.Properties.Name -contains 'Bootable') {
                             $bootable = $result.Bootable
                         }
+                        if ($result.PSObject.Properties.Name -contains 'Confidence') {
+                            $confidence = $result.Confidence
+                        }
+                        if ($result.PSObject.Properties.Name -contains 'Blocker') {
+                            $blocker = $result.Blocker
+                        }
+                        
+                        # Get issues from result object (preferred method - includes exact paths)
+                        if ($result.PSObject.Properties.Name -contains 'Issues' -and $result.Issues) {
+                            $remainingIssues = $result.Issues
+                        } elseif ($result.PSObject.Properties.Name -contains 'Verification' -and $result.Verification -and $result.Verification.Issues) {
+                            $remainingIssues = $result.Verification.Issues
+                        } else {
+                            # Fallback: Extract specific issues from output text (look for missing files, paths, etc.)
+                            $issuePatterns = @(
+                                "MISSING at (.+)",
+                                "does NOT point to",
+                                "still missing",
+                                "still does not match",
+                                "still locked",
+                                "MISSING: (.+)",
+                                "FAILED: (.+)",
+                                "cannot be enumerated",
+                                "not readable"
+                            )
+                            
+                            foreach ($pattern in $issuePatterns) {
+                                $matches = [regex]::Matches($outputText, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                                foreach ($match in $matches) {
+                                    if ($match.Groups.Count -gt 1 -and $match.Groups[1].Value) {
+                                        $remainingIssues += $match.Groups[0].Value
+                                    } elseif ($match.Value) {
+                                        $remainingIssues += $match.Value
+                                    }
+                                }
+                            }
+                        }
+                        
+                        # Build comprehensive status message
+                        $statusText = ""
+                        if ($bootable) {
+                            $statusText = "✅ VALIDATION PASSED: System is LIKELY BOOTABLE`n"
+                            $statusText += "Confidence Level: $confidence`n"
+                            $statusText += "`nAll critical boot files are present and correctly configured."
+                        } else {
+                            $statusText = "❌ VALIDATION FAILED: System WILL NOT BOOT`n"
+                            $statusText += "Confidence Level: $confidence`n"
+                            
+                            if ($blocker) {
+                                $statusText += "`nPrimary Blocker: $blocker`n"
+                            }
+                            
+                            if ($remainingIssues.Count -gt 0) {
+                                $statusText += "`nSpecific Issues Found:`n"
+                                $statusText += "────────────────────────────────────────`n"
+                                $uniqueIssues = $remainingIssues | Select-Object -Unique
+                                foreach ($issue in $uniqueIssues) {
+                                    $statusText += "  • $issue`n"
+                                }
+                            } else {
+                                # Try to extract issues from output text more directly
+                                $outputLines = $outputText -split "`n"
+                                $issueLines = $outputLines | Where-Object { 
+                                    $_ -match "❌|MISSING|FAILED|does NOT|still missing|still does not|cannot be|not readable" 
+                                } | Select-Object -First 10
+                                
+                                if ($issueLines.Count -gt 0) {
+                                    $statusText += "`nSpecific Issues Found:`n"
+                                    $statusText += "────────────────────────────────────────`n"
+                                    foreach ($line in $issueLines) {
+                                        $cleanLine = $line.Trim() -replace "^\s*[❌⚠✗]\s*", ""
+                                        if ($cleanLine -and $cleanLine.Length -gt 5) {
+                                            $statusText += "  • $cleanLine`n"
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            # Add guidance
+                            $statusText += "`n────────────────────────────────────────`n"
+                            $statusText += "Please review the detailed output above for exact file paths and specific problems."
+                        }
                         
                         if ($result.PSObject.Properties.Name -contains 'ReportPath' -and $result.ReportPath) {
-                            if ($txtOneClickStatus) { 
-                                $statusText = "Completed. Verdict: " + $(if ($bootable) { "Likely bootable" } else { "Will not boot" })
-                                $statusText += "`nComprehensive report opened in Notepad."
-                                $txtOneClickStatus.Text = $statusText
+                            $statusText += "`n`nComprehensive report opened in Notepad: $($result.ReportPath)"
+                        }
+                        
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = $statusText
+                        }
+                        
+                        # Also show a message box for critical failures
+                        if (-not $bootable) {
+                            $messageBoxText = "VALIDATION FAILED`n`n"
+                            $messageBoxText += "The system will NOT boot.`n`n"
+                            if ($blocker) {
+                                $messageBoxText += "Primary Issue: $blocker`n`n"
                             }
-                        } else {
-                            if ($txtOneClickStatus) { 
-                                $txtOneClickStatus.Text = "Completed. Verdict: " + $(if ($bootable) { "Likely bootable" } else { "Will not boot" })
-                            }
+                            $messageBoxText += "Please check the output box for detailed information about missing files and specific problems."
+                            
+                            [System.Windows.MessageBox]::Show(
+                                $messageBoxText,
+                                "Validation Failed",
+                                "OK",
+                                "Warning"
+                            ) | Out-Null
                         }
                     } else {
                         # Result is null or invalid

@@ -4365,6 +4365,41 @@ function Invoke-DefensiveBootRepair {
             }
         }
 
+        # Get final comprehensive verification with all issues
+        $finalVerification = $null
+        if ($selectedOS -and $espLetter) {
+            try {
+                $finalVerification = Test-BootabilityComprehensive -TargetDrive $selectedOS.Drive -EspLetter $espLetter
+            } catch {
+                # If verification fails, create a minimal verification object
+                $finalVerification = @{
+                    Bootable = $bootable
+                    Issues = $script:RemainingIssues
+                    Actions = @()
+                }
+            }
+        } elseif ($selectedOS) {
+            try {
+                $finalVerification = Test-BootabilityComprehensive -TargetDrive $selectedOS.Drive -EspLetter $null
+            } catch {
+                $finalVerification = @{
+                    Bootable = $bootable
+                    Issues = $script:RemainingIssues
+                    Actions = @()
+                }
+            }
+        }
+        
+        # Combine remaining issues with verification issues
+        $allIssues = @()
+        if ($script:RemainingIssues) {
+            $allIssues += $script:RemainingIssues
+        }
+        if ($finalVerification -and $finalVerification.Issues) {
+            $allIssues += $finalVerification.Issues
+        }
+        $allIssues = $allIssues | Select-Object -Unique
+        
         return [pscustomobject]@{
             Mode       = $resolvedMode
             Bootable   = $bootable
@@ -4375,6 +4410,8 @@ function Invoke-DefensiveBootRepair {
             ReportPath = $reportPath
             CommandHistory = $script:CommandHistory
             FailedCommands = $script:FailedCommands
+            Verification = $finalVerification
+            Issues = $allIssues
         }
     }
     finally {
