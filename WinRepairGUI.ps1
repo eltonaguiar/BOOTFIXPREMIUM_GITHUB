@@ -8510,7 +8510,8 @@ if ($btnBootOpsNotepad) {
 
     # Wire up window state changed event to show/hide banner
     # This must be done inside Start-GUI after $W is created
-    if ($W) {
+    # Safe check: use script scope to verify $W exists
+    if ($null -ne $script:W -and $null -ne $W) {
         # Use SizeChanged event to detect maximize/restore
         $W.Add_SizeChanged({
             Update-MaximizeBanner
