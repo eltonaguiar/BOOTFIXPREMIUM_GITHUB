@@ -2789,7 +2789,24 @@ function Test-BootabilityComprehensive {
                              $verification.BCDPathMatch -and 
                              $verification.AllBootFilesPresent
     
-    return $verification
+    # Create a clean copy of verification without nested objects that might have problematic properties
+    # This prevents PowerShell from trying to access properties like PermissionsModified on nested objects
+    $cleanVerification = @{
+        WinloadExists = $verification.WinloadExists
+        WinloadReadable = $verification.WinloadReadable
+        WinloadSize = $verification.WinloadSize
+        BootmgfwExists = $verification.BootmgfwExists
+        BCDExists = $verification.BCDExists
+        BCDReadable = $verification.BCDReadable
+        BCDPathMatch = $verification.BCDPathMatch
+        BCDDeviceMatch = $verification.BCDDeviceMatch
+        AllBootFilesPresent = $verification.AllBootFilesPresent
+        Bootable = $verification.Bootable
+        Issues = $verification.Issues
+        Actions = $verification.Actions
+    }
+    
+    return $cleanVerification
 }
 
 function Invoke-BruteForceBootRepair {
