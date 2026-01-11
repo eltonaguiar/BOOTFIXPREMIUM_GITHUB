@@ -110,6 +110,9 @@ try {
         if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
             Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-DefensiveBootRepair function not found"
         }
+        if (-not (Get-Command Invoke-BruteForceBootRepair -ErrorAction SilentlyContinue)) {
+            Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-BruteForceBootRepair function not found"
+        }
     } else {
         Write-Warning "DefensiveBootCore.ps1 not found at $corePath - One-Click Repair may not work"
     }
