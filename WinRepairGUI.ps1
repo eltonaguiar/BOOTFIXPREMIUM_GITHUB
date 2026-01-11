@@ -2813,25 +2813,32 @@ if ($null -ne $W) {
                         # Enhanced validation result display with specific details
                         
                         # Get issues from result object (preferred method - includes exact paths)
-                        if ($result.PSObject.Properties.Name -contains 'Issues' -and $result.Issues) {
-                            $remainingIssues = $result.Issues
-                        } elseif ($result.PSObject.Properties.Name -contains 'Verification' -and $result.Verification) {
-                            # Safely access Verification.Issues (Verification is a hashtable, not pscustomobject)
-                            try {
-                                if ($result.Verification -is [hashtable]) {
-                                    if ($result.Verification.ContainsKey('Issues') -and $result.Verification.Issues) {
-                                        $remainingIssues = $result.Verification.Issues
+                        try {
+                            if ($result.PSObject.Properties.Name -contains 'Issues' -and $result.Issues) {
+                                $remainingIssues = $result.Issues
+                            } elseif ($result.PSObject.Properties.Name -contains 'Verification' -and $result.Verification) {
+                                # Safely access Verification.Issues (Verification is a hashtable, not pscustomobject)
+                                try {
+                                    if ($result.Verification -is [hashtable]) {
+                                        if ($result.Verification.ContainsKey('Issues') -and $result.Verification.Issues) {
+                                            $remainingIssues = $result.Verification.Issues
+                                        }
+                                    } elseif ($result.Verification -is [pscustomobject] -or $result.Verification -is [psobject]) {
+                                        if ($result.Verification.PSObject.Properties.Name -contains 'Issues' -and $result.Verification.Issues) {
+                                            $remainingIssues = $result.Verification.Issues
+                                        }
                                     }
-                                } elseif ($result.Verification -is [pscustomobject] -or $result.Verification -is [psobject]) {
-                                    if ($result.Verification.PSObject.Properties.Name -contains 'Issues' -and $result.Verification.Issues) {
-                                        $remainingIssues = $result.Verification.Issues
-                                    }
+                                } catch {
+                                    # If accessing Verification fails, fall through to text extraction
+                                    Write-Host "Warning: Could not access Verification.Issues: $_" -ForegroundColor Yellow
                                 }
-                            } catch {
-                                # If accessing Verification fails, fall through to text extraction
-                                Write-Host "Warning: Could not access Verification.Issues: $_" -ForegroundColor Yellow
                             }
-                        } else {
+                        } catch {
+                            Write-Host "Warning: Could not access result.Issues or Verification: $_" -ForegroundColor Yellow
+                        }
+                        
+                        # Fallback: Extract issues from output text if we didn't get them from the object
+                        if ($remainingIssues.Count -eq 0) {
                             # Fallback: Extract specific issues from output text (look for missing files, paths, etc.)
                             $issuePatterns = @(
                                 "MISSING at (.+)",

@@ -3261,12 +3261,29 @@ function Invoke-BruteForceBootRepair {
     $actions += "BRUTE FORCE REPAIR COMPLETE"
     $actions += "═══════════════════════════════════════════════════════════════════════════════"
     
+    # Create a clean return value without nested objects that might cause property enumeration issues
+    # Extract only the primitive properties we need from verification
+    $cleanVerification = @{
+        WinloadExists = $verification.WinloadExists
+        WinloadReadable = $verification.WinloadReadable
+        WinloadSize = $verification.WinloadSize
+        BootmgfwExists = $verification.BootmgfwExists
+        BCDExists = $verification.BCDExists
+        BCDReadable = $verification.BCDReadable
+        BCDPathMatch = $verification.BCDPathMatch
+        BCDDeviceMatch = $verification.BCDDeviceMatch
+        AllBootFilesPresent = $verification.AllBootFilesPresent
+        Bootable = $verification.Bootable
+        Issues = $verification.Issues
+        Actions = $verification.Actions
+    }
+    
     return @{
         Output = ($actions -join "`n")
         Bootable = $verification.Bootable
         Verified = $verification.Bootable
         Actions = $actions
-        Verification = $verification
+        Verification = $cleanVerification
     }
 }
 
