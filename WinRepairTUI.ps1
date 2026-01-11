@@ -12,7 +12,8 @@
         if (Test-Path $corePath) {
             # Load with explicit UTF-8 encoding to prevent character corruption
             $coreContent = Get-Content $corePath -Raw -Encoding UTF8
-            Invoke-Expression $coreContent -ErrorAction Stop
+            # Use dot-sourcing to load into current scope (allows functions to be available to nested functions)
+            . ([scriptblock]::Create($coreContent))
             if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
                 Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-DefensiveBootRepair function not found"
             }
