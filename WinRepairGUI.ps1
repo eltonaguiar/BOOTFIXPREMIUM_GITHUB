@@ -2680,6 +2680,26 @@ compared to Microsoft's full incident cost.
     })
 }
 
+$btnSupport = Get-Control -Name "BtnSupport"
+if ($btnSupport) {
+    $btnSupport.Add_Click({
+        $supportMessage = @"
+Miracle Boot - Support Information
+
+For support issues, feedback, or questions, please contact:
+
+Email: zerounderscore@gmail.com
+
+Note: This was a one-person development project, so there may be delays in response times. However, all feedback is greatly appreciated and will be reviewed.
+
+Thank you for using Miracle Boot!
+"@
+        [System.Windows.MessageBox]::Show($supportMessage, "Support", "OK", "Information")
+    })
+} else {
+    Write-Warning "BtnSupport control not found in XAML"
+}
+
 $btnChatGPT = Get-Control -Name "BtnChatGPT"
 if ($btnChatGPT) {
     $btnChatGPT.Add_Click({

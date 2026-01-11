@@ -54,6 +54,9 @@
                 <MenuItem Header="Network Diagnostics" Name="BtnNetworkDiagnostics" ToolTip="Comprehensive network diagnostics and driver management"/>
                 <MenuItem Header="Keyboard Symbols" Name="BtnKeyboardSymbols" ToolTip="Keyboard symbol helper and ALT code reference"/>
             </MenuItem>
+            <MenuItem Header="Help" FontWeight="Bold">
+                <MenuItem Header="Support" Name="BtnSupport" ToolTip="Contact support for issues or feedback"/>
+            </MenuItem>
             <MenuItem Header="Resources" FontWeight="Bold">
                 <MenuItem Header="ChatGPT Help" Name="BtnChatGPT" ToolTip="Open ChatGPT for boot assistance help"/>
                 <Separator/>
