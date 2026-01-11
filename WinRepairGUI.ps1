@@ -2169,9 +2169,20 @@ if ($btnSwitchToTUI) {
             Start-Sleep -Milliseconds 100
             
             # Load TUI module and start it
-            $tuiPath = Join-Path $PSScriptRoot "WinRepairTUI.ps1"
+            # Use script:ScriptRootSafe which is computed at module load time
+            $tuiScriptRoot = $script:ScriptRootSafe
+            if (-not $tuiScriptRoot) {
+                # Fallback to PSScriptRoot or current location
+                $tuiScriptRoot = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).ProviderPath }
+            }
+            $tuiPath = Join-Path $tuiScriptRoot "WinRepairTUI.ps1"
             if (Test-Path $tuiPath) {
                 try {
+                    # Set PSScriptRoot for TUI module before loading it
+                    # This ensures Start-TUI can find files it needs
+                    $originalPSScriptRoot = $PSScriptRoot
+                    $script:PSScriptRoot = $tuiScriptRoot
+                    
                     # Load TUI module with error handling
                     . $tuiPath -ErrorAction Stop
                     
@@ -2180,6 +2191,11 @@ if ($btnSwitchToTUI) {
                         Start-TUI
                     } else {
                         throw "Start-TUI function not found after loading WinRepairTUI.ps1"
+                    }
+                    
+                    # Restore original PSScriptRoot if it was set
+                    if ($originalPSScriptRoot) {
+                        $script:PSScriptRoot = $originalPSScriptRoot
                     }
                 } catch {
                     $errorDetails = $_.Exception.Message
