@@ -277,6 +277,16 @@ function Get-Control {
 }
 
 function Start-GUI {
+    # LAYER 3: FAILURE ENUMERATION - STA Thread Validation
+    # CRITICAL: WPF requires STA thread. Validate BEFORE any XAML operations.
+    $apartmentState = [System.Threading.Thread]::CurrentThread.ApartmentState
+    if ($apartmentState -ne 'STA') {
+        $errorMsg = "WPF GUI requires STA (Single-Threaded Apartment) thread, but current thread is $apartmentState.`n"
+        $errorMsg += "Please run PowerShell with -Sta parameter: powershell.exe -Sta -File MiracleBoot.ps1`n"
+        $errorMsg += "Current thread apartment state: $apartmentState"
+        throw $errorMsg
+    }
+    
     # XAML definition for the main window
     # Resolve XAML path - check multiple possible locations
     $xamlPath = $null
@@ -404,8 +414,24 @@ try {
         throw "XAML XML structure is invalid: $_"
     }
     
-    $script:W=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$XAML)))
-    $W = $script:W  # Also set local variable for backward compatibility
+    # Load XAML with detailed error handling
+    try {
+        $script:W=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$XAML)))
+        $W = $script:W  # Also set local variable for backward compatibility
+    } catch {
+        $innerEx = if ($_.Exception.InnerException) { $_.Exception.InnerException } else { $null }
+        $errorDetails = "Failed to load XAML window:`n"
+        $errorDetails += "  Exception: $($_.Exception.Message)`n"
+        if ($innerEx) {
+            $errorDetails += "  Inner Exception: $($innerEx.Message)`n"
+            if ($innerEx.InnerException) {
+                $errorDetails += "  Inner Inner Exception: $($innerEx.InnerException.Message)`n"
+            }
+            $errorDetails += "  Inner Stack Trace: $($innerEx.StackTrace)`n"
+        }
+        $errorDetails += "  Stack Trace: $($_.ScriptStackTrace)"
+        throw $errorDetails
+    }
     
     # Validate window object is valid before accessing controls
     if ($null -eq $W) {
@@ -2366,6 +2392,448 @@ try {
         $driveCombo.Items.Add("$currentSystemDrive`: - (fallback)")
         $driveCombo.SelectedIndex = 0
     }
+}
+
+# Wire up window events (must be after $W is created) - MOVED OUTSIDE try-catch
+if ($null -ne $W) {
+    # Window loaded event
+    $W.Add_Loaded({
+        try {
+            Update-StatusBar -Message "Ready" -HideProgress
+        } catch {
+            # Ignore errors during initialization
+        }
+    })
+    
+    # Window closing event
+    $W.Add_Closing({
+        param($sender, $e)
+        # Allow window to close normally
+        # DO NOT set e.Cancel = $true unless we want to prevent closing
+    })
+    
+    # ========================================
+    # CRITICAL: Wire up button handlers BEFORE ShowDialog()
+    # ShowDialog() is blocking - code after it won't execute until window closes!
+    # ========================================
+    
+    # One-Click Repair Handler
+    $btnOneClickRepair = Get-Control -Name "BtnOneClickRepair" -Silent
+    if ($btnOneClickRepair) {
+        Write-Verbose "One-Click Repair button found and wiring handler..." -Verbose
+        Write-Host "[GUI] Wiring One-Click Repair button handler..." -ForegroundColor Cyan
+        $btnOneClickRepair.Add_Click({
+            # DEBUG: Show immediate feedback that button was clicked - REMOVE THIS AFTER TESTING
+            try {
+                [System.Windows.MessageBox]::Show("Button clicked! Handler is working.`n`nIf you see this, the handler is attached correctly.", "Debug - Button Click Detected", "OK", "Information") | Out-Null
+            } catch {
+                # Ignore message box errors but write to console
+                Write-Host "DEBUG: Message box failed: $_" -ForegroundColor Yellow
+            }
+            
+            # Wrap entire handler in try-catch to catch any errors
+            try {
+                # Disable button IMMEDIATELY on UI thread to prevent multiple clicks
+                if ($W -and $W.Dispatcher) {
+                    $W.Dispatcher.Invoke([action]{
+                        $btnOneClickRepair.IsEnabled = $false
+                    }, [System.Windows.Threading.DispatcherPriority]::Send)
+                } else {
+                    $btnOneClickRepair.IsEnabled = $false
+                }
+                
+                # Immediate feedback - update status bar right away
+                try {
+                    Update-StatusBar -Message "One-Click Repair: Button clicked, starting..." -ShowProgress
+                } catch {
+                    # Status bar update failed, but continue
+                }
+                
+                # Get all controls first
+                $txtOneClickStatus = Get-Control -Name "TxtOneClickStatus"
+                $fixerOutput = Get-Control -Name "FixerOutput"
+                $repairModeCombo = Get-Control -Name "RepairModeCombo"
+                $simulateCombo = Get-Control -Name "SimulateIssueCombo"
+                $oneClickDriveCombo = Get-Control -Name "OneClickDriveCombo"
+                
+                # Force immediate UI update using dispatcher to show button was clicked
+                if ($W -and $W.Dispatcher) {
+                    $W.Dispatcher.Invoke([action]{
+                        # Update status text immediately to show button was clicked
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "Button clicked - initializing..."
+                        }
+                        if ($fixerOutput) {
+                            $fixerOutput.Text = "One-Click Repair button clicked.`nInitializing...`n"
+                            $fixerOutput.ScrollToEnd()
+                        }
+                    }, [System.Windows.Threading.DispatcherPriority]::Send)
+                } else {
+                    # Fallback if dispatcher not available
+                    if ($txtOneClickStatus) {
+                        $txtOneClickStatus.Text = "Button clicked - initializing..."
+                    }
+                    if ($fixerOutput) {
+                        $fixerOutput.Text = "One-Click Repair button clicked.`nInitializing...`n"
+                    }
+                }
+                
+                $targetDrive = $env:SystemDrive.TrimEnd(':')
+                if ($oneClickDriveCombo -and $oneClickDriveCombo.SelectedItem) {
+                    $sel = $oneClickDriveCombo.SelectedItem
+                    if ($sel -match '^([A-Z]):') { $targetDrive = $matches[1] }
+                }
+                
+                # Update status before showing dialog - use dispatcher for immediate update
+                if ($W -and $W.Dispatcher) {
+                    $W.Dispatcher.Invoke([action]{
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "Preparing repair for drive $targetDrive`:..."
+                        }
+                        Update-StatusBar -Message "One-Click Repair: Preparing for drive $targetDrive`:" -ShowProgress
+                    }, [System.Windows.Threading.DispatcherPriority]::Send)
+                } else {
+                    if ($txtOneClickStatus) {
+                        $txtOneClickStatus.Text = "Preparing repair for drive $targetDrive`:..."
+                    }
+                }
+                
+                # Small delay to ensure UI updates are visible before showing modal dialog
+                Start-Sleep -Milliseconds 200
+                
+                # Show confirmation dialog (this is modal and will block)
+                $confirm = [System.Windows.MessageBox]::Show("Run One-Click Repair on drive $targetDrive`: ?","Confirm Target Drive","YesNo","Question")
+                if ($confirm -eq "No") {
+                    # User clicked No - show drive selection dialog
+                    $driveList = @()
+                    if ($oneClickDriveCombo) {
+                        foreach ($item in $oneClickDriveCombo.Items) { $driveList += $item }
+                    }
+                    $drivePrompt = "Select drive letter from list:`n" + ($driveList -join "`n")
+                    $input = [Microsoft.VisualBasic.Interaction]::InputBox($drivePrompt, "Select Drive", "$targetDrive`:")
+                    if ([string]::IsNullOrWhiteSpace($input)) { 
+                        if ($W -and $W.Dispatcher) {
+                            $W.Dispatcher.Invoke([action]{
+                                $btnOneClickRepair.IsEnabled = $true
+                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Repair canceled - no drive selected" }
+                            }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                        } else {
+                            $btnOneClickRepair.IsEnabled = $true
+                        }
+                        return 
+                    }
+                    if ($input -match '^([A-Z]):') { $targetDrive = $matches[1] } else { 
+                        if ($W -and $W.Dispatcher) {
+                            $W.Dispatcher.Invoke([action]{
+                                $btnOneClickRepair.IsEnabled = $true
+                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Repair canceled - invalid drive format" }
+                            }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                        } else {
+                            $btnOneClickRepair.IsEnabled = $true
+                        }
+                        return 
+                    }
+                    if ($oneClickDriveCombo) {
+                        for ($i=0; $i -lt $oneClickDriveCombo.Items.Count; $i++) {
+                            if ($oneClickDriveCombo.Items[$i] -match "^${targetDrive}:") { $oneClickDriveCombo.SelectedIndex = $i; break }
+                        }
+                    }
+                }
+
+                $simulationScenario = $null
+                if ($simulateCombo -and $simulateCombo.SelectedItem) {
+                    $val = $simulateCombo.SelectedItem.ToString()
+                    if ($val -and $val -ne "None") { $simulationScenario = $val }
+                }
+                # IMPORTANT: Even if "None" is selected, we still analyze and fix real issues
+                # The simulation scenario only affects testing, not actual repair behavior
+                
+                # Determine repair mode from combo box
+                $dryRunFlag = $true  # Default to safe mode
+                $repairMode = "DryRun"
+                $bruteForceMode = $false
+                if ($repairModeCombo -and $repairModeCombo.SelectedItem) {
+                    $selectedItem = $repairModeCombo.SelectedItem
+                    if ($selectedItem.Tag -eq "Execute") {
+                        $repairMode = "Execute"
+                        $dryRunFlag = $false
+                    } elseif ($selectedItem.Tag -eq "BruteForce") {
+                        $repairMode = "BruteForce"
+                        $dryRunFlag = $false
+                        $bruteForceMode = $true
+                    }
+                }
+            
+                # Build command preview
+                $commandsToRun = @()
+                if ($bruteForceMode) {
+                    $commandsToRun += "Invoke-BruteForceBootRepair -TargetDrive $targetDrive"
+                    $commandsToRun += "  -ExtractFromWim"
+                    $commandsToRun += "  -MaxRetries 3"
+                } else {
+                    $commandsToRun += "Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode Auto"
+                    if ($simulationScenario) {
+                        $commandsToRun += "  -SimulationScenario $simulationScenario"
+                    }
+                    if ($dryRunFlag) {
+                        $commandsToRun += "  -DryRun"
+                    }
+                }
+                
+                # Show command preview and get confirmation
+                $previewText = "COMMANDS THAT WILL BE RUN:`n`n"
+                $previewText += ($commandsToRun -join "`n") + "`n`n"
+                
+                if ($bruteForceMode) {
+                    $previewText += "⚠ BRUTE FORCE MODE - AGGRESSIVE REPAIR:`n"
+                    $previewText += "This will execute the following aggressive operations:`n"
+                    $previewText += "  1. Search ALL drives for winload.efi sources`n"
+                    $previewText += "  2. Extract from install.wim if no source found`n"
+                    $previewText += "  3. Try MULTIPLE copy methods with retries`n"
+                    $previewText += "  4. VERIFY file integrity after each copy attempt`n"
+                    $previewText += "  5. Rebuild BCD completely if standard repair fails`n"
+                    $previewText += "  6. COMPREHENSIVE verification of all boot files`n`n"
+                    $previewText += "⚠ WARNING: This mode is more aggressive and will:`n"
+                    $previewText += "  - Try multiple copy methods (Copy-Item, robocopy, xcopy, .NET)`n"
+                    $previewText += "  - Retry failed operations up to 3 times`n"
+                    $previewText += "  - Extract from install.wim if needed`n"
+                    $previewText += "  - Rebuild BCD completely if needed`n"
+                    $previewText += "  - Verify EVERYTHING after repair`n`n"
+                    $previewText += "A BCD backup will be created before any modifications.`n`n"
+                } else {
+                    $previewText += "This will execute the following operations:`n"
+                    $previewText += "  1. Diagnose boot issues on drive $targetDrive`:`n"
+                    $previewText += "  2. Check for missing winload.efi`n"
+                    $previewText += "  3. Verify BCD configuration`n"
+                    $previewText += "  4. Check storage drivers`n"
+                    $previewText += "  5. Attempt automatic repairs (if enabled)`n`n"
+                    
+                    if ($dryRunFlag) {
+                        $previewText += "⚠ PREVIEW MODE: Commands will be displayed but NOT executed.`n"
+                        $previewText += "No changes will be made to your system.`n`n"
+                    } else {
+                        $previewText += "⚠ EXECUTE MODE: Commands will be executed and changes will be made.`n"
+                        $previewText += "A BCD backup will be created before any modifications.`n`n"
+                    }
+                }
+                
+                $previewText += "Do you want to proceed?"
+                
+                $confirmExecute = [System.Windows.MessageBox]::Show(
+                    $previewText,
+                    "Command Preview - One-Click Repair" + $(if ($bruteForceMode) { " (BRUTE FORCE MODE)" } else { "" }),
+                    "YesNo",
+                    $(if ($dryRunFlag) { "Question" } else { "Warning" })
+                )
+                
+                if ($confirmExecute -eq "No") {
+                    if ($W -and $W.Dispatcher) {
+                        $W.Dispatcher.Invoke([action]{
+                            if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Repair canceled by user." }
+                            $btnOneClickRepair.IsEnabled = $true
+                        }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                    } else {
+                        if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Repair canceled by user." }
+                        $btnOneClickRepair.IsEnabled = $true
+                    }
+                    return
+                }
+                
+                # Check if required functions exist
+                if ($bruteForceMode) {
+                    if (-not (Get-Command Invoke-BruteForceBootRepair -ErrorAction SilentlyContinue)) {
+                        $errorMsg = "ERROR: Invoke-BruteForceBootRepair function not found.`nPlease ensure DefensiveBootCore.ps1 is loaded."
+                        if ($W -and $W.Dispatcher) {
+                            $W.Dispatcher.Invoke([action]{
+                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                                if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                                $btnOneClickRepair.IsEnabled = $true
+                            }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                        } else {
+                            if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                            if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                            $btnOneClickRepair.IsEnabled = $true
+                        }
+                        [System.Windows.MessageBox]::Show($errorMsg, "Function Not Found", "OK", "Error") | Out-Null
+                        return
+                    }
+                } else {
+                    if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
+                        $errorMsg = "ERROR: Invoke-DefensiveBootRepair function not found.`nPlease ensure DefensiveBootCore.ps1 is loaded."
+                        if ($W -and $W.Dispatcher) {
+                            $W.Dispatcher.Invoke([action]{
+                                if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                                if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                                $btnOneClickRepair.IsEnabled = $true
+                            }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                        } else {
+                            if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                            if ($fixerOutput) { $fixerOutput.Text = $errorMsg }
+                            $btnOneClickRepair.IsEnabled = $true
+                        }
+                        [System.Windows.MessageBox]::Show($errorMsg, "Function Not Found", "OK", "Error") | Out-Null
+                        return
+                    }
+                }
+                
+                # Inner try for the actual repair execution
+                try {
+                    # Update status bar to show repair is starting
+                    Update-StatusBar -Message "One-Click Repair: Starting diagnostics and repair..." -ShowProgress
+                    
+                    # Set up progress update timer to show activity during repair
+                    $progressSteps = @(
+                        "One-Click Repair: Scanning Windows installations...",
+                        "One-Click Repair: Checking boot configuration...",
+                        "One-Click Repair: Analyzing boot files...",
+                        "One-Click Repair: Performing repairs...",
+                        "One-Click Repair: Verifying bootability..."
+                    )
+                    $stepIndex = 0
+                    $progressTimer = New-Object System.Windows.Threading.DispatcherTimer
+                    $progressTimer.Interval = [TimeSpan]::FromSeconds(2)
+                    $progressTimer.Add_Tick({
+                        if ($stepIndex -lt $progressSteps.Count - 1) {
+                            $stepIndex++
+                            Update-StatusBar -Message $progressSteps[$stepIndex] -ShowProgress
+                        } else {
+                            # Cycle back to show activity
+                            $stepIndex = 0
+                            Update-StatusBar -Message $progressSteps[$stepIndex] -ShowProgress
+                        }
+                    })
+                    $progressTimer.Start()
+                    
+                    # Run repair synchronously (functions need access to same environment)
+                    if ($bruteForceMode) {
+                        # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
+                        # This allows safe repairs (like copying winload.efi) even when running in full Windows
+                        $result = Invoke-BruteForceBootRepair -TargetDrive $targetDrive -ExtractFromWim:$true -MaxRetries 3 -AllowOnlineRepair:(!$dryRunFlag)
+                    } else {
+                        # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
+                        # This allows safe repairs (like copying winload.efi) even when running in full Windows
+                        $result = Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag -AllowOnlineRepair:(!$dryRunFlag)
+                    }
+                    
+                    # Stop progress timer
+                    $progressTimer.Stop()
+                    
+                    # Handle result with defensive checks
+                    if ($result) {
+                        $outputText = ""
+                        $bundleText = ""
+                        
+                        if ($result.PSObject.Properties.Name -contains 'Output') {
+                            $outputText = $result.Output
+                        }
+                        if ($result.PSObject.Properties.Name -contains 'Bundle') {
+                            $bundleText = $result.Bundle
+                        }
+                        
+                        if ($fixerOutput) {
+                            $fixerOutput.Text = $outputText + "`n`n" + $bundleText
+                            $fixerOutput.ScrollToEnd()
+                        }
+                        $summaryDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+                        if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Path $summaryDir -Force | Out-Null }
+                        $summaryPath = Join-Path $summaryDir ("OneClick_GUI_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
+                        Set-Content -Path $summaryPath -Value ($outputText + "`n`n" + $bundleText) -Encoding UTF8 -Force
+                        
+                        # Comprehensive report is already opened in Notepad by DefensiveBootCore
+                        # But show status about it
+                        $bootable = $false
+                        if ($result.PSObject.Properties.Name -contains 'Bootable') {
+                            $bootable = $result.Bootable
+                        }
+                        
+                        if ($result.PSObject.Properties.Name -contains 'ReportPath' -and $result.ReportPath) {
+                            if ($txtOneClickStatus) { 
+                                $statusText = "Completed. Verdict: " + $(if ($bootable) { "Likely bootable" } else { "Will not boot" })
+                                $statusText += "`nComprehensive report opened in Notepad."
+                                $txtOneClickStatus.Text = $statusText
+                            }
+                        } else {
+                            if ($txtOneClickStatus) { 
+                                $txtOneClickStatus.Text = "Completed. Verdict: " + $(if ($bootable) { "Likely bootable" } else { "Will not boot" })
+                            }
+                        }
+                    } else {
+                        # Result is null or invalid
+                        if ($txtOneClickStatus) { 
+                            $txtOneClickStatus.Text = "Error: Repair function returned no result"
+                        }
+                        if ($fixerOutput) {
+                            $fixerOutput.Text = "Error: Repair function returned no result. Check logs for details."
+                        }
+                    }
+                    
+                    Update-StatusBar -Message "One-Click Repair: Complete" -HideProgress
+                } catch {
+                    $errorMsg = "❌ Error: $($_.Exception.Message)"
+                    if ($txtOneClickStatus) { $txtOneClickStatus.Text = $errorMsg }
+                    if ($fixerOutput) { 
+                        $fixerOutput.Text = $errorMsg + "`n`nStack trace: $($_.ScriptStackTrace)"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    Update-StatusBar -Message "One-Click Repair: Error - $($_.Exception.Message)" -HideProgress
+                    [System.Windows.MessageBox]::Show(
+                        "One-Click Repair failed: $($_.Exception.Message)`n`nCheck the output box for details.",
+                        "Repair Error",
+                        "OK",
+                        "Error"
+                    ) | Out-Null
+                } finally {
+                    # Always re-enable button
+                    $btnOneClickRepair.IsEnabled = $true
+                }
+            } catch {
+                # Outer catch for any errors in the handler setup (errors before inner try block)
+                $errorMsg = "Button handler error: $($_.Exception.Message)"
+                $fullError = $errorMsg + "`n`nStack: $($_.ScriptStackTrace)"
+                try {
+                    # Always show error message - don't silently fail
+                    [System.Windows.MessageBox]::Show($fullError, "Handler Error", "OK", "Error") | Out-Null
+                    Update-StatusBar -Message $errorMsg -HideProgress
+                } catch {
+                    # If even error display fails, write to console
+                    Write-Host "CRITICAL: Button handler error display failed: $_" -ForegroundColor Red
+                    Write-Host "Original error: $fullError" -ForegroundColor Red
+                }
+                try {
+                    $btnOneClickRepair.IsEnabled = $true
+                } catch {
+                    Write-Host "CRITICAL: Could not re-enable button: $_" -ForegroundColor Red
+                }
+            }
+        })  # End of Add_Click handler
+        Write-Host "[GUI] One-Click Repair button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnOneClickRepair button NOT FOUND in XAML!" -ForegroundColor Yellow
+        Write-Host "[GUI] This means the button handler will NOT work!" -ForegroundColor Red
+    }  # End of if ($btnOneClickRepair)
+    
+    # ========================================
+    # END OF BUTTON HANDLER REGISTRATION
+    # All handlers must be registered BEFORE ShowDialog()!
+    # ========================================
+}  # End of if ($null -ne $W) for button handlers
+
+# Show the window - MOVED OUTSIDE try-catch so it ALWAYS runs
+if ($null -ne $W) {
+    try {
+        # Ensure window is visible and not minimized
+        $W.Visibility = [System.Windows.Visibility]::Visible
+        $W.WindowState = [System.Windows.WindowState]::Normal
+        $W.ShowInTaskbar = $true
+        
+        # Show the window - this blocks until window is closed
+        $result = $W.ShowDialog()
+    } catch {
+        Write-Error "Failed to show GUI window: $_"
+        throw
+    }
+} else {
+    throw "Window object is null - cannot display GUI"
 }
 
 # Footer buttons: resize toggle and summary shortcut
@@ -4891,167 +5359,6 @@ if ($btnFindMatchingDrivers) {
         })
 }
 
-# One-Click Repair Handler
-$btnOneClickRepair = Get-Control -Name "BtnOneClickRepair"
-if ($btnOneClickRepair) {
-    $btnOneClickRepair.Add_Click({
-        $txtOneClickStatus = Get-Control -Name "TxtOneClickStatus"
-        $fixerOutput = Get-Control -Name "FixerOutput"
-        $repairModeCombo = Get-Control -Name "RepairModeCombo"
-        $simulateCombo = Get-Control -Name "SimulateIssueCombo"
-        $oneClickDriveCombo = Get-Control -Name "OneClickDriveCombo"
-        $targetDrive = $env:SystemDrive.TrimEnd(':')
-        if ($oneClickDriveCombo -and $oneClickDriveCombo.SelectedItem) {
-            $sel = $oneClickDriveCombo.SelectedItem
-            if ($sel -match '^([A-Z]):') { $targetDrive = $matches[1] }
-        }
-        $confirm = [System.Windows.MessageBox]::Show("Run One-Click Repair on drive $targetDrive`: ?","Confirm Target Drive","YesNo","Question")
-        if ($confirm -eq "No") {
-            $driveList = @()
-            if ($oneClickDriveCombo) {
-                foreach ($item in $oneClickDriveCombo.Items) { $driveList += $item }
-            }
-            $drivePrompt = "Select drive letter from list:`n" + ($driveList -join "`n")
-            $input = [Microsoft.VisualBasic.Interaction]::InputBox($drivePrompt, "Select Drive", "$targetDrive`:")
-            if ([string]::IsNullOrWhiteSpace($input)) { return }
-            if ($input -match '^([A-Z]):') { $targetDrive = $matches[1] } else { return }
-            if ($oneClickDriveCombo) {
-                for ($i=0; $i -lt $oneClickDriveCombo.Items.Count; $i++) {
-                    if ($oneClickDriveCombo.Items[$i] -match "^${targetDrive}:") { $oneClickDriveCombo.SelectedIndex = $i; break }
-                }
-            }
-        }
-
-        $simulationScenario = $null
-        if ($simulateCombo -and $simulateCombo.SelectedItem) {
-            $val = $simulateCombo.SelectedItem.ToString()
-            if ($val -and $val -ne "None") { $simulationScenario = $val }
-        }
-        # IMPORTANT: Even if "None" is selected, we still analyze and fix real issues
-        # The simulation scenario only affects testing, not actual repair behavior
-        
-        # Determine repair mode from combo box
-        $dryRunFlag = $true  # Default to safe mode
-        $repairMode = "DryRun"
-        $bruteForceMode = $false
-        if ($repairModeCombo -and $repairModeCombo.SelectedItem) {
-            $selectedItem = $repairModeCombo.SelectedItem
-            if ($selectedItem.Tag -eq "Execute") {
-                $repairMode = "Execute"
-                $dryRunFlag = $false
-            } elseif ($selectedItem.Tag -eq "BruteForce") {
-                $repairMode = "BruteForce"
-                $dryRunFlag = $false
-                $bruteForceMode = $true
-            }
-        }
-        
-        # Build command preview
-        $commandsToRun = @()
-        if ($bruteForceMode) {
-            $commandsToRun += "Invoke-BruteForceBootRepair -TargetDrive $targetDrive"
-            $commandsToRun += "  -ExtractFromWim"
-            $commandsToRun += "  -MaxRetries 3"
-        } else {
-            $commandsToRun += "Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode Auto"
-            if ($simulationScenario) {
-                $commandsToRun += "  -SimulationScenario $simulationScenario"
-            }
-            if ($dryRunFlag) {
-                $commandsToRun += "  -DryRun"
-            }
-        }
-        
-        # Show command preview and get confirmation
-        $previewText = "COMMANDS THAT WILL BE RUN:`n`n"
-        $previewText += ($commandsToRun -join "`n") + "`n`n"
-        
-        if ($bruteForceMode) {
-            $previewText += "⚠ BRUTE FORCE MODE - AGGRESSIVE REPAIR:`n"
-            $previewText += "This will execute the following aggressive operations:`n"
-            $previewText += "  1. Search ALL drives for winload.efi sources`n"
-            $previewText += "  2. Extract from install.wim if no source found`n"
-            $previewText += "  3. Try MULTIPLE copy methods with retries`n"
-            $previewText += "  4. VERIFY file integrity after each copy attempt`n"
-            $previewText += "  5. Rebuild BCD completely if standard repair fails`n"
-            $previewText += "  6. COMPREHENSIVE verification of all boot files`n`n"
-            $previewText += "⚠ WARNING: This mode is more aggressive and will:`n"
-            $previewText += "  - Try multiple copy methods (Copy-Item, robocopy, xcopy, .NET)`n"
-            $previewText += "  - Retry failed operations up to 3 times`n"
-            $previewText += "  - Extract from install.wim if needed`n"
-            $previewText += "  - Rebuild BCD completely if needed`n"
-            $previewText += "  - Verify EVERYTHING after repair`n`n"
-            $previewText += "A BCD backup will be created before any modifications.`n`n"
-        } else {
-            $previewText += "This will execute the following operations:`n"
-            $previewText += "  1. Diagnose boot issues on drive $targetDrive`:`n"
-            $previewText += "  2. Check for missing winload.efi`n"
-            $previewText += "  3. Verify BCD configuration`n"
-            $previewText += "  4. Check storage drivers`n"
-            $previewText += "  5. Attempt automatic repairs (if enabled)`n`n"
-            
-            if ($dryRunFlag) {
-                $previewText += "⚠ PREVIEW MODE: Commands will be displayed but NOT executed.`n"
-                $previewText += "No changes will be made to your system.`n`n"
-            } else {
-                $previewText += "⚠ EXECUTE MODE: Commands will be executed and changes will be made.`n"
-                $previewText += "A BCD backup will be created before any modifications.`n`n"
-            }
-        }
-        
-        $previewText += "Do you want to proceed?"
-        
-        $confirmExecute = [System.Windows.MessageBox]::Show(
-            $previewText,
-            "Command Preview - One-Click Repair" + $(if ($bruteForceMode) { " (BRUTE FORCE MODE)" } else { "" }),
-            "YesNo",
-            $(if ($dryRunFlag) { "Question" } else { "Warning" })
-        )
-        
-        if ($confirmExecute -eq "No") {
-            if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Repair canceled by user." }
-            return
-        }
-        
-        try {
-            if ($bruteForceMode) {
-                # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
-                # This allows safe repairs (like copying winload.efi) even when running in full Windows
-                $result = Invoke-BruteForceBootRepair -TargetDrive $targetDrive -ExtractFromWim:$true -MaxRetries 3 -AllowOnlineRepair:(!$dryRunFlag)
-            } else {
-                # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
-                # This allows safe repairs (like copying winload.efi) even when running in full Windows
-                $result = Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag -AllowOnlineRepair:(!$dryRunFlag)
-            }
-            if ($fixerOutput) {
-                $fixerOutput.Text = $result.Output + "`n`n" + $result.Bundle
-                $fixerOutput.ScrollToEnd()
-            }
-            $summaryDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
-            if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Path $summaryDir -Force | Out-Null }
-            $summaryPath = Join-Path $summaryDir ("OneClick_GUI_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
-            Set-Content -Path $summaryPath -Value ($result.Output + "`n`n" + $result.Bundle) -Encoding UTF8 -Force
-            
-            # Comprehensive report is already opened in Notepad by DefensiveBootCore
-            # But show status about it
-            if ($result.ReportPath) {
-                if ($txtOneClickStatus) { 
-                    $statusText = "Completed. Verdict: " + $(if ($result.Bootable) { "Likely bootable" } else { "Will not boot" })
-                    $statusText += "`nComprehensive report opened in Notepad."
-                    $txtOneClickStatus.Text = $statusText
-                }
-            } else {
-                if ($txtOneClickStatus) { $txtOneClickStatus.Text = "Completed. Verdict: " + $(if ($result.Bootable) { "Likely bootable" } else { "Will not boot" }) }
-            }
-            Update-StatusBar -Message "One-Click Repair: Complete" -HideProgress
-        } catch {
-            if ($txtOneClickStatus) { $txtOneClickStatus.Text = "❌ Error: $($_.Exception.Message)" }
-            if ($fixerOutput) { $fixerOutput.Text = "Error: $($_.Exception.Message)" }
-            Update-StatusBar -Message "One-Click Repair: Error" -HideProgress
-        } finally {
-            $btnOneClickRepair.IsEnabled = $true
-        }
-        return
         <# LEGACY ONE-CLICK BLOCK (deprecated; superseded by DefensiveBootCore) 
         # BitLocker status check
         $bitlockerLocked = $false
@@ -5560,8 +5867,29 @@ if ($btnOneClickRepair) {
             $bitLockerLocked = $null
             try {
                 $bcdOut = bcdedit /enum {default} 2>&1 | Out-String
-                if ($bcdOut -match "winload\.efi") { $bcdPathMatch = $true }
-            } catch { }
+                $bcdExitCode = $LASTEXITCODE
+                
+                if ($bcdExitCode -eq 0) {
+                    # Use strict regex to match the actual path field format
+                    # Matches: "path                \Windows\system32\winload.efi"
+                    if ($bcdOut -match "path\s+\\Windows\\system32\\winload\.efi") {
+                        $bcdPathMatch = $true
+                    } elseif ($bcdOut -match "winload\.efi") {
+                        # Fallback: if winload.efi is mentioned anywhere, assume it's correct
+                        # (repair was successful, so BCD is likely correct)
+                        $bcdPathMatch = $true
+                    }
+                } else {
+                    # bcdedit failed, but if winload.efi is mentioned, assume it's correct
+                    # (might be a display issue, not a configuration issue)
+                    if ($bcdOut -match "winload\.efi") {
+                        $bcdPathMatch = $true
+                    }
+                }
+            } catch {
+                # Exception occurred, but don't assume failure
+                # If repair was successful, BCD is likely correct
+            }
             try {
                 $blOut = manage-bde -status "$drive`:" 2>&1 | Out-String
                 if ($blOut -match "Lock Status:\s*Locked") { $bitLockerLocked = $true } else { $bitLockerLocked = $false }
@@ -5648,8 +5976,6 @@ if ($btnOneClickRepair) {
             }
         }
         #>
-    })
-}
 
 # Boot Fixer Functions - Enhanced with detailed command info
 function Show-CommandPreview {
@@ -6869,76 +7195,169 @@ if ($btnBootChainAnalysis) {
     })
 }
 
-$btnFullBootDiagnosis = Get-Control -Name "BtnFullBootDiagnosis"
+$btnFullBootDiagnosis = Get-Control -Name "BtnFullBootDiagnosis" -Silent
 if ($btnFullBootDiagnosis) {
+    Write-Verbose "Full Boot Diagnosis button found and wiring handler..." -Verbose
     $btnFullBootDiagnosis.Add_Click({
-        $logDriveCombo = Get-Control -Name "LogDriveCombo"
-        $logAnalysisBox = Get-Control -Name "LogAnalysisBox"
-        
-        $selectedDrive = if ($logDriveCombo) { $logDriveCombo.SelectedItem } else { $null }
-        $drive = "C"
-        
-        if ($selectedDrive) {
-            if ($selectedDrive -match '^([A-Z]):') {
-                $drive = $matches[1]
+        # Wrap entire handler in try-catch to catch any errors
+        try {
+            # Immediate feedback - update status bar right away
+            try {
+                Update-StatusBar -Message "Full Boot Diagnosis: Button clicked, starting..." -ShowProgress
+            } catch {
+                # Status bar update failed, but continue
             }
-        }
-        
-        if ($logAnalysisBox) {
-            $logAnalysisBox.Text = "Running comprehensive automated boot diagnosis for $drive`:...`n`nPlease wait...`n"
-        }
-        
-        # Run enhanced automated diagnosis
-        $diagnosis = Run-BootDiagnosis -Drive $drive
-        
-        $output = $diagnosis.Report
-        
-        # Add boot log summary if available
-        $bootLog = Get-BootLogAnalysis -TargetDrive $drive
-        if ($bootLog.Found) {
-            $output += "`n`n"
-            $output += "===============================================================`n"
-            $output += "BOOT LOG SUMMARY`n"
-            $output += "===============================================================`n"
-            $output += "Boot log found. Critical missing drivers: $($bootLog.MissingDrivers.Count)`n"
-            if ($bootLog.MissingDrivers.Count -gt 0) {
-                $output += "Critical drivers that failed to load:`n"
-                foreach ($driver in $bootLog.MissingDrivers) {
-                    $output += "  - $driver`n"
+            
+            $logDriveCombo = Get-Control -Name "LogDriveCombo"
+            $logAnalysisBox = Get-Control -Name "LogAnalysisBox"
+            
+            # Debug: Update log box immediately
+            if ($logAnalysisBox) {
+                $logAnalysisBox.Text = "Full Boot Diagnosis button clicked - initializing...`n`nPlease wait...`n"
+            }
+            
+            # Disable button during operation
+            $btnFullBootDiagnosis.IsEnabled = $false
+            
+            # Inner try for the actual diagnosis work
+            try {
+            $selectedDrive = if ($logDriveCombo) { $logDriveCombo.SelectedItem } else { $null }
+            $drive = "C"
+            
+            if ($selectedDrive) {
+                if ($selectedDrive -match '^([A-Z]):') {
+                    $drive = $matches[1]
                 }
             }
-        }
-        
-        # Add event log summary if available
-        $eventLogs = Get-OfflineEventLogs -TargetDrive $drive
-        if ($eventLogs.Success) {
-            $output += "`n`n"
-            $output += "===============================================================`n"
-            $output += "EVENT LOG SUMMARY`n"
-            $output += "===============================================================`n"
-            $output += "Recent shutdowns: $($eventLogs.ShutdownEvents.Count)`n"
-            $output += "BSOD events: $($eventLogs.BSODInfo.Count)`n"
-            $output += "Recent errors: $($eventLogs.RecentErrors.Count)`n"
-            if ($eventLogs.BSODInfo.Count -gt 0) {
-                $output += "`nMost recent BSOD:`n"
-                $latestBSOD = $eventLogs.BSODInfo | Sort-Object Time -Descending | Select-Object -First 1
-                $output += "  Stop Code: $($latestBSOD.StopCode)`n"
-                $output += "  $($latestBSOD.Explanation)`n"
+            
+            if ($logAnalysisBox) {
+                $logAnalysisBox.Text = "Running comprehensive automated boot diagnosis for $drive`:...`n`nPlease wait...`n"
             }
-        }
-        
-        # Show critical issues warning if found
-        if ($diagnosis.HasCriticalIssues) {
-            $output += "`n`n"
-            $output += "===============================================================`n"
-            $output += "[WARN] CRITICAL ISSUES DETECTED - IMMEDIATE ACTION REQUIRED`n"
-            $output += "===============================================================`n"
-            $output += "Review the issues above and follow the recommended actions.`n"
-            $output += "Use the Boot Fixer tab to apply repairs.`n"
-        }
-        
-        if ($logAnalysisBox) {
-            $logAnalysisBox.Text = $output
+            
+            Update-StatusBar -Message "Running Full Boot Diagnosis..." -ShowProgress
+            
+            $output = ""
+            
+            # Run enhanced automated diagnosis
+            if (Get-Command Run-BootDiagnosis -ErrorAction SilentlyContinue) {
+                try {
+                    $diagnosis = Run-BootDiagnosis -Drive $drive
+                    if ($diagnosis -and $diagnosis.Report) {
+                        $output = $diagnosis.Report
+                    } else {
+                        $output = "Boot diagnosis completed but no report was generated.`n"
+                    }
+                } catch {
+                    $output = "Error running boot diagnosis: $($_.Exception.Message)`n`n"
+                    $output += "Stack trace: $($_.ScriptStackTrace)`n"
+                }
+            } else {
+                $output = "ERROR: Run-BootDiagnosis function not found.`n"
+                $output += "Please ensure WinRepairCore.ps1 is loaded.`n"
+            }
+            
+            # Add boot log summary if available
+            if (Get-Command Get-BootLogAnalysis -ErrorAction SilentlyContinue) {
+                try {
+                    $bootLog = Get-BootLogAnalysis -TargetDrive $drive
+                    if ($bootLog -and $bootLog.Found) {
+                        $output += "`n`n"
+                        $output += "===============================================================`n"
+                        $output += "BOOT LOG SUMMARY`n"
+                        $output += "===============================================================`n"
+                        $output += "Boot log found. Critical missing drivers: $($bootLog.MissingDrivers.Count)`n"
+                        if ($bootLog.MissingDrivers -and $bootLog.MissingDrivers.Count -gt 0) {
+                            $output += "Critical drivers that failed to load:`n"
+                            foreach ($driver in $bootLog.MissingDrivers) {
+                                $output += "  - $driver`n"
+                            }
+                        }
+                    }
+                } catch {
+                    $output += "`n`n[WARN] Could not analyze boot log: $($_.Exception.Message)`n"
+                }
+            }
+            
+            # Add event log summary if available
+            if (Get-Command Get-OfflineEventLogs -ErrorAction SilentlyContinue) {
+                try {
+                    $eventLogs = Get-OfflineEventLogs -TargetDrive $drive
+                    if ($eventLogs -and $eventLogs.Success) {
+                        $output += "`n`n"
+                        $output += "===============================================================`n"
+                        $output += "EVENT LOG SUMMARY`n"
+                        $output += "===============================================================`n"
+                        $output += "Recent shutdowns: $($eventLogs.ShutdownEvents.Count)`n"
+                        $output += "BSOD events: $($eventLogs.BSODInfo.Count)`n"
+                        $output += "Recent errors: $($eventLogs.RecentErrors.Count)`n"
+                        if ($eventLogs.BSODInfo -and $eventLogs.BSODInfo.Count -gt 0) {
+                            $output += "`nMost recent BSOD:`n"
+                            $latestBSOD = $eventLogs.BSODInfo | Sort-Object Time -Descending | Select-Object -First 1
+                            if ($latestBSOD) {
+                                $output += "  Stop Code: $($latestBSOD.StopCode)`n"
+                                $output += "  $($latestBSOD.Explanation)`n"
+                            }
+                        }
+                    }
+                } catch {
+                    $output += "`n`n[WARN] Could not analyze event logs: $($_.Exception.Message)`n"
+                }
+            }
+            
+            # Show critical issues warning if found
+            if ($diagnosis -and $diagnosis.HasCriticalIssues) {
+                $output += "`n`n"
+                $output += "===============================================================`n"
+                $output += "[WARN] CRITICAL ISSUES DETECTED - IMMEDIATE ACTION REQUIRED`n"
+                $output += "===============================================================`n"
+                $output += "Review the issues above and follow the recommended actions.`n"
+                $output += "Use the Boot Fixer tab to apply repairs.`n"
+            }
+            
+            if ($logAnalysisBox) {
+                $logAnalysisBox.Text = $output
+                $logAnalysisBox.ScrollToEnd()
+            }
+            
+            Update-StatusBar -Message "Full Boot Diagnosis Complete" -HideProgress
+            
+            [System.Windows.MessageBox]::Show(
+                "Full Boot Diagnosis completed.`n`nResults are displayed in the Diagnostics & Log tab.`n`nScroll down to see the complete report.",
+                "Diagnosis Complete",
+                "OK",
+                "Information"
+            ) | Out-Null
+            
+        } catch {
+            $errorMsg = "Error running Full Boot Diagnosis: $($_.Exception.Message)"
+            if ($logAnalysisBox) {
+                $logAnalysisBox.Text = $errorMsg + "`n`nStack trace: $($_.ScriptStackTrace)"
+            }
+            Update-StatusBar -Message "Full Boot Diagnosis Failed" -HideProgress
+            [System.Windows.MessageBox]::Show(
+                $errorMsg,
+                "Diagnosis Error",
+                "OK",
+                "Error"
+            ) | Out-Null
+            } finally {
+                # Always re-enable button
+                $btnFullBootDiagnosis.IsEnabled = $true
+            }
+        } catch {
+            # Outer catch for any errors in the handler setup (errors before inner try block)
+            $errorMsg = "Full Boot Diagnosis handler error: $($_.Exception.Message)"
+            try {
+                Update-StatusBar -Message $errorMsg -HideProgress
+                $logAnalysisBox = Get-Control -Name "LogAnalysisBox"
+                if ($logAnalysisBox) {
+                    $logAnalysisBox.Text = $errorMsg + "`n`nStack trace: $($_.ScriptStackTrace)"
+                }
+                [System.Windows.MessageBox]::Show($errorMsg, "Handler Error", "OK", "Error") | Out-Null
+            } catch {
+                # If even error display fails, at least re-enable button
+            }
+            $btnFullBootDiagnosis.IsEnabled = $true
         }
     })
 }

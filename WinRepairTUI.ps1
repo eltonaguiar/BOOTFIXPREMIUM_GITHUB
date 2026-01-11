@@ -74,29 +74,56 @@
         )
 
         $result = Invoke-DefensiveBootRepair -TargetDrive $TargetDrive -Mode "Auto" -DryRun:$DryRun -SimulationScenario $SimulationScenario
+        
+        # Defensive checks for result properties
+        $outputText = ""
+        $bundleText = ""
+        $reportPath = $null
+        $bootable = $false
+        
+        if ($result) {
+            if ($result.PSObject.Properties.Name -contains 'Output') {
+                $outputText = $result.Output
+            }
+            if ($result.PSObject.Properties.Name -contains 'Bundle') {
+                $bundleText = $result.Bundle
+            }
+            if ($result.PSObject.Properties.Name -contains 'ReportPath') {
+                $reportPath = $result.ReportPath
+            }
+            if ($result.PSObject.Properties.Name -contains 'Bootable') {
+                $bootable = $result.Bootable
+            }
+        } else {
+            Write-Host "Error: Repair function returned no result" -ForegroundColor Red
+            Write-Host "Press any key to continue..." -ForegroundColor Gray
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            return
+        }
+        
         $summaryDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
         if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Path $summaryDir -Force | Out-Null }
         $summaryPath = Join-Path $summaryDir ("OneClick_TUI_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
-        Set-Content -Path $summaryPath -Value ($result.Output + "`n`n" + $result.Bundle) -Encoding UTF8 -Force
+        Set-Content -Path $summaryPath -Value ($outputText + "`n`n" + $bundleText) -Encoding UTF8 -Force
 
         Clear-Host
-        Write-Host $result.Output -ForegroundColor Cyan
+        Write-Host $outputText -ForegroundColor Cyan
         Write-Host "`n--- PASTE-BACK BUNDLE ---`n" -ForegroundColor Yellow
-        Write-Host $result.Bundle -ForegroundColor Gray
+        Write-Host $bundleText -ForegroundColor Gray
         
         # Open comprehensive report in Notepad (if available)
-        if ($result.ReportPath -and (Test-Path $result.ReportPath)) {
+        if ($reportPath -and (Test-Path $reportPath)) {
             Write-Host "`nOpening comprehensive repair report in Notepad..." -ForegroundColor Green
             try {
-                Start-Process notepad.exe -ArgumentList "`"$($result.ReportPath)`""
+                Start-Process notepad.exe -ArgumentList "`"$reportPath`""
             } catch {
-                Write-Host "Could not open Notepad. Report saved to: $($result.ReportPath)" -ForegroundColor Yellow
+                Write-Host "Could not open Notepad. Report saved to: $reportPath" -ForegroundColor Yellow
             }
         }
         
         Write-Host "`nSummary saved to: $summaryPath" -ForegroundColor Yellow
-        if ($result.ReportPath) {
-            Write-Host "Comprehensive report: $($result.ReportPath)" -ForegroundColor Yellow
+        if ($reportPath) {
+            Write-Host "Comprehensive report: $reportPath" -ForegroundColor Yellow
         }
         Write-Host "Press any key to continue..." -ForegroundColor Gray
         $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
