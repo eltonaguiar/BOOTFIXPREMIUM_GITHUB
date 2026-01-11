@@ -4474,6 +4474,7 @@ function Invoke-DefensiveBootRepair {
                         }
                     } else {
                         Track-Command -Command "bcdedit /store $bcdStore /set `"{default}`" path \Windows\system32\winload.efi" -Description "Set BCD path to winload.efi" -ExitCode $exitCode -ErrorOutput $bcdOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                    }
                     
                     if ($exitCode -eq 0 -and -not $bcdResult.TimedOut) {
                         $actions += "BCD path set to \\Windows\\system32\\winload.efi"
