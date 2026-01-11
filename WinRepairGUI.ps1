@@ -412,6 +412,185 @@ try {
         throw "Window object is null - XAML parsing may have failed silently"
     }
     
+    # Wire up controls that were attempted at script load time (before $W existed)
+    # These controls exist in XAML but couldn't be wired earlier because $W didn't exist
+    $btnBCD = Get-Control "BtnBCD" -Silent
+    if ($btnBCD) {
+        $btnBCD.Add_Click({
+            Invoke-BCDRefresh -ButtonControl $btnBCD
+        })
+    }
+    
+    $btnBCDHelp = Get-Control "BtnBCDHelp" -Silent
+    if ($btnBCDHelp) {
+        $btnBCDHelp.Add_Click({
+            try {
+                $bcdList = Get-Control "BCDList"
+                $bcdEntries = if ($bcdList -and $bcdList.ItemsSource) { $bcdList.ItemsSource } else { $null }
+                $selectedEntry = if ($bcdList -and $bcdList.SelectedItem) { $bcdList.SelectedItem } else { $null }
+                Show-BCDParameterHelp -BCDEntries $bcdEntries -SelectedEntry $selectedEntry
+            } catch {
+                Show-MessageBoxSafe -Message "Error opening help: $_" -Title "Error" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Error)
+            }
+        })
+    }
+    
+    $btnSimLoadBCD = Get-Control "BtnSimLoadBCD" -Silent
+    if ($btnSimLoadBCD) {
+        $btnSimLoadBCD.Add_Click({
+            Invoke-BCDRefresh -ButtonControl $btnSimLoadBCD
+        })
+    }
+    
+    $btnGetOSInfo = Get-Control "BtnGetOSInfo" -Silent
+    if ($btnGetOSInfo) {
+        $btnGetOSInfo.Add_Click({
+            $diagDriveCombo = Get-Control "DiagDriveCombo"
+            $selectedDrive = if ($diagDriveCombo) { $diagDriveCombo.SelectedItem } else { $null }
+            $drive = $env:SystemDrive.TrimEnd(':')
+            
+            if ($selectedDrive) {
+                if ($selectedDrive -match '^([A-Z]):') {
+                    $drive = $matches[1]
+                }
+            }
+            
+            $diagBox = Get-Control "DiagBox"
+            if ($diagBox) {
+                $diagBox.Text = "Gathering Operating System information for drive $drive`:...`n`n"
+            }
+            
+            try {
+                $osInfo = Get-OSInfo -TargetDrive $drive
+            } catch {
+                $osInfo = @{
+                    Error = "Failed to retrieve OS information: $($_.Exception.Message)"
+                    IsCurrentOS = $false
+                }
+            }
+            
+            $output = "OPERATING SYSTEM INFORMATION`n"
+            $output += "===============================================================`n`n"
+            
+            if ($null -eq $osInfo) {
+                $output += "[ERROR] Failed to retrieve OS information. Get-OSInfo returned null.`n"
+                $output += "Drive: $drive`:`n`n"
+                if ($diagBox) {
+                    $diagBox.Text = $output
+                }
+                return
+            }
+            
+            if ($osInfo.PSObject.Properties.Name -contains 'IsCurrentOS' -and $osInfo.IsCurrentOS) {
+                $output += "[CURRENT OS] This is the operating system you are currently running from.`n"
+                $output += "Drive: $drive`: (System Drive: $($env:SystemDrive))`n`n"
+            } else {
+                $output += "[OFFLINE OS] This is an offline Windows installation.`n"
+                $output += "Drive: $drive`: (Not currently running)`n`n"
+            }
+            
+            if ($osInfo.PSObject.Properties.Name -contains 'Error' -and $osInfo.Error) {
+                $output += "[ERROR] $($osInfo.Error)`n"
+            } else {
+                if ($osInfo.PSObject.Properties.Name -contains 'OSName') {
+                    $output += "OS Name: $($osInfo.OSName)`n"
+                }
+                if ($osInfo.PSObject.Properties.Name -contains 'Version') {
+                    $output += "Version: $($osInfo.Version)`n"
+                }
+                if ($osInfo.PSObject.Properties.Name -contains 'BuildNumber' -and $osInfo.BuildNumber) {
+                    $output += "Build Number: $($osInfo.BuildNumber)`n"
+                }
+                if ($osInfo.PSObject.Properties.Name -contains 'UBR' -and $osInfo.UBR) {
+                    $output += "Update Build Revision (UBR): $($osInfo.UBR)`n"
+                }
+                if ($osInfo.PSObject.Properties.Name -contains 'ReleaseId' -and $osInfo.ReleaseId) {
+                    $output += "Release ID: $($osInfo.ReleaseId)`n"
+                }
+                if ($osInfo.PSObject.Properties.Name -contains 'EditionID' -and $osInfo.EditionID) {
+                    $output += "Edition: $($osInfo.EditionID)`n"
+                }
+                if ($osInfo.PSObject.Properties.Name -contains 'Architecture' -and $osInfo.Architecture) {
+                    $output += "Architecture: $($osInfo.Architecture)`n"
+                }
+                if ($osInfo.PSObject.Properties.Name -contains 'Language' -and $osInfo.Language) {
+                    $output += "Language: $($osInfo.Language)"
+                    if ($osInfo.PSObject.Properties.Name -contains 'LanguageCode' -and $osInfo.LanguageCode) {
+                        $output += " (Code: $($osInfo.LanguageCode))"
+                    }
+                }
+                $output += "`n"
+                
+                if ($osInfo.PSObject.Properties.Name -contains 'IsInsider' -and $osInfo.IsInsider) {
+                    $output += "`n[INSIDER BUILD DETECTED]`n"
+                    $output += "This is a Windows Insider Preview build.`n"
+                    if ($osInfo.PSObject.Properties.Name -contains 'InsiderChannel' -and $osInfo.InsiderChannel) {
+                        $output += "Channel: $($osInfo.InsiderChannel)`n"
+                    }
+                    $output += "`nINSIDER ISO DOWNLOAD LINKS:`n"
+                    $output += "---------------------------------------------------------------`n"
+                    $output += "Official Insider ISO Downloads:`n"
+                    if ($osInfo.PSObject.Properties.Name -contains 'InsiderLinks' -and $osInfo.InsiderLinks -and $osInfo.InsiderLinks.DevChannel) {
+                        $output += "  $($osInfo.InsiderLinks.DevChannel)`n`n"
+                    }
+                    $output += "UUP Dump (Community ISO Builder):`n"
+                    if ($osInfo.PSObject.Properties.Name -contains 'InsiderLinks' -and $osInfo.InsiderLinks -and $osInfo.InsiderLinks.UUP) {
+                        $output += "  $($osInfo.InsiderLinks.UUP)`n"
+                    }
+                    if ($osInfo.PSObject.Properties.Name -contains 'BuildNumber' -and $osInfo.BuildNumber) {
+                        $output += "  (Search for build $($osInfo.BuildNumber) to find matching ISO)`n`n"
+                    }
+                }
+                
+                if ($osInfo.PSObject.Properties.Name -contains 'InstallDate' -and $osInfo.InstallDate) {
+                    $output += "Install Date: $($osInfo.InstallDate)`n"
+                }
+                if ($osInfo.PSObject.Properties.Name -contains 'SerialNumber' -and $osInfo.SerialNumber) {
+                    $output += "Serial Number: $($osInfo.SerialNumber)`n"
+                }
+                
+                if ($osInfo.PSObject.Properties.Name -contains 'IsInsider' -and -not $osInfo.IsInsider) {
+                    $output += "`n`nRECOMMENDED RECOVERY ISO:`n"
+                    $output += "===============================================================`n"
+                    $output += "To create a compatible recovery ISO, you need:`n`n"
+                    if ($osInfo.PSObject.Properties.Name -contains 'RecommendedISO' -and $osInfo.RecommendedISO) {
+                        if ($osInfo.RecommendedISO.Architecture) {
+                            $output += "Architecture: $($osInfo.RecommendedISO.Architecture)`n"
+                        }
+                        if ($osInfo.RecommendedISO.Language) {
+                            $lang = if ($osInfo.PSObject.Properties.Name -contains 'Language' -and $osInfo.Language) { $osInfo.Language } else { "" }
+                            $output += "Language: $($osInfo.RecommendedISO.Language) ($lang)`n"
+                        }
+                        if ($osInfo.RecommendedISO.Version) {
+                            $output += "Version: $($osInfo.RecommendedISO.Version)`n`n"
+                        }
+                    }
+                    $output += "Download from:`n"
+                    if ($osInfo.PSObject.Properties.Name -contains 'RecommendedISO' -and $osInfo.RecommendedISO -and $osInfo.RecommendedISO.Version -match "11") {
+                        $output += "  https://www.microsoft.com/software-download/windows11`n"
+                    } else {
+                        $output += "  https://www.microsoft.com/software-download/windows10`n"
+                    }
+                    $output += "`nMake sure to select:`n"
+                    if ($osInfo.PSObject.Properties.Name -contains 'RecommendedISO' -and $osInfo.RecommendedISO -and $osInfo.RecommendedISO.Architecture) {
+                        $output += "- $($osInfo.RecommendedISO.Architecture) architecture`n"
+                    }
+                    if ($osInfo.PSObject.Properties.Name -contains 'Language' -and $osInfo.Language) {
+                        $output += "- $($osInfo.Language) language`n"
+                    }
+                    $output += "- The same or newer version than your current installation`n"
+                } else {
+                    $output += "`n`nNOTE: For Insider builds, use the Insider ISO links above.`n"
+                    $output += "Standard Windows 10/11 ISOs may not be compatible with Insider builds.`n"
+                }
+            }
+            
+            if ($diagBox) {
+                $diagBox.Text = $output
+            }
+        })
+    }
+    
     # #region agent log
     try {
         $logEntry = @{
@@ -3565,17 +3744,17 @@ function Show-BCDParameterHelp {
 }
 
 # Logic for BCD - Enhanced parser with duplicate detection
-$btnBCD = Get-Control "BtnBCD"
+# Note: Control wiring happens at script load time, but $W doesn't exist yet
+# These controls will be wired when Start-GUI is called and $W is created
+$btnBCD = Get-Control "BtnBCD" -Silent
 if ($btnBCD) {
     $btnBCD.Add_Click({
         Invoke-BCDRefresh -ButtonControl $btnBCD
     })
-} else {
-    Write-Warning "BtnBCD control not found in XAML"
 }
 
 # BCD Help button
-$btnBCDHelp = Get-Control "BtnBCDHelp"
+$btnBCDHelp = Get-Control "BtnBCDHelp" -Silent
 if ($btnBCDHelp) {
     $btnBCDHelp.Add_Click({
         try {
@@ -3589,8 +3768,6 @@ if ($btnBCDHelp) {
             Show-MessageBoxSafe -Message "Error opening help: $_" -Title "Error" -Button ([System.Windows.MessageBoxButton]::OK) -Icon ([System.Windows.MessageBoxImage]::Error)
         }
     })
-} else {
-    Write-Warning "BtnBCDHelp control not found in XAML"
 }
 
 # Helper function to update Boot Menu Simulator
@@ -3608,13 +3785,13 @@ function Update-BootMenuSimulator {
 }
 
 # Boot Menu Simulator - Load BCD Entries button
-$btnSimLoadBCD = Get-Control "BtnSimLoadBCD"
+# Note: Control wiring happens at script load time, but $W doesn't exist yet
+# This control will be wired when Start-GUI is called and $W is created
+$btnSimLoadBCD = Get-Control "BtnSimLoadBCD" -Silent
 if ($btnSimLoadBCD) {
     $btnSimLoadBCD.Add_Click({
         Invoke-BCDRefresh -ButtonControl $btnSimLoadBCD
     })
-} else {
-    Write-Warning "BtnSimLoadBCD control not found in XAML"
 }
 
 # BCD List selection - populate both basic and advanced editors
@@ -6069,7 +6246,10 @@ if ($btnCheckReagentc) {
     })
 }
 
-$btnGetOSInfo = Get-Control "BtnGetOSInfo"
+# Get OS Information button
+# Note: Control wiring happens at script load time, but $W doesn't exist yet
+# This control will be wired when Start-GUI is called and $W is created
+$btnGetOSInfo = Get-Control "BtnGetOSInfo" -Silent
 if ($btnGetOSInfo) {
     $btnGetOSInfo.Add_Click({
         $diagDriveCombo = Get-Control "DiagDriveCombo"
@@ -6266,8 +6446,6 @@ if ($btnGetOSInfo) {
         $diagBox.Text = $output
     }
     })
-} else {
-    Write-Warning "BtnGetOSInfo control not found in XAML"
 }
 
 # Install Failure Analysis button
