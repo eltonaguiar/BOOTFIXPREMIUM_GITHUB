@@ -4995,11 +4995,23 @@ if ($btnOneClickRepair) {
             $null = $summaryBuilder.AppendLine("Step 2/5: Storage driver check...")
             
             $controllers = Get-StorageControllers -WindowsDrive $drive
+            # Ensure $controllers is always an array before filtering
+            if ($null -eq $controllers) { $controllers = @() }
+            if ($controllers -isnot [array]) { $controllers = @($controllers) }
+            
             $bootCriticalMissing = @($controllers | Where-Object {
                 (-not $_.DriverLoaded) -and ($_.ControllerType -match 'VMD|RAID|NVMe|SATA|AHCI|SAS')
             })
+            # Ensure $bootCriticalMissing is always an array before accessing .Count
+            if ($null -eq $bootCriticalMissing) { $bootCriticalMissing = @() }
+            if ($bootCriticalMissing -isnot [array]) { $bootCriticalMissing = @($bootCriticalMissing) }
+            
             # If nothing boot-critical is missing, still show any missing drivers (but less noisy)
             $missingDrivers = if ($bootCriticalMissing.Count -gt 0) { $bootCriticalMissing } else { @() }
+            # Ensure $missingDrivers is always an array
+            if ($null -eq $missingDrivers) { $missingDrivers = @() }
+            if ($missingDrivers -isnot [array]) { $missingDrivers = @($missingDrivers) }
+            
             if ($missingDrivers.Count -eq 0) {
                 $null = $summaryBuilder.AppendLine("  Storage drivers: OK (no boot-critical drivers missing)")
             } else {
