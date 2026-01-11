@@ -29,6 +29,83 @@ function Get-MyCommandPath {
 }
 
 # ============================================================================
+# HELPER FUNCTION: Safely open Notepad with instance limit
+# ============================================================================
+function Start-NotepadSafely {
+    <#
+    .SYNOPSIS
+    Safely opens Notepad with a file, limiting to maximum 5 instances to prevent spam.
+    
+    .DESCRIPTION
+    This function tracks the number of Notepad instances opened and prevents opening more than 5.
+    This prevents infinite loops or spam opening of Notepad windows.
+    
+    .PARAMETER FilePath
+    Optional path to a file to open in Notepad. If not provided, opens empty Notepad.
+    
+    .PARAMETER Force
+    If specified, bypasses the instance limit check (use with caution).
+    
+    .EXAMPLE
+    Start-NotepadSafely -FilePath "C:\report.txt"
+    #>
+    param(
+        [string]$FilePath = $null,
+        [switch]$Force
+    )
+    
+    # Initialize counter if not exists
+    if (-not $script:NotepadInstanceCount) {
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Check current Notepad processes
+    try {
+        $currentNotepadProcesses = Get-Process -Name notepad -ErrorAction SilentlyContinue
+        $script:NotepadInstanceCount = $currentNotepadProcesses.Count
+    } catch {
+        # If we can't check, assume 0
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Maximum allowed instances
+    $maxInstances = 5
+    
+    # Check if we've reached the limit
+    if ($script:NotepadInstanceCount -ge $maxInstances -and -not $Force) {
+        Write-Warning "Notepad instance limit reached ($maxInstances instances). Skipping Notepad launch to prevent spam."
+        if ($FilePath) {
+            Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+        }
+        return $false
+    }
+    
+    # Attempt to open Notepad
+    try {
+        if ($FilePath) {
+            if (Test-Path -LiteralPath $FilePath -ErrorAction SilentlyContinue) {
+                Start-Process notepad.exe -ArgumentList "`"$FilePath`"" -ErrorAction Stop
+                $script:NotepadInstanceCount++
+                return $true
+            } else {
+                Write-Warning "File not found: $FilePath"
+                return $false
+            }
+        } else {
+            Start-Process notepad.exe -ErrorAction Stop
+            $script:NotepadInstanceCount++
+            return $true
+        }
+    } catch {
+        Write-Warning "Could not open Notepad: $($_.Exception.Message)"
+        if ($FilePath) {
+            Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+        }
+        return $false
+    }
+}
+
+# ============================================================================
 # SCRIPT ROOT DETECTION (Required for Join-Path operations)
 # ============================================================================
 # Set $PSScriptRoot if not already set (needed when dot-sourced)
@@ -4132,10 +4209,9 @@ function Invoke-BruteForceBootRepair {
         $actions += "Guidance document location: $($guidanceDoc.Path)"
         $actions += "═══════════════════════════════════════════════════════════════════════════════"
         
-        # Show guidance document in Notepad
-        try {
-            Start-Process notepad.exe -ArgumentList "`"$($guidanceDoc.Path)`""
-        } catch {
+        # Show guidance document in Notepad (with instance limit)
+        $notepadOpened = Start-NotepadSafely -FilePath $guidanceDoc.Path
+        if (-not $notepadOpened) {
             $actions += "Could not open Notepad automatically. Please open: $($guidanceDoc.Path)"
         }
         
@@ -4308,10 +4384,9 @@ function Invoke-BruteForceBootRepair {
         $actions += "Guidance document location: $($guidanceDoc.Path)"
         $actions += "═══════════════════════════════════════════════════════════════════════════════"
         
-        # Show guidance document in Notepad
-        try {
-            Start-Process notepad.exe -ArgumentList "`"$($guidanceDoc.Path)`""
-        } catch {
+        # Show guidance document in Notepad (with instance limit)
+        $notepadOpened = Start-NotepadSafely -FilePath $guidanceDoc.Path
+        if (-not $notepadOpened) {
             $actions += "Could not open Notepad automatically. Please open: $($guidanceDoc.Path)"
         }
     }
@@ -5734,10 +5809,9 @@ function Invoke-DefensiveBootRepair {
             $output += ""
             $output += "═══════════════════════════════════════════════════════════════════════════════"
             
-            # Show guidance document in Notepad
-            try {
-                Start-Process notepad.exe -ArgumentList "`"$($guidanceDoc.Path)`""
-            } catch {
+            # Show guidance document in Notepad (with instance limit)
+            $notepadOpened = Start-NotepadSafely -FilePath $guidanceDoc.Path
+            if (-not $notepadOpened) {
                 $output += "Could not open Notepad automatically. Please open: $($guidanceDoc.Path)"
             }
         }
@@ -5747,10 +5821,10 @@ function Invoke-DefensiveBootRepair {
         if ($selectedOS) {
             $reportPath = New-ComprehensiveRepairReport -TargetDrive $selectedOS.Drive.TrimEnd(':') -CommandHistory $script:CommandHistory -FailedCommands $script:FailedCommands -InitialIssues $script:InitialIssues -RemainingIssues $script:RemainingIssues -Actions $actions -Bootable $bootable -WinloadExists $winloadExists -BcdPathMatch $bcdPathMatch -BitlockerLocked $bitlockerLocked
             
-            # Open report in Notepad (ALWAYS, so user can see what was done)
+            # Open report in Notepad (ALWAYS, so user can see what was done, but with instance limit)
             if ($reportPath) {
-                try {
-                    Start-Process notepad.exe -ArgumentList "`"$reportPath`""
+                $notepadOpened = Start-NotepadSafely -FilePath $reportPath
+                if ($notepadOpened) {
                     $output += ""
                     $output += "═══════════════════════════════════════════════════════════════════════════════"
                     $output += "COMPREHENSIVE REPAIR REPORT"
@@ -5770,7 +5844,7 @@ function Invoke-DefensiveBootRepair {
                     $output += "Report location: $reportPath"
                     $output += ""
                     $output += "═══════════════════════════════════════════════════════════════════════════════"
-                } catch {
+                } else {
                     $output += "`nCould not open Notepad automatically. Report saved to: $reportPath"
                 }
             }

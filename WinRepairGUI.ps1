@@ -360,6 +360,257 @@ function Show-SymbolHelper {
     Write-Host "Use Windows Character Map for more symbols." -ForegroundColor Gray
 }
 
+# Helper function to safely open Notepad with instance limit
+function Start-NotepadSafely {
+    <#
+    .SYNOPSIS
+    Safely opens Notepad with a file, limiting to maximum 5 instances to prevent spam.
+    
+    .DESCRIPTION
+    This function tracks the number of Notepad instances opened and prevents opening more than 5.
+    This prevents infinite loops or spam opening of Notepad windows.
+    
+    .PARAMETER FilePath
+    Optional path to a file to open in Notepad. If not provided, opens empty Notepad.
+    
+    .PARAMETER Force
+    If specified, bypasses the instance limit check (use with caution).
+    
+    .EXAMPLE
+    Start-NotepadSafely -FilePath "C:\report.txt"
+    #>
+    param(
+        [string]$FilePath = $null,
+        [switch]$Force
+    )
+    
+    # Initialize counter if not exists
+    if (-not $script:NotepadInstanceCount) {
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Check current Notepad processes
+    try {
+        $currentNotepadProcesses = Get-Process -Name notepad -ErrorAction SilentlyContinue
+        $script:NotepadInstanceCount = $currentNotepadProcesses.Count
+    } catch {
+        # If we can't check, assume 0
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Maximum allowed instances
+    $maxInstances = 5
+    
+    # Check if we've reached the limit
+    if ($script:NotepadInstanceCount -ge $maxInstances -and -not $Force) {
+        Write-Warning "Notepad instance limit reached ($maxInstances instances). Skipping Notepad launch to prevent spam."
+        if ($FilePath) {
+            try {
+                [System.Windows.MessageBox]::Show("Notepad instance limit reached. File saved to:`n$FilePath", "Notepad Limit", "OK", "Warning") | Out-Null
+            } catch {
+                Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+            }
+        }
+        return $false
+    }
+    
+    # Attempt to open Notepad
+    try {
+        if ($FilePath) {
+            if (Test-Path -LiteralPath $FilePath -ErrorAction SilentlyContinue) {
+                Start-Process notepad.exe -ArgumentList "`"$FilePath`"" -ErrorAction Stop
+                $script:NotepadInstanceCount++
+                return $true
+            } else {
+                Write-Warning "File not found: $FilePath"
+                return $false
+            }
+        } else {
+            Start-Process notepad.exe -ErrorAction Stop
+            $script:NotepadInstanceCount++
+            return $true
+        }
+    } catch {
+        Write-Warning "Could not open Notepad: $($_.Exception.Message)"
+        if ($FilePath) {
+            try {
+                [System.Windows.MessageBox]::Show("Could not open Notepad. File saved to:`n$FilePath", "Notepad Error", "OK", "Warning") | Out-Null
+            } catch {
+                Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+            }
+        }
+        return $false
+    }
+}
+
+# Helper function to test boot readiness and offer emergency repairs
+function Test-BootReadinessAndOfferEmergency {
+    <#
+    .SYNOPSIS
+    Tests if the system is bootable after a repair attempt and offers emergency repairs if not.
+    
+    .PARAMETER LastRepairAttempt
+    Name of the last repair attempt (for logging/display)
+    
+    .PARAMETER TargetDrive
+    Optional target drive to check. If not provided, uses system drive.
+    #>
+    param(
+        [string]$LastRepairAttempt = "Unknown",
+        [string]$TargetDrive = $null
+    )
+    
+    # Determine target drive
+    if (-not $TargetDrive) {
+        $TargetDrive = $env:SystemDrive.TrimEnd(':')
+    }
+    
+    # Quick boot readiness check
+    $bootable = $false
+    $issues = @()
+    
+    try {
+        # Check if winload.efi exists
+        $winloadPath = "$TargetDrive`:\Windows\System32\boot\winload.efi"
+        if (-not (Test-Path $winloadPath)) {
+            $issues += "winload.efi missing"
+        }
+        
+        # Check BCD
+        try {
+            $bcdOutput = bcdedit /enum {default} 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                $issues += "BCD entry missing or invalid"
+            }
+        } catch {
+            $issues += "BCD check failed"
+        }
+        
+        # If no issues found, consider bootable
+        if ($issues.Count -eq 0) {
+            $bootable = $true
+        }
+    } catch {
+        Write-Warning "Boot readiness check failed: $_"
+        $issues += "Readiness check error: $($_.Exception.Message)"
+    }
+    
+    # If bootable, show success message
+    if ($bootable) {
+        [System.Windows.MessageBox]::Show(
+            "✅ Boot Readiness Check PASSED`n`nSystem appears to be bootable.`n`nLast repair: $LastRepairAttempt",
+            "Boot Readiness: PASSED",
+            "OK",
+            "Information"
+        ) | Out-Null
+        return $true
+    }
+    
+    # Not bootable - offer emergency repairs
+    $message = "❌ Boot Readiness Check FAILED`n`n"
+    $message += "System is NOT ready to boot.`n`n"
+    $message += "Issues found:`n"
+    foreach ($issue in $issues) {
+        $message += "  • $issue`n"
+    }
+    $message += "`nWould you like to try Emergency Boot Repair?`n`n"
+    $message += "This will run emergency repair tools sequentially (V4 → V1 → V2 → V3) until boot is restored.`n"
+    $message += "V4 is intelligent and only fixes what's broken (recommended first)."
+    
+    $result = [System.Windows.MessageBox]::Show(
+        $message,
+        "Boot Readiness: FAILED - Offer Emergency Repair?",
+        "YesNo",
+        "Question"
+    )
+    
+    if ($result -eq "Yes") {
+        # Run emergency repairs sequentially (V4 first as it's intelligent, then V1, V2, V3)
+        $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+        $emergencyRepairs = @(
+            @{ Name = "V4"; Path = "EMERGENCY_BOOT_REPAIR_V4.cmd"; Description = "Intelligent Minimal Repair" },
+            @{ Name = "V1"; Path = "EMERGENCY_BOOT_REPAIR.cmd"; Description = "Standard Repair" },
+            @{ Name = "V2"; Path = "EMERGENCY_BOOT_REPAIR_V2.cmd"; Description = "Alternative Implementation" },
+            @{ Name = "V3"; Path = "EMERGENCY_BOOT_REPAIR_V3.cmd"; Description = "Minimal Last Resort" }
+        )
+        
+        foreach ($repair in $emergencyRepairs) {
+            $repairPath = Join-Path $scriptRoot $repair.Path
+            if (Test-Path $repairPath) {
+                try {
+                    $repairDesc = if ($repair.Description) { " ($($repair.Description))" } else { "" }
+                    Update-StatusBar -Message "Running Emergency Boot Repair $($repair.Name)$repairDesc..." -ShowProgress
+                    $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$repairPath`"" -Wait -NoNewWindow -PassThru
+                    
+                    # Check boot readiness after this repair
+                    $bootableAfter = $false
+                    try {
+                        $winloadPath = "$TargetDrive`:\Windows\System32\boot\winload.efi"
+                        if (Test-Path $winloadPath) {
+                            $bcdOutput = bcdedit /enum {default} 2>&1
+                            if ($LASTEXITCODE -eq 0) {
+                                $bootableAfter = $true
+                            }
+                        }
+                    } catch {
+                        # Continue checking
+                    }
+                    
+                    if ($bootableAfter) {
+                        Update-StatusBar -Message "✅ Boot readiness restored after Emergency Boot Repair $($repair.Name)!" -HideProgress
+                        [System.Windows.MessageBox]::Show(
+                            "✅ SUCCESS!`n`nBoot readiness restored after Emergency Boot Repair $($repair.Name).`n`nSystem should now be bootable.",
+                            "Boot Readiness: RESTORED",
+                            "OK",
+                            "Information"
+                        ) | Out-Null
+                        return $true
+                    } else {
+                        Update-StatusBar -Message "Emergency Boot Repair $($repair.Name) completed but boot not ready yet..." -ShowProgress
+                    }
+                } catch {
+                    Write-Warning "Emergency Boot Repair $($repair.Name) failed: $_"
+                }
+            }
+        }
+        
+        # All emergency repairs tried - final check
+        Update-StatusBar -Message "All emergency repairs attempted - checking final boot readiness..." -ShowProgress
+        $finalBootable = $false
+        try {
+            $winloadPath = "$TargetDrive`:\Windows\System32\boot\winload.efi"
+            if (Test-Path $winloadPath) {
+                $bcdOutput = bcdedit /enum {default} 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    $finalBootable = $true
+                }
+            }
+        } catch {}
+        
+        if ($finalBootable) {
+            Update-StatusBar -Message "✅ Boot readiness restored!" -HideProgress
+            [System.Windows.MessageBox]::Show(
+                "✅ SUCCESS!`n`nBoot readiness restored after emergency repairs.`n`nSystem should now be bootable.",
+                "Boot Readiness: RESTORED",
+                "OK",
+                "Information"
+            ) | Out-Null
+            return $true
+        } else {
+            Update-StatusBar -Message "❌ Boot readiness still failed after all emergency repairs" -HideProgress
+            [System.Windows.MessageBox]::Show(
+                "❌ Boot readiness still FAILED after all emergency repairs.`n`nPlease check the detailed output for specific issues.`n`nYou may need manual intervention or professional support.",
+                "Boot Readiness: STILL FAILED",
+                "OK",
+                "Warning"
+            ) | Out-Null
+            return $false
+        }
+    }
+    
+    return $false
+}
+
 # Helper function to safely get controls with null checking
 # Defined at script level so handlers can use it (returns null if $W doesn't exist yet)
 function Get-Control {
@@ -470,13 +721,13 @@ function Start-GUI {
     # triggers the deeper C++ module initialization that fails in WinPE
     try {
         # Test 1: Simple Window creation (basic WPF initialization)
-        $testWindow = New-Object System.Windows.Window -ErrorAction Stop
+        $testWindow = New-Object System.Windows.Window
         $testWindow = $null
         
         # Test 2: XAML parsing (triggers C++ module initialization)
         # This is the actual operation that fails in WinPE
         $minimalXaml = '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />'
-        $testXamlWindow = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$minimalXaml))) -ErrorAction Stop
+        $testXamlWindow = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$minimalXaml)))
         $testXamlWindow = $null
         
         [System.GC]::Collect()  # Force cleanup
@@ -1083,10 +1334,9 @@ if ($envStatusControl) {
 $btnNotepad = Get-Control -Name "BtnNotepad"
 if ($btnNotepad) {
     $btnNotepad.Add_Click({
-        try {
-            Start-Process notepad.exe -ErrorAction SilentlyContinue
-        } catch {
-            [System.Windows.MessageBox]::Show("Notepad not available in this environment.", "Warning", "OK", "Warning")
+        $notepadOpened = Start-NotepadSafely
+        if (-not $notepadOpened) {
+            [System.Windows.MessageBox]::Show("Notepad instance limit reached (max 5 instances) or Notepad not available.", "Warning", "OK", "Warning") | Out-Null
         }
     })
 } else {
@@ -1130,6 +1380,122 @@ if ($btnDiskManagement) {
     })
 } else {
     Write-Warning "BtnDiskManagement control not found in XAML"
+}
+
+# Emergency Repair menu handlers
+$btnEmergencyBoot1 = Get-Control -Name "BtnEmergencyBoot1"
+if ($btnEmergencyBoot1) {
+    $btnEmergencyBoot1.Add_Click({
+        $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+        $emergencyPath = Join-Path $scriptRoot "EMERGENCY_BOOT_REPAIR.cmd"
+        if (Test-Path $emergencyPath) {
+            try {
+                Update-StatusBar -Message "Running Emergency Boot Repair V1..." -ShowProgress
+                $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$emergencyPath`"" -Wait -NoNewWindow -PassThru
+                Update-StatusBar -Message "Emergency Boot Repair V1 completed (Exit Code: $($process.ExitCode))" -HideProgress
+                Test-BootReadinessAndOfferEmergency -LastRepairAttempt "Emergency Boot Repair V1"
+            } catch {
+                Update-StatusBar -Message "Emergency Boot Repair V1 failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Emergency Boot Repair V1: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            }
+        } else {
+            [System.Windows.MessageBox]::Show("Emergency Boot Repair V1 not found at: $emergencyPath", "File Not Found", "OK", "Warning") | Out-Null
+        }
+    })
+} else {
+    Write-Warning "BtnEmergencyBoot1 control not found in XAML"
+}
+
+$btnEmergencyBoot2 = Get-Control -Name "BtnEmergencyBoot2"
+if ($btnEmergencyBoot2) {
+    $btnEmergencyBoot2.Add_Click({
+        $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+        $emergencyPath = Join-Path $scriptRoot "EMERGENCY_BOOT_REPAIR_V2.cmd"
+        if (Test-Path $emergencyPath) {
+            try {
+                Update-StatusBar -Message "Running Emergency Boot Repair V2..." -ShowProgress
+                $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$emergencyPath`"" -Wait -NoNewWindow -PassThru
+                Update-StatusBar -Message "Emergency Boot Repair V2 completed (Exit Code: $($process.ExitCode))" -HideProgress
+                Test-BootReadinessAndOfferEmergency -LastRepairAttempt "Emergency Boot Repair V2"
+            } catch {
+                Update-StatusBar -Message "Emergency Boot Repair V2 failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Emergency Boot Repair V2: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            }
+        } else {
+            [System.Windows.MessageBox]::Show("Emergency Boot Repair V2 not found at: $emergencyPath", "File Not Found", "OK", "Warning") | Out-Null
+        }
+    })
+} else {
+    Write-Warning "BtnEmergencyBoot2 control not found in XAML"
+}
+
+$btnEmergencyBoot3 = Get-Control -Name "BtnEmergencyBoot3"
+if ($btnEmergencyBoot3) {
+    $btnEmergencyBoot3.Add_Click({
+        $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+        $emergencyPath = Join-Path $scriptRoot "EMERGENCY_BOOT_REPAIR_V3.cmd"
+        if (Test-Path $emergencyPath) {
+            try {
+                Update-StatusBar -Message "Running Emergency Boot Repair V3..." -ShowProgress
+                $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$emergencyPath`"" -Wait -NoNewWindow -PassThru
+                Update-StatusBar -Message "Emergency Boot Repair V3 completed (Exit Code: $($process.ExitCode))" -HideProgress
+                Test-BootReadinessAndOfferEmergency -LastRepairAttempt "Emergency Boot Repair V3"
+            } catch {
+                Update-StatusBar -Message "Emergency Boot Repair V3 failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Emergency Boot Repair V3: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            }
+        } else {
+            [System.Windows.MessageBox]::Show("Emergency Boot Repair V3 not found at: $emergencyPath", "File Not Found", "OK", "Warning") | Out-Null
+        }
+    })
+} else {
+    Write-Warning "BtnEmergencyBoot3 control not found in XAML"
+}
+
+$btnEmergencyBoot4 = Get-Control -Name "BtnEmergencyBoot4"
+if ($btnEmergencyBoot4) {
+    $btnEmergencyBoot4.Add_Click({
+        $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+        $emergencyPath = Join-Path $scriptRoot "EMERGENCY_BOOT_REPAIR_V4.cmd"
+        if (Test-Path $emergencyPath) {
+            try {
+                Update-StatusBar -Message "Running Emergency Boot Repair V4 (Intelligent Minimal Repair)..." -ShowProgress
+                $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$emergencyPath`"" -Wait -NoNewWindow -PassThru
+                Update-StatusBar -Message "Emergency Boot Repair V4 completed (Exit Code: $($process.ExitCode))" -HideProgress
+                Test-BootReadinessAndOfferEmergency -LastRepairAttempt "Emergency Boot Repair V4"
+            } catch {
+                Update-StatusBar -Message "Emergency Boot Repair V4 failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Emergency Boot Repair V4: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            }
+        } else {
+            [System.Windows.MessageBox]::Show("Emergency Boot Repair V4 not found at: $emergencyPath", "File Not Found", "OK", "Warning") | Out-Null
+        }
+    })
+} else {
+    Write-Warning "BtnEmergencyBoot4 control not found in XAML"
+}
+
+$btnEmergencyBootWrapper = Get-Control -Name "BtnEmergencyBootWrapper"
+if ($btnEmergencyBootWrapper) {
+    $btnEmergencyBootWrapper.Add_Click({
+        $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+        $wrapperPath = Join-Path $scriptRoot "EMERGENCY_BOOT_REPAIR_WRAPPER.cmd"
+        if (Test-Path $wrapperPath) {
+            try {
+                Update-StatusBar -Message "Running Emergency Boot Repair Wrapper (V1 → V2 → V3)..." -ShowProgress
+                $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$wrapperPath`"" -Wait -NoNewWindow -PassThru
+                Update-StatusBar -Message "Emergency Boot Repair Wrapper completed (Exit Code: $($process.ExitCode))" -HideProgress
+                Test-BootReadinessAndOfferEmergency -LastRepairAttempt "Emergency Boot Repair Wrapper"
+            } catch {
+                Update-StatusBar -Message "Emergency Boot Repair Wrapper failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Emergency Boot Repair Wrapper: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            }
+        } else {
+            [System.Windows.MessageBox]::Show("Emergency Boot Repair Wrapper not found at: $wrapperPath", "File Not Found", "OK", "Warning") | Out-Null
+        }
+    })
+} else {
+    Write-Warning "BtnEmergencyBootWrapper control not found in XAML"
 }
 
 $btnRestartExplorer = Get-Control -Name "BtnRestartExplorer"
@@ -3474,21 +3840,36 @@ if ($null -ne $W) {
                             $txtOneClickStatus.Text = $statusText
                         }
                         
-                        # Also show a message box for critical failures
+                        # Also show a message box for critical failures and offer emergency repairs
                         if (-not $bootable) {
                             $messageBoxText = "VALIDATION FAILED`n`n"
                             $messageBoxText += "The system will NOT boot.`n`n"
                             if ($blocker) {
                                 $messageBoxText += "Primary Issue: $blocker`n`n"
                             }
-                            $messageBoxText += "Please check the output box for detailed information about missing files and specific problems."
+                            $messageBoxText += "Please check the output box for detailed information about missing files and specific problems.`n`n"
+                            $messageBoxText += "Would you like to try Emergency Boot Repair?`n`n"
+                            $messageBoxText += "This will run emergency repair tools sequentially (V1 → V2 → V3) until boot is restored."
                             
-                            [System.Windows.MessageBox]::Show(
+                            $result = [System.Windows.MessageBox]::Show(
                                 $messageBoxText,
-                                "Validation Failed",
-                                "OK",
-                                "Warning"
-                            ) | Out-Null
+                                "Validation Failed - Offer Emergency Repair?",
+                                "YesNo",
+                                "Question"
+                            )
+                            
+                            if ($result -eq "Yes") {
+                                # Determine target drive from the repair result or use system drive
+                                $targetDriveForEmergency = $env:SystemDrive.TrimEnd(':')
+                                try {
+                                    if ($result.PSObject.Properties.Name -contains 'TargetDrive') {
+                                        $targetDriveForEmergency = $result.TargetDrive.TrimEnd(':')
+                                    }
+                                } catch {}
+                                
+                                # Offer emergency repairs
+                                Test-BootReadinessAndOfferEmergency -LastRepairAttempt "One-Click Repair" -TargetDrive $targetDriveForEmergency
+                            }
                         }
                     } else {
                         # Result is null or invalid
@@ -6929,13 +7310,9 @@ if ($btnFindMatchingDrivers) {
             $summaryPath = Join-Path $summaryDir ("OneClick_Summary_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
             $summaryContent = $summaryBuilder.ToString()
             Set-Content -Path $summaryPath -Value $summaryContent -Encoding UTF8 -Force
-            try {
-                Start-Process notepad.exe -ArgumentList "`"$summaryPath`""
-            } catch {
-                # If Notepad cannot be launched, at least keep the summary file
-                if ($fixerOutput) {
-                    $fixerOutput.Text += "`n[INFO] Summary saved to: $summaryPath (Notepad launch failed)`n"
-                }
+            $notepadOpened = Start-NotepadSafely -FilePath $summaryPath
+            if (-not $notepadOpened -and $fixerOutput) {
+                $fixerOutput.Text += "`n[INFO] Summary saved to: $summaryPath (Notepad launch failed or limit reached)`n"
             }
             try {
                 [System.Windows.MessageBox]::Show(
@@ -9968,15 +10345,14 @@ $btnBootFixerNotepad = Get-Control -Name "BtnBootFixerNotepad"
 if ($btnBootFixerNotepad) {
     $btnBootFixerNotepad.Add_Click({
         $helpDoc = New-BootFixerHelpDocument
-        try {
-            Start-Process notepad.exe -ArgumentList "`"$helpDoc`""
-        } catch {
+        $notepadOpened = Start-NotepadSafely -FilePath $helpDoc
+        if (-not $notepadOpened) {
             [System.Windows.MessageBox]::Show(
-                "Could not open Notepad. Help document saved to:`n$helpDoc",
+                "Could not open Notepad (limit reached or error). Help document saved to:`n$helpDoc",
                 "Help Document",
                 "OK",
                 "Information"
-            )
+            ) | Out-Null
         }
     })
 }
@@ -10018,15 +10394,14 @@ $btnOneClickNotepad = Get-Control -Name "BtnOneClickNotepad"
 if ($btnOneClickNotepad) {
     $btnOneClickNotepad.Add_Click({
         $helpDoc = New-BootFixerHelpDocument
-        try {
-            Start-Process notepad.exe -ArgumentList "`"$helpDoc`""
-        } catch {
+        $notepadOpened = Start-NotepadSafely -FilePath $helpDoc
+        if (-not $notepadOpened) {
             [System.Windows.MessageBox]::Show(
-                "Could not open Notepad. Help document saved to:`n$helpDoc",
+                "Could not open Notepad (limit reached or error). Help document saved to:`n$helpDoc",
                 "Help Document",
                 "OK",
                 "Information"
-            )
+            ) | Out-Null
         }
     })
 }
@@ -10072,15 +10447,14 @@ $btnBootOpsNotepad = Get-Control -Name "BtnBootOpsNotepad"
 if ($btnBootOpsNotepad) {
     $btnBootOpsNotepad.Add_Click({
         $helpDoc = New-BootFixerHelpDocument
-        try {
-            Start-Process notepad.exe -ArgumentList "`"$helpDoc`""
-        } catch {
+        $notepadOpened = Start-NotepadSafely -FilePath $helpDoc
+        if (-not $notepadOpened) {
             [System.Windows.MessageBox]::Show(
-                "Could not open Notepad. Help document saved to:`n$helpDoc",
+                "Could not open Notepad (limit reached or error). Help document saved to:`n$helpDoc",
                 "Help Document",
                 "OK",
                 "Information"
-            )
+            ) | Out-Null
         }
     })
 }

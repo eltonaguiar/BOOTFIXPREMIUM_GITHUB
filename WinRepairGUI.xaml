@@ -33,6 +33,14 @@
                 <MenuItem Header="BCD Backup Location..." Name="BtnSetBCDLocation" ToolTip="Set default location for BCD backups"/>
                 <MenuItem Header="Driver Export Location..." Name="BtnSetDriverLocation" ToolTip="Set default location for driver exports"/>
             </MenuItem>
+            <MenuItem Header="Emergency Repair" FontWeight="Bold">
+                <MenuItem Header="Emergency Boot Repair V1" Name="BtnEmergencyBoot1" ToolTip="Run standalone emergency boot repair (V1) - No dependencies required"/>
+                <MenuItem Header="Emergency Boot Repair V2" Name="BtnEmergencyBoot2" ToolTip="Run emergency boot repair V2 - Alternative implementation"/>
+                <MenuItem Header="Emergency Boot Repair V3" Name="BtnEmergencyBoot3" ToolTip="Run emergency boot repair V3 - Minimal last resort"/>
+                <MenuItem Header="Emergency Boot Repair V4" Name="BtnEmergencyBoot4" ToolTip="Run emergency boot repair V4 - Intelligent minimal repair with progress and smart diagnostics"/>
+                <Separator/>
+                <MenuItem Header="Emergency Boot Repair Wrapper" Name="BtnEmergencyBootWrapper" ToolTip="Run all emergency repairs with automatic failover (V4 → V1 → V2 → V3)"/>
+            </MenuItem>
             <MenuItem Header="Utilities" FontWeight="Bold">
                 <MenuItem Header="Notepad" Name="BtnNotepad" ToolTip="Open Notepad"/>
                 <MenuItem Header="Registry Editor" Name="BtnRegistry" ToolTip="Open Registry Editor"/>

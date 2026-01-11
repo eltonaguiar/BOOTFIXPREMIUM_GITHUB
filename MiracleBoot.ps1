@@ -346,6 +346,80 @@ function Get-LogSummary {
     }
 }
 
+function Start-NotepadSafely {
+    <#
+    .SYNOPSIS
+    Safely opens Notepad with a file, limiting to maximum 5 instances to prevent spam.
+    
+    .DESCRIPTION
+    This function tracks the number of Notepad instances opened and prevents opening more than 5.
+    This prevents infinite loops or spam opening of Notepad windows.
+    
+    .PARAMETER FilePath
+    Optional path to a file to open in Notepad. If not provided, opens empty Notepad.
+    
+    .PARAMETER Force
+    If specified, bypasses the instance limit check (use with caution).
+    
+    .EXAMPLE
+    Start-NotepadSafely -FilePath "C:\report.txt"
+    #>
+    param(
+        [string]$FilePath = $null,
+        [switch]$Force
+    )
+    
+    # Initialize counter if not exists
+    if (-not $script:NotepadInstanceCount) {
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Check current Notepad processes
+    try {
+        $currentNotepadProcesses = Get-Process -Name notepad -ErrorAction SilentlyContinue
+        $script:NotepadInstanceCount = $currentNotepadProcesses.Count
+    } catch {
+        # If we can't check, assume 0
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Maximum allowed instances
+    $maxInstances = 5
+    
+    # Check if we've reached the limit
+    if ($script:NotepadInstanceCount -ge $maxInstances -and -not $Force) {
+        Write-Warning "Notepad instance limit reached ($maxInstances instances). Skipping Notepad launch to prevent spam."
+        if ($FilePath) {
+            Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+        }
+        return $false
+    }
+    
+    # Attempt to open Notepad
+    try {
+        if ($FilePath) {
+            if (Test-Path -LiteralPath $FilePath -ErrorAction SilentlyContinue) {
+                Start-Process notepad.exe -ArgumentList "`"$FilePath`"" -ErrorAction Stop
+                $script:NotepadInstanceCount++
+                return $true
+            } else {
+                Write-Warning "File not found: $FilePath"
+                return $false
+            }
+        } else {
+            Start-Process notepad.exe -ErrorAction Stop
+            $script:NotepadInstanceCount++
+            return $true
+        }
+    } catch {
+        Write-Warning "Could not open Notepad: $($_.Exception.Message)"
+        if ($FilePath) {
+            Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+        }
+        return $false
+    }
+}
+
 function Invoke-SelfTest {
     <#
     .SYNOPSIS
@@ -829,38 +903,12 @@ function New-GUIFailureDiagnosticReport {
     
     Set-Content -Path $reportPath -Value ($report -join "`r`n") -Encoding UTF8 -Force
     
-    # CRITICAL: Prevent infinite loop of opening diagnostic reports
-    # Only open Notepad once per session to avoid spam
-    if (-not $script:DiagnosticReportOpened) {
-        $script:DiagnosticReportOpened = $true
-        $script:DiagnosticReportLastOpened = Get-Date
-        
-        # Open in Notepad (only once per session)
-        try {
-            Start-Process notepad.exe -ArgumentList "`"$reportPath`""
-            Write-Host "Diagnostic report opened in Notepad: $reportPath" -ForegroundColor Cyan
-        } catch {
-            # If Notepad fails, at least show the path
-            Write-Host "Could not open Notepad. Report saved to: $reportPath" -ForegroundColor Yellow
-        }
+    # CRITICAL: Use safe Notepad launcher to prevent spam (max 5 instances)
+    $notepadOpened = Start-NotepadSafely -FilePath $reportPath
+    if ($notepadOpened) {
+        Write-Host "Diagnostic report opened in Notepad: $reportPath" -ForegroundColor Cyan
     } else {
-        # Report already opened in this session - just log the path
-        $timeSinceLastOpen = (Get-Date) - $script:DiagnosticReportLastOpened
-        if ($timeSinceLastOpen.TotalSeconds -gt 60) {
-            # More than 60 seconds since last open - allow one more (in case of different error)
-            $script:DiagnosticReportOpened = $false
-            try {
-                Start-Process notepad.exe -ArgumentList "`"$reportPath`""
-                $script:DiagnosticReportOpened = $true
-                $script:DiagnosticReportLastOpened = Get-Date
-                Write-Host "Additional diagnostic report opened: $reportPath" -ForegroundColor Cyan
-            } catch {
-                Write-Host "Could not open Notepad. Report saved to: $reportPath" -ForegroundColor Yellow
-            }
-        } else {
-            # Too soon - don't open another window
-            Write-Host "Diagnostic report saved (Notepad already open from recent error): $reportPath" -ForegroundColor Gray
-        }
+        Write-Host "Diagnostic report saved to: $reportPath" -ForegroundColor Yellow
     }
     
     return $reportPath
@@ -1767,7 +1815,7 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
             # Test 2: XAML parsing (triggers C++ module initialization)
             # This is the actual operation that fails in WinPE
             $minimalXaml = '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" />'
-            $testXamlWindow = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$minimalXaml))) -ErrorAction Stop
+            $testXamlWindow = [Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$minimalXaml)))
             $testXamlWindow = $null
             
             [System.GC]::Collect()  # Force cleanup

@@ -8,6 +8,7 @@ REM ============================================================================
 
 setlocal enabledelayedexpansion
 set "SCRIPT_DIR=%~dp0"
+set "V4_SUCCESS=0"
 set "V1_SUCCESS=0"
 set "V2_SUCCESS=0"
 set "V3_SUCCESS=0"
@@ -19,11 +20,13 @@ echo   EMERGENCY BOOT REPAIR - AUTOMATIC FAILOVER SYSTEM
 echo ================================================================================
 echo.
 echo This tool will automatically try multiple repair implementations:
+echo   V4: Intelligent minimal repair with progress and smart diagnostics (RECOMMENDED FIRST)
 echo   V1: Original implementation with nested if statements
 echo   V2: Alternative implementation with goto-based flow control
 echo   V3: Minimal implementation with basic commands only
 echo.
 echo If one version fails, the next will be tried automatically.
+echo V4 will be tried first as it only fixes what's broken.
 echo.
 echo WARNING: This will modify your boot configuration.
 echo Press Ctrl+C within 5 seconds to cancel...
@@ -32,6 +35,40 @@ timeout /t 5 /nobreak >nul 2>&1
 if errorlevel 1 goto :CANCELED
 
 echo.
+echo ================================================================================
+echo   ATTEMPTING REPAIR VERSION 4 (INTELLIGENT - RECOMMENDED FIRST)
+echo ================================================================================
+echo.
+set /a ATTEMPTED+=1
+
+if exist "%SCRIPT_DIR%EMERGENCY_BOOT_REPAIR_V4.cmd" (
+    call "%SCRIPT_DIR%EMERGENCY_BOOT_REPAIR_V4.cmd"
+    set "V4_EXITCODE=%ERRORLEVEL%"
+    if %V4_EXITCODE% equ 0 (
+        set "V4_SUCCESS=1"
+        echo.
+        echo ================================================================================
+        echo   VERSION 4 SUCCESSFUL - REPAIR COMPLETE
+        echo ================================================================================
+        echo.
+        goto :SUCCESS
+    ) else (
+        echo.
+        echo ================================================================================
+        echo   VERSION 4 FAILED (Exit code: %V4_EXITCODE%^)
+        echo   Attempting Version 1...
+        echo ================================================================================
+        echo.
+    )
+) else (
+    echo   WARNING: EMERGENCY_BOOT_REPAIR_V4.cmd not found!
+    echo   Skipping to Version 1...
+    echo.
+)
+
+REM ============================================================================
+REM Try Version 1
+REM ============================================================================
 echo ================================================================================
 echo   ATTEMPTING REPAIR VERSION 1
 echo ================================================================================
@@ -141,6 +178,9 @@ echo ===========================================================================
 echo   FAILOVER SYSTEM SUMMARY
 echo ================================================================================
 echo   Versions attempted: %ATTEMPTED%
+if %V4_SUCCESS% equ 1 (
+    echo   Successful version: V4 (Intelligent minimal repair)
+)
 if %V1_SUCCESS% equ 1 (
     echo   Successful version: V1 (Original implementation)
 )
@@ -166,6 +206,7 @@ echo ===========================================================================
 echo   FAILOVER SYSTEM SUMMARY
 echo ================================================================================
 echo   Versions attempted: %ATTEMPTED%
+echo   V4 result: %V4_SUCCESS% (Exit: %V4_EXITCODE%^)
 echo   V1 result: %V1_SUCCESS% (Exit: %V1_EXITCODE%^)
 echo   V2 result: %V2_SUCCESS% (Exit: %V2_EXITCODE%^)
 echo   V3 result: %V3_SUCCESS% (Exit: %V3_EXITCODE%^)

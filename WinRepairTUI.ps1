@@ -1,4 +1,79 @@
-﻿function Start-TUI {
+﻿# Helper function to safely open Notepad with instance limit
+function Start-NotepadSafely {
+    <#
+    .SYNOPSIS
+    Safely opens Notepad with a file, limiting to maximum 5 instances to prevent spam.
+    
+    .DESCRIPTION
+    This function tracks the number of Notepad instances opened and prevents opening more than 5.
+    This prevents infinite loops or spam opening of Notepad windows.
+    
+    .PARAMETER FilePath
+    Optional path to a file to open in Notepad. If not provided, opens empty Notepad.
+    
+    .PARAMETER Force
+    If specified, bypasses the instance limit check (use with caution).
+    
+    .EXAMPLE
+    Start-NotepadSafely -FilePath "C:\report.txt"
+    #>
+    param(
+        [string]$FilePath = $null,
+        [switch]$Force
+    )
+    
+    # Initialize counter if not exists
+    if (-not $script:NotepadInstanceCount) {
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Check current Notepad processes
+    try {
+        $currentNotepadProcesses = Get-Process -Name notepad -ErrorAction SilentlyContinue
+        $script:NotepadInstanceCount = $currentNotepadProcesses.Count
+    } catch {
+        # If we can't check, assume 0
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Maximum allowed instances
+    $maxInstances = 5
+    
+    # Check if we've reached the limit
+    if ($script:NotepadInstanceCount -ge $maxInstances -and -not $Force) {
+        Write-Warning "Notepad instance limit reached ($maxInstances instances). Skipping Notepad launch to prevent spam."
+        if ($FilePath) {
+            Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+        }
+        return $false
+    }
+    
+    # Attempt to open Notepad
+    try {
+        if ($FilePath) {
+            if (Test-Path -LiteralPath $FilePath -ErrorAction SilentlyContinue) {
+                Start-NotepadSafely -FilePath $FilePath | Out-Null
+                $script:NotepadInstanceCount++
+                return $true
+            } else {
+                Write-Warning "File not found: $FilePath"
+                return $false
+            }
+        } else {
+            Start-NotepadSafely | Out-Null
+            $script:NotepadInstanceCount++
+            return $true
+        }
+    } catch {
+        Write-Warning "Could not open Notepad: $($_.Exception.Message)"
+        if ($FilePath) {
+            Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+        }
+        return $false
+    }
+}
+
+function Start-TUI {
     # Log TUI startup
     if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
         Write-ToLog "═════════════════════════════════════════════════════════════" "INFO"
@@ -239,10 +314,9 @@
         # Open comprehensive report in Notepad (if available)
         if ($reportPath -and (Test-Path $reportPath)) {
             Write-Host "`nOpening comprehensive repair report in Notepad..." -ForegroundColor Green
-            try {
-                Start-Process notepad.exe -ArgumentList "`"$reportPath`""
-            } catch {
-                Write-Host "Could not open Notepad. Report saved to: $reportPath" -ForegroundColor Yellow
+            $notepadOpened = Start-NotepadSafely -FilePath $reportPath
+            if (-not $notepadOpened) {
+                Write-Host "Could not open Notepad (limit reached or error). Report saved to: $reportPath" -ForegroundColor Yellow
             }
         }
         
@@ -815,11 +889,11 @@
                 switch ($utilChoice.ToUpper()) {
                     "A" {
                         Write-Host "`nLaunching Notepad..." -ForegroundColor Green
-                        try {
-                            Start-Process "notepad.exe" -ErrorAction Stop
+                        $notepadOpened = Start-NotepadSafely
+                        if ($notepadOpened) {
                             Write-Host "Notepad opened successfully." -ForegroundColor Green
-                        } catch {
-                            Write-Host "Failed to open Notepad: $_" -ForegroundColor Red
+                        } else {
+                            Write-Host "Notepad instance limit reached (max 5) or failed to open." -ForegroundColor Yellow
                         }
                         Write-Host "Press any key to continue..." -ForegroundColor Gray
                         $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
