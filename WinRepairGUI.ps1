@@ -2161,24 +2161,55 @@ if ($btnSwitchToTUI) {
     if ($result -eq "Yes") {
         try {
             Update-StatusBar -Message "Switching to command line mode..." -ShowProgress
+            
+            # Close GUI window first
             $W.Close()
+            
+            # Small delay to ensure window closes
+            Start-Sleep -Milliseconds 100
             
             # Load TUI module and start it
             $tuiPath = Join-Path $PSScriptRoot "WinRepairTUI.ps1"
             if (Test-Path $tuiPath) {
-                . $tuiPath
-                Start-TUI
+                try {
+                    # Load TUI module with error handling
+                    . $tuiPath -ErrorAction Stop
+                    
+                    # Verify Start-TUI function exists
+                    if (Get-Command Start-TUI -ErrorAction SilentlyContinue) {
+                        Start-TUI
+                    } else {
+                        throw "Start-TUI function not found after loading WinRepairTUI.ps1"
+                    }
+                } catch {
+                    $errorDetails = $_.Exception.Message
+                    if ($_.Exception.InnerException) {
+                        $errorDetails += "`nInner: $($_.Exception.InnerException.Message)"
+                    }
+                    Write-Host "Error loading TUI module: $errorDetails" -ForegroundColor Red
+                    Write-Host "Stack trace: $($_.ScriptStackTrace)" -ForegroundColor Red
+                    throw "Failed to load TUI module: $errorDetails"
+                }
             } else {
                 Write-Host "Error: WinRepairTUI.ps1 not found at $tuiPath" -ForegroundColor Red
                 Write-Host "Please run MiracleBoot.ps1 to access TUI mode." -ForegroundColor Yellow
+                throw "WinRepairTUI.ps1 not found at $tuiPath"
             }
         } catch {
-            [System.Windows.MessageBox]::Show(
-                "Error switching to command line mode: $_`n`nYou can manually run MiracleBoot.ps1 to access TUI mode.",
-                "Error",
-                "OK",
-                "Error"
-            )
+            $errorMsg = $_.Exception.Message
+            # Don't show message box if window is already closed - just write to console
+            try {
+                [System.Windows.MessageBox]::Show(
+                    "Error switching to command line mode: $errorMsg`n`nYou can manually run MiracleBoot.ps1 to access TUI mode.",
+                    "Error",
+                    "OK",
+                    "Error"
+                ) | Out-Null
+            } catch {
+                # Window already closed, just write to console
+                Write-Host "Error switching to command line mode: $errorMsg" -ForegroundColor Red
+                Write-Host "You can manually run MiracleBoot.ps1 to access TUI mode." -ForegroundColor Yellow
+            }
         }
     }
     })
