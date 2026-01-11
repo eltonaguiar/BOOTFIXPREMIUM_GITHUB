@@ -677,7 +677,8 @@ function Test-FileIntegrity {
     # Check existence using comprehensive method (this may already fix permissions)
     $existsCheck = Test-WinloadExistsComprehensive -Path $FilePath
     $result.Exists = $existsCheck.Exists
-    if ($existsCheck.PermissionsModified) {
+    # Safely check for PermissionsModified (not all return paths include it)
+    if ($existsCheck -is [hashtable] -and $existsCheck.ContainsKey('PermissionsModified') -and $existsCheck.PermissionsModified) {
         $permissionsModified = $true
         $result.PermissionsModified = $true
     }
