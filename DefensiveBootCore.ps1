@@ -1,6 +1,65 @@
 Set-StrictMode -Version Latest
 
 # ============================================================================
+# SCRIPT ROOT DETECTION (Required for Join-Path operations)
+# ============================================================================
+# Set $PSScriptRoot if not already set (needed when dot-sourced)
+if (-not $PSScriptRoot) {
+    # Try multiple methods to determine script root
+    if ($MyInvocation.MyCommand.Path) {
+        $PSScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue
+    }
+    if (-not $PSScriptRoot -and $PSCommandPath) {
+        $PSScriptRoot = Split-Path -Parent $PSCommandPath -ErrorAction SilentlyContinue
+    }
+    if (-not $PSScriptRoot) {
+        # Fallback: use current location or temp directory
+        $PSScriptRoot = (Get-Location).ProviderPath
+        if (-not $PSScriptRoot) {
+            $PSScriptRoot = $env:TEMP
+        }
+    }
+}
+
+function Get-ScriptRootSafe {
+    <#
+    .SYNOPSIS
+    Safely gets the script root directory, with fallbacks if $PSScriptRoot is not set.
+    
+    .DESCRIPTION
+    When DefensiveBootCore.ps1 is dot-sourced, $PSScriptRoot may not be available.
+    This function provides a safe way to get the script root with multiple fallbacks.
+    #>
+    if (-not [string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+        return $PSScriptRoot
+    }
+    
+    # Try multiple methods to determine script root
+    if ($MyInvocation.MyCommand.Path) {
+        $root = Split-Path -Parent $MyInvocation.MyCommand.Path -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($root)) {
+            return $root
+        }
+    }
+    
+    if ($PSCommandPath) {
+        $root = Split-Path -Parent $PSCommandPath -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($root)) {
+            return $root
+        }
+    }
+    
+    # Fallback: use current location
+    $root = (Get-Location).ProviderPath
+    if (-not [string]::IsNullOrWhiteSpace($root)) {
+        return $root
+    }
+    
+    # Last resort: use temp directory
+    return $env:TEMP
+}
+
+# ============================================================================
 # ADVANCED PLAN B TROUBLESHOOTING FUNCTIONS (For High-End Builds)
 # ============================================================================
 
@@ -1372,7 +1431,9 @@ function New-ComprehensiveRepairReport {
         [bool]$BitlockerLocked
     )
     
-    $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+    # Defensive: Use safe script root getter
+    $scriptRoot = Get-ScriptRootSafe
+    $logDir = Join-Path $scriptRoot "LOGS_MIRACLEBOOT"
     if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
     
     $reportPath = Join-Path $logDir "COMPREHENSIVE_REPAIR_REPORT_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
@@ -1684,7 +1745,9 @@ function New-WinloadRepairGuidanceDocument {
         [array]$Actions
     )
     
-    $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+    # Defensive: Use safe script root getter
+    $scriptRoot = Get-ScriptRootSafe
+    $logDir = Join-Path $scriptRoot "LOGS_MIRACLEBOOT"
     if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
     
     $docPath = Join-Path $logDir "WINLOAD_EFI_MANUAL_REPAIR_GUIDE_$(Get-Date -Format 'yyyyMMdd_HHmmss').txt"
@@ -3735,7 +3798,9 @@ function Invoke-BruteForceBootRepair {
     
     $actions = @()
     $verificationResults = @()
-    $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+    # Defensive: Use safe script root getter
+    $scriptRoot = Get-ScriptRootSafe
+    $logDir = Join-Path $scriptRoot "LOGS_MIRACLEBOOT"
     if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
     
     # Check environment
@@ -4200,7 +4265,9 @@ function Invoke-DefensiveBootRepair {
     )
     $blastRadius = @()
     $script:LastBackupPath = $null
-    $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+    # Defensive: Use safe script root getter
+    $scriptRoot = Get-ScriptRootSafe
+    $logDir = Join-Path $scriptRoot "LOGS_MIRACLEBOOT"
     if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
     $envState = Get-EnvState
     $runningOnline = (-not $envState.IsWinPE)
