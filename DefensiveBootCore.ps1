@@ -3696,7 +3696,7 @@ function Invoke-BruteForceBootRepair {
                             New-Item -ItemType Directory -Path $bootDir -Force | Out-Null
                             $actions += "✓ Created Boot directory: $bootDir"
                             # Retry bcdboot
-                            $createResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$targetDrive`:\Windows") -TimeoutSeconds 60 -Description "Retry create system BCD")
+                            $createResult = Invoke-BCDCommandWithTimeout -Command "bcdboot.exe" -Arguments @("$targetDrive`:\Windows") -TimeoutSeconds 60 -Description "Retry create system BCD"
                             if ($createResult.Success -and (Test-Path $bcdStore -ErrorAction SilentlyContinue)) {
                                 $actions += "✓ System BCD created after creating Boot directory"
                                 $bcdExists = $true
