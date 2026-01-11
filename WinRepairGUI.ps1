@@ -401,6 +401,11 @@ try {
     $script:W=[Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader ([xml]$XAML)))
     $W = $script:W  # Also set local variable for backward compatibility
     
+    # Validate window object is valid before accessing controls
+    if ($null -eq $W) {
+        throw "Window object is null - XAML parsing may have failed silently"
+    }
+    
     # #region agent log
     try {
         $logEntry = @{
@@ -474,12 +479,8 @@ $envType = "FullOS"
 if (Test-Path 'HKLM:\System\CurrentControlSet\Control\MiniNT') { $envType = "WinRE" }
 if ($env:SystemDrive -eq 'X:') { $envType = "WinRE" }
 
-# Validate window object is valid before accessing controls
-if ($null -eq $W) {
-    throw "Window object is null - XAML parsing may have failed silently"
-}
-
 # Load WinRepairCore module to make helper functions available for button handlers
+# NOTE: Window validation moved inside Start-GUI function after $W is created
 try {
     # Resolve WinRepairCore path with multiple fallbacks (handles dot-sourcing scenarios)
     $coreModulePath = $null
@@ -823,7 +824,9 @@ $script:IsCompactUI = $false
 
 # These functions will be defined inside Start-GUI after $W is created
 function Apply-DarkMode {
-    if (-not $W) { return }
+    # Safe check: use Get-Variable to check if $W exists before accessing
+    if (-not (Get-Variable -Name "W" -Scope Script -ErrorAction SilentlyContinue) -or $null -eq $script:W) { return }
+    $W = $script:W
     
     try {
         $script:IsDarkMode = $true
@@ -936,7 +939,9 @@ function Apply-DarkMode {
 }
 
 function Apply-LightMode {
-    if (-not $W) { return }
+    # Safe check: use Get-Variable to check if $W exists before accessing
+    if (-not (Get-Variable -Name "W" -Scope Script -ErrorAction SilentlyContinue) -or $null -eq $script:W) { return }
+    $W = $script:W
     
     try {
         $script:IsDarkMode = $false
@@ -1012,7 +1017,9 @@ function Apply-LightMode {
 }
 
 function Apply-CompactUI {
-    if (-not $W) { return }
+    # Safe check: use Get-Variable to check if $W exists before accessing
+    if (-not (Get-Variable -Name "W" -Scope Script -ErrorAction SilentlyContinue) -or $null -eq $script:W) { return }
+    $W = $script:W
     
     try {
         $script:IsCompactUI = $true
@@ -1113,7 +1120,9 @@ function Apply-CompactUI {
 }
 
 function Apply-StandardUI {
-    if (-not $W) { return }
+    # Safe check: use Get-Variable to check if $W exists before accessing
+    if (-not (Get-Variable -Name "W" -Scope Script -ErrorAction SilentlyContinue) -or $null -eq $script:W) { return }
+    $W = $script:W
     
     try {
         $script:IsCompactUI = $false
@@ -7884,7 +7893,10 @@ $btnDismissMaximizeTip = Get-Control -Name "BtnDismissMaximizeTip" -Silent
 
 # Function to check window state and show/hide banner
 function Update-MaximizeBanner {
-    if ($maximizeBanner -and $W) {
+    # Safe check: use Get-Variable to check if $W exists before accessing
+    $wExists = (Get-Variable -Name "W" -Scope Script -ErrorAction SilentlyContinue) -and $null -ne $script:W
+    if ($maximizeBanner -and $wExists) {
+        $W = $script:W
         try {
             if ($W.WindowState -ne [System.Windows.WindowState]::Maximized) {
                 $maximizeBanner.Visibility = [System.Windows.Visibility]::Visible
@@ -7906,44 +7918,8 @@ if ($btnDismissMaximizeTip) {
     })
 }
 
-# Wire up window state changed event to show/hide banner
-if ($W) {
-    # Use SizeChanged event to detect maximize/restore
-    $W.Add_SizeChanged({
-        Update-MaximizeBanner
-    })
-    
-    # Also check on window loaded
-    $W.Add_Loaded({
-        Update-MaximizeBanner
-    })
-    
-    # Check initial state after a short delay to ensure window is fully initialized
-    $W.Dispatcher.InvokeAsync({
-        Update-MaximizeBanner
-    }, [System.Windows.Threading.DispatcherPriority]::Loaded)
-    
-    # Add F11 key handler to maximize/restore window (use PreviewKeyDown to catch even when not focused)
-    $W.Add_PreviewKeyDown({
-        param($sender, $e)
-        if ($e.Key -eq [System.Windows.Input.Key]::F11) {
-            if ($W.WindowState -eq [System.Windows.WindowState]::Maximized) {
-                $W.WindowState = [System.Windows.WindowState]::Normal
-            } else {
-                $W.WindowState = [System.Windows.WindowState]::Maximized
-            }
-            $e.Handled = $true
-            Update-MaximizeBanner
-        }
-    })
-    
-    # Also ensure window gets focus when loaded
-    $W.Add_Loaded({
-        $W.Focus()
-    })
-}
-
 # File menu handlers - Caching functionality
+# NOTE: Window event wiring moved inside Start-GUI function after $W is created
 $script:CacheFile = Join-Path $env:APPDATA "MiracleBoot\cache.json"
 $script:CacheData = @{}
 
@@ -8515,6 +8491,44 @@ if ($btnBootOpsNotepad) {
         }
     })
 }
+
+    # Wire up window state changed event to show/hide banner
+    # This must be done inside Start-GUI after $W is created
+    if ($W) {
+        # Use SizeChanged event to detect maximize/restore
+        $W.Add_SizeChanged({
+            Update-MaximizeBanner
+        })
+        
+        # Also check on window loaded
+        $W.Add_Loaded({
+            Update-MaximizeBanner
+        })
+        
+        # Check initial state after a short delay to ensure window is fully initialized
+        $W.Dispatcher.InvokeAsync({
+            Update-MaximizeBanner
+        }, [System.Windows.Threading.DispatcherPriority]::Loaded)
+        
+        # Add F11 key handler to maximize/restore window (use PreviewKeyDown to catch even when not focused)
+        $W.Add_PreviewKeyDown({
+            param($sender, $e)
+            if ($e.Key -eq [System.Windows.Input.Key]::F11) {
+                if ($W.WindowState -eq [System.Windows.WindowState]::Maximized) {
+                    $W.WindowState = [System.Windows.WindowState]::Normal
+                } else {
+                    $W.WindowState = [System.Windows.WindowState]::Maximized
+                }
+                $e.Handled = $true
+                Update-MaximizeBanner
+            }
+        })
+        
+        # Also ensure window gets focus when loaded
+        $W.Add_Loaded({
+            $W.Focus()
+        })
+    }
 
 try {
     if ($null -eq $script:W) { throw "Window object not initialized" }
