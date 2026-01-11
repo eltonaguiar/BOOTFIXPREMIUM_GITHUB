@@ -143,6 +143,144 @@ try {
     }
 }
 
+# Global cleanup function to terminate all related processes
+function Stop-AllRelatedProcesses {
+    <#
+    .SYNOPSIS
+    Terminates all processes related to MiracleBoot, including child processes.
+    Called when the script exits, console closes, or process is terminated.
+    #>
+    param(
+        [switch]$Silent
+    )
+    
+    if (-not $Silent) {
+        Write-Host "[CLEANUP] Terminating all related processes..." -ForegroundColor Yellow
+    }
+    
+    $currentPID = $PID
+    $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+    
+    try {
+        # Stop all PowerShell jobs first
+        $jobs = Get-Job -ErrorAction SilentlyContinue
+        if ($jobs) {
+            if (-not $Silent) {
+                Write-Host "[CLEANUP] Stopping $($jobs.Count) background jobs..." -ForegroundColor Yellow
+            }
+            $jobs | Stop-Job -ErrorAction SilentlyContinue
+            $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+        }
+    } catch {
+        # Ignore errors
+    }
+    
+    try {
+        # Terminate related PowerShell processes
+        $psProcesses = Get-Process -Name powershell,powershell_ise,pwsh -ErrorAction SilentlyContinue | Where-Object {
+            $_.Id -ne $currentPID
+        }
+        
+        foreach ($proc in $psProcesses) {
+            try {
+                $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.Id)" -ErrorAction SilentlyContinue).CommandLine
+                if ($cmdLine -and (
+                    $cmdLine -like "*WinRepairGUI*" -or
+                    $cmdLine -like "*MiracleBoot*" -or
+                    $cmdLine -like "*Start-GUI*" -or
+                    ($scriptRoot -and $cmdLine -like "*$scriptRoot*")
+                )) {
+                    if (-not $Silent) {
+                        Write-Host "[CLEANUP] Terminating PowerShell process PID: $($proc.Id)" -ForegroundColor Yellow
+                    }
+                    # Kill process and all children
+                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                # Ignore errors
+            }
+        }
+    } catch {
+        # Ignore errors
+    }
+    
+    try {
+        # Terminate related CMD processes
+        $cmdProcesses = Get-Process -Name cmd -ErrorAction SilentlyContinue | Where-Object {
+            $_.Id -ne $currentPID
+        }
+        
+        foreach ($proc in $cmdProcesses) {
+            try {
+                $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.Id)" -ErrorAction SilentlyContinue).CommandLine
+                if ($cmdLine -and (
+                    $cmdLine -like "*WinRepairGUI*" -or
+                    $cmdLine -like "*MiracleBoot*" -or
+                    $cmdLine -like "*EMERGENCY_BOOT_REPAIR*" -or
+                    $cmdLine -like "*COMPREHENSIVE_BOOT_REPAIR*" -or
+                    ($scriptRoot -and $cmdLine -like "*$scriptRoot*")
+                )) {
+                    if (-not $Silent) {
+                        Write-Host "[CLEANUP] Terminating CMD process PID: $($proc.Id)" -ForegroundColor Yellow
+                    }
+                    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                # Ignore errors
+            }
+        }
+    } catch {
+        # Ignore errors
+    }
+    
+    # Release mutex if it exists
+    if ($script:GUIMutex) {
+        try {
+            $script:GUIMutex.ReleaseMutex()
+            $script:GUIMutex.Dispose()
+        } catch {
+            # Ignore errors
+        }
+        $script:GUIMutex = $null
+    }
+    
+    if (-not $Silent) {
+        Write-Host "[CLEANUP] Cleanup complete" -ForegroundColor Green
+    }
+}
+
+# Register cleanup handlers for process termination
+try {
+    # Register handler for PowerShell exit event
+    $null = Register-EngineEvent -SourceIdentifier PowerShell.Exiting -Action {
+        Write-Host "[CLEANUP] PowerShell exiting - cleaning up processes..." -ForegroundColor Yellow
+        Stop-AllRelatedProcesses -Silent
+    } -ErrorAction SilentlyContinue
+    
+    # Register handler for console window close (if running in console)
+    if ($Host.Name -eq "ConsoleHost") {
+        # Try to detect console window close via parent process monitoring
+        $parentPID = (Get-CimInstance Win32_Process -Filter "ProcessId = $PID" -ErrorAction SilentlyContinue).ParentProcessId
+        if ($parentPID) {
+            # Monitor parent process (console host)
+            $parentProcess = Get-Process -Id $parentPID -ErrorAction SilentlyContinue
+            if ($parentProcess) {
+                # Register event for when parent process exits
+                Register-ObjectEvent -InputObject $parentProcess -EventName Exited -Action {
+                    Write-Host "[CLEANUP] Console window closed - cleaning up processes..." -ForegroundColor Yellow
+                    Stop-AllRelatedProcesses -Silent
+                } -ErrorAction SilentlyContinue | Out-Null
+            }
+        }
+    }
+} catch {
+    # Ignore errors registering event handlers
+    Write-Verbose "Could not register cleanup event handlers: $_" -Verbose
+}
+
+# Register cleanup in finally block (will run on script exit)
+$script:CleanupRegistered = $true
+
 # Compute and cache a stable script root for all event handlers (UI contexts can null MyInvocation.Path)
 $script:ScriptRootSafe = $PSScriptRoot
 if (-not $script:ScriptRootSafe) { $script:ScriptRootSafe = Split-Path -Parent $PSCommandPath -ErrorAction SilentlyContinue }
@@ -166,6 +304,14 @@ if (-not (Test-Path variable:script:stepIndex)) {
 }
 if (-not (Test-Path variable:script:progressSteps)) {
     $script:progressSteps = @()
+}
+# Initialize progress timer variable to null (will be set when needed)
+if (-not (Test-Path variable:script:ProgressTimer)) {
+    $script:ProgressTimer = $null
+}
+# Initialize Notepad instance counter to prevent "variable not set" errors
+if (-not (Test-Path variable:script:NotepadInstanceCount)) {
+    $script:NotepadInstanceCount = 0
 }
 
 # Initialize guard flags to prevent infinite loops and multiple GUI instances
@@ -384,18 +530,24 @@ function Start-NotepadSafely {
         [switch]$Force
     )
     
-    # Initialize counter if not exists
-    if (-not $script:NotepadInstanceCount) {
+    # Initialize counter if not exists (defensive check)
+    if (-not (Test-Path variable:script:NotepadInstanceCount)) {
         $script:NotepadInstanceCount = 0
     }
     
     # Check current Notepad processes
     try {
         $currentNotepadProcesses = Get-Process -Name notepad -ErrorAction SilentlyContinue
-        $script:NotepadInstanceCount = $currentNotepadProcesses.Count
+        if ($currentNotepadProcesses) {
+            $script:NotepadInstanceCount = $currentNotepadProcesses.Count
+        } else {
+            $script:NotepadInstanceCount = 0
+        }
     } catch {
-        # If we can't check, assume 0
-        $script:NotepadInstanceCount = 0
+        # If we can't check, ensure variable is set
+        if (-not (Test-Path variable:script:NotepadInstanceCount)) {
+            $script:NotepadInstanceCount = 0
+        }
     }
     
     # Maximum allowed instances
@@ -609,6 +761,413 @@ function Test-BootReadinessAndOfferEmergency {
     }
     
     return $false
+}
+
+# Helper function to check boot readiness (comprehensive check)
+function Test-BootReadinessComprehensive {
+    <#
+    .SYNOPSIS
+    Comprehensive boot readiness check that verifies all critical boot components.
+    
+    .PARAMETER TargetDrive
+    Optional target drive to check. If not provided, uses system drive.
+    
+    .OUTPUTS
+    PSCustomObject with Bootable (bool), Issues (array), and Confidence (string) properties
+    #>
+    param(
+        [string]$TargetDrive = $null
+    )
+    
+    # Determine target drive
+    if (-not $TargetDrive) {
+        $TargetDrive = $env:SystemDrive.TrimEnd(':')
+    }
+    
+    $result = @{
+        Bootable = $false
+        Issues = @()
+        Confidence = "Unknown"
+    }
+    
+    try {
+        $checksPassed = 0
+        $totalChecks = 0
+        
+        # Check 1: winload.efi
+        $totalChecks++
+        $winloadPath = "$TargetDrive`:\Windows\System32\boot\winload.efi"
+        $winloadPathAlt = "$TargetDrive`:\Windows\System32\winload.efi"
+        $winloadExists = (Test-Path -LiteralPath $winloadPath) -or (Test-Path -LiteralPath $winloadPathAlt)
+        if ($winloadExists) {
+            $checksPassed++
+        } else {
+            $result.Issues += "winload.efi missing"
+        }
+        
+        # Check 2: BCD entry
+        $totalChecks++
+        $bcdValid = $false
+        try {
+            $bcdOutput = & bcdedit /store "$TargetDrive`:\Boot\BCD" /enum {default} 2>&1
+            if ($LASTEXITCODE -eq 0 -and $bcdOutput -match "winload\.efi|winload\.exe") {
+                $bcdValid = $true
+                $checksPassed++
+            } else {
+                # Try without store path for online systems
+                $bcdOutput = & bcdedit /enum {default} 2>&1
+                if ($LASTEXITCODE -eq 0 -and $bcdOutput -match "winload\.efi|winload\.exe") {
+                    $bcdValid = $true
+                    $checksPassed++
+                } else {
+                    $result.Issues += "BCD entry missing or invalid"
+                }
+            }
+        } catch {
+            $result.Issues += "BCD check failed: $($_.Exception.Message)"
+        }
+        
+        # Check 3: Boot manager files
+        $totalChecks++
+        $bootFilesExist = $false
+        $bootFiles = @(
+            "$TargetDrive`:\Windows\System32\boot\bootmgr.efi",
+            "$TargetDrive`:\Windows\Boot\EFI\bootmgfw.efi"
+        )
+        $bootFilesFound = 0
+        foreach ($file in $bootFiles) {
+            if (Test-Path -LiteralPath $file) {
+                $bootFilesFound++
+            }
+        }
+        if ($bootFilesFound -gt 0) {
+            $bootFilesExist = $true
+            $checksPassed++
+        } else {
+            $result.Issues += "Boot manager files missing"
+        }
+        
+        # Determine bootability
+        if ($checksPassed -eq $totalChecks) {
+            $result.Bootable = $true
+            $result.Confidence = "High"
+        } elseif ($checksPassed -ge ($totalChecks - 1)) {
+            $result.Bootable = $true
+            $result.Confidence = "Medium"
+        } else {
+            $result.Bootable = $false
+            $result.Confidence = "Low"
+        }
+        
+    } catch {
+        Write-Warning "Boot readiness check failed: $_"
+        $result.Issues += "Readiness check error: $($_.Exception.Message)"
+    }
+    
+    return $result
+}
+
+# Repair Wizard function - runs V4 → Brute Force → V1 → V2 → V3 with checks after each
+function Invoke-RepairWizard {
+    <#
+    .SYNOPSIS
+    Guided repair wizard that runs repairs in optimal order with checks after each step.
+    Sequence: V4 (Intelligent) → Brute Force → V1 → V2 → V3
+    Stops if boot is fixed, offers remaining fixes if a step fails.
+    
+    .PARAMETER TargetDrive
+    Target drive to repair. If not provided, uses system drive.
+    
+    .PARAMETER StartFrom
+    Name of repair to start from (e.g., "Brute Force", "V1", "V2", "V3"). 
+    Skips repairs before this one. Useful when a previous repair was already attempted.
+    #>
+    param(
+        [string]$TargetDrive = $null,
+        [string]$StartFrom = $null
+    )
+    
+    # Determine target drive
+    if (-not $TargetDrive) {
+        $TargetDrive = $env:SystemDrive.TrimEnd(':')
+    }
+    
+    $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+    $fixerOutput = Get-Control -Name "FixerOutput" -Silent
+    $txtOneClickStatus = Get-Control -Name "txtOneClickStatus" -Silent
+    
+    # Define repair sequence (V4 is fastest and checks issues first)
+    $repairSequence = @(
+        @{ 
+            Name = "V4"; 
+            Path = "EMERGENCY_BOOT_REPAIR_V4.cmd"; 
+            Description = "Intelligent Minimal Repair (Fastest - checks issues first)";
+            Type = "Emergency"
+        },
+        @{ 
+            Name = "Brute Force"; 
+            Path = $null; 
+            Description = "Brute Force Boot Repair (Aggressive)";
+            Type = "BruteForce"
+        },
+        @{ 
+            Name = "V1"; 
+            Path = "EMERGENCY_BOOT_REPAIR.cmd"; 
+            Description = "Standard Emergency Repair";
+            Type = "Emergency"
+        },
+        @{ 
+            Name = "V2"; 
+            Path = "EMERGENCY_BOOT_REPAIR_V2.cmd"; 
+            Description = "Alternative Implementation";
+            Type = "Emergency"
+        },
+        @{ 
+            Name = "V3"; 
+            Path = "EMERGENCY_BOOT_REPAIR_V3.cmd"; 
+            Description = "Minimal Last Resort";
+            Type = "Emergency"
+        }
+    )
+    
+    $wizardLog = "`n" + "="*60 + "`n"
+    $wizardLog += "REPAIR WIZARD STARTED`n"
+    $wizardLog += "="*60 + "`n"
+    $wizardLog += "Sequence: V4 (Intelligent) → Brute Force → V1 → V2 → V3`n"
+    $wizardLog += "Each repair will be checked before proceeding to the next.`n"
+    $wizardLog += "="*60 + "`n`n"
+    
+    if ($fixerOutput) {
+        $fixerOutput.Text += $wizardLog
+        $fixerOutput.ScrollToEnd()
+    }
+    
+    $repairsAttempted = @()
+    $repairsSkipped = @()
+    $startFound = $false
+    
+    # If StartFrom is specified, we'll skip until we find it
+    if ($StartFrom) {
+        $wizardLog += "Starting from: $StartFrom (skipping previous repairs)`n"
+    }
+    
+    foreach ($repair in $repairSequence) {
+        # Skip repairs before StartFrom
+        if ($StartFrom -and -not $startFound) {
+            if ($repair.Name -eq $StartFrom) {
+                $startFound = $true
+                $wizardLog += "Starting wizard from $($repair.Name)...`n"
+            } else {
+                $repairsSkipped += "$($repair.Name) (skipped - starting from $StartFrom)"
+                continue
+            }
+        }
+        $repairInfo = "$($repair.Name) ($($repair.Description))"
+        
+        # Check boot readiness before this repair
+        $preCheck = Test-BootReadinessComprehensive -TargetDrive $TargetDrive
+        if ($preCheck.Bootable) {
+            $wizardLog = "`n✅ BOOT ALREADY FIXED!`n"
+            $wizardLog += "Boot readiness check passed before running $($repair.Name).`n"
+            $wizardLog += "Skipping remaining repairs.`n"
+            
+            if ($fixerOutput) {
+                $fixerOutput.Text += $wizardLog
+                $fixerOutput.ScrollToEnd()
+            }
+            
+            if ($txtOneClickStatus) {
+                $txtOneClickStatus.Text = "✅ Boot fixed! Skipped remaining repairs."
+            }
+            
+            Update-StatusBar -Message "✅ Boot fixed! Wizard stopped." -HideProgress
+            
+            [System.Windows.MessageBox]::Show(
+                "✅ Boot Issue Fixed!`n`nBoot readiness check passed.`n`nRepairs attempted: $($repairsAttempted.Count)`n`nNo further repairs needed.",
+                "Repair Wizard: Success",
+                "OK",
+                "Information"
+            ) | Out-Null
+            
+            return $true
+        }
+        
+        # Run the repair
+        $wizardLog = "`n[$([DateTime]::Now.ToString('HH:mm:ss'))] Running $repairInfo...`n"
+        
+        if ($fixerOutput) {
+            $fixerOutput.Text += $wizardLog
+            $fixerOutput.ScrollToEnd()
+        }
+        
+        Update-StatusBar -Message "Wizard: Running $($repair.Name)..." -ShowProgress
+        
+        $repairSuccess = $false
+        $repairError = $null
+        
+        try {
+            if ($repair.Type -eq "BruteForce") {
+                # Run Brute Force repair via PowerShell function
+                if (Get-Command Invoke-BruteForceBootRepair -ErrorAction SilentlyContinue) {
+                    $wizardLog += "  Executing Brute Force Boot Repair...`n"
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "  Executing Brute Force Boot Repair...`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    $bruteResult = Invoke-BruteForceBootRepair -TargetDrive $TargetDrive -ExtractFromWim:$true -MaxRetries 3
+                    
+                    if ($bruteResult -and $bruteResult.Bootable) {
+                        $repairSuccess = $true
+                        $wizardLog += "  ✅ Brute Force repair completed successfully`n"
+                    } else {
+                        $wizardLog += "  ⚠ Brute Force repair completed but boot not verified`n"
+                    }
+                } else {
+                    $repairError = "Invoke-BruteForceBootRepair function not found"
+                    $wizardLog += "  ❌ Brute Force repair not available: $repairError`n"
+                }
+            } else {
+                # Run emergency repair CMD file
+                $repairPath = Join-Path $scriptRoot $repair.Path
+                if (Test-Path $repairPath) {
+                    $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$repairPath`"" -Wait -NoNewWindow -PassThru
+                    $exitCode = $process.ExitCode
+                    $wizardLog += "  Exit Code: $exitCode`n"
+                    
+                    if ($exitCode -eq 0) {
+                        $repairSuccess = $true
+                    }
+                } else {
+                    $repairError = "Repair file not found: $repairPath"
+                    $wizardLog += "  ❌ $repairError`n"
+                }
+            }
+        } catch {
+            $repairError = $_.Exception.Message
+            $wizardLog += "  ❌ Error: $repairError`n"
+        }
+        
+        if ($fixerOutput) {
+            $fixerOutput.Text += $wizardLog
+            $fixerOutput.ScrollToEnd()
+        }
+        
+        # Check boot readiness after this repair
+        Start-Sleep -Seconds 2  # Brief pause to allow file system to update
+        $postCheck = Test-BootReadinessComprehensive -TargetDrive $TargetDrive
+        
+        if ($postCheck.Bootable) {
+            $repairsAttempted += $repairInfo
+            $wizardLog = "`n✅ SUCCESS! Boot fixed by $($repair.Name)!`n"
+            $wizardLog += "Boot readiness check passed after $($repair.Name).`n"
+            $wizardLog += "Stopping wizard - no further repairs needed.`n"
+            
+            if ($fixerOutput) {
+                $fixerOutput.Text += $wizardLog
+                $fixerOutput.ScrollToEnd()
+            }
+            
+            if ($txtOneClickStatus) {
+                $txtOneClickStatus.Text = "✅ Boot fixed by $($repair.Name)! Wizard stopped."
+            }
+            
+            Update-StatusBar -Message "✅ Boot fixed by $($repair.Name)!" -HideProgress
+            
+            [System.Windows.MessageBox]::Show(
+                "✅ Boot Issue Fixed!`n`n$($repair.Name) ($($repair.Description)) successfully restored boot.`n`nRepairs attempted: $($repairsAttempted.Count)`n`nNo further repairs needed.",
+                "Repair Wizard: Success",
+                "OK",
+                "Information"
+            ) | Out-Null
+            
+            return $true
+        } else {
+            $repairsAttempted += $repairInfo
+            $remainingRepairs = $repairSequence | Where-Object { $_.Name -ne $repair.Name } | Select-Object -ExpandProperty Name
+            $remainingCount = ($repairSequence.Count - $repairsAttempted.Count)
+            
+            $wizardLog = "`n⚠ $($repair.Name) completed but boot not fixed.`n"
+            $wizardLog += "Issues remaining: $($postCheck.Issues -join ', ')`n"
+            $wizardLog += "Remaining repairs: $remainingCount ($($remainingRepairs -join ', '))`n"
+            
+            if ($fixerOutput) {
+                $fixerOutput.Text += $wizardLog
+                $fixerOutput.ScrollToEnd()
+            }
+            
+            # Offer to continue or skip remaining
+            if ($remainingCount -gt 0) {
+                $continue = [System.Windows.MessageBox]::Show(
+                    "⚠ $($repair.Name) completed but boot issue not fixed.`n`nIssues remaining:`n$($postCheck.Issues -join "`n")`n`nRemaining repairs: $remainingCount`n`nWould you like to continue with the next repair?",
+                    "Repair Wizard: Continue?",
+                    "YesNo",
+                    "Question"
+                )
+                
+                if ($continue -eq "No") {
+                    $wizardLog = "`nUser chose to stop wizard.`n"
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += $wizardLog
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    Update-StatusBar -Message "Wizard stopped by user" -HideProgress
+                    return $false
+                }
+            }
+        }
+    }
+    
+    # All repairs attempted - final check
+    $finalCheck = Test-BootReadinessComprehensive -TargetDrive $TargetDrive
+    
+    $wizardLog = "`n" + "="*60 + "`n"
+    $wizardLog += "REPAIR WIZARD COMPLETED`n"
+    $wizardLog += "="*60 + "`n"
+    $wizardLog += "Repairs attempted: $($repairsAttempted.Count)`n"
+    $wizardLog += "Final boot status: $(if ($finalCheck.Bootable) { '✅ BOOTABLE' } else { '❌ NOT BOOTABLE' })`n"
+    
+    if (-not $finalCheck.Bootable) {
+        $wizardLog += "Remaining issues:`n"
+        foreach ($issue in $finalCheck.Issues) {
+            $wizardLog += "  • $issue`n"
+        }
+    }
+    
+    $wizardLog += "="*60 + "`n"
+    
+    if ($fixerOutput) {
+        $fixerOutput.Text += $wizardLog
+        $fixerOutput.ScrollToEnd()
+    }
+    
+    if ($txtOneClickStatus) {
+        if ($finalCheck.Bootable) {
+            $txtOneClickStatus.Text = "✅ Wizard completed - Boot fixed!"
+        } else {
+            $txtOneClickStatus.Text = "❌ Wizard completed - Boot still not fixed. All repairs attempted."
+        }
+    }
+    
+    Update-StatusBar -Message "Wizard completed" -HideProgress
+    
+    if ($finalCheck.Bootable) {
+        [System.Windows.MessageBox]::Show(
+            "✅ Boot Issue Fixed!`n`nAll repairs in the wizard sequence have been attempted.`n`nBoot readiness check passed.",
+            "Repair Wizard: Success",
+            "OK",
+            "Information"
+        ) | Out-Null
+        return $true
+    } else {
+        [System.Windows.MessageBox]::Show(
+            "❌ Boot Issue Not Fixed`n`nAll repairs in the wizard sequence have been attempted, but boot issue persists.`n`nRemaining issues:`n$($finalCheck.Issues -join "`n")`n`nPlease check the detailed output for more information.",
+            "Repair Wizard: Failed",
+            "OK",
+            "Warning"
+        ) | Out-Null
+        return $false
+    }
 }
 
 # Helper function to safely get controls with null checking
@@ -3100,9 +3659,199 @@ if ($null -ne $W) {
         }
     })
     
-    # Window closing event
+    # Window closing event - CRITICAL: Stop all timers and clean up resources
     $W.Add_Closing({
         param($sender, $e)
+        
+        try {
+            # Update status bar to notify user that window is closing
+            try {
+                Update-StatusBar -Message "Closing application... Please wait..." -HideProgress
+                # Force UI update by processing pending dispatcher operations
+                $sender.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Send, [action]{})
+            } catch {
+                # Ignore errors updating status bar during close
+            }
+            
+            Write-Host "[GUI] Window closing - Starting comprehensive cleanup..." -ForegroundColor Yellow
+            
+            # Stop all DispatcherTimers
+            if ($script:StatusBarElapsedTimer) {
+                try {
+                    $script:StatusBarElapsedTimer.Stop()
+                    $script:StatusBarElapsedTimer = $null
+                } catch {
+                    # Ignore errors when stopping timer
+                }
+            }
+            
+            # Stop progress timer if it exists
+            if ($script:ProgressTimer) {
+                try {
+                    $script:ProgressTimer.Stop()
+                    $script:ProgressTimer = $null
+                } catch {
+                    # Ignore errors when stopping timer
+                }
+            }
+            
+            # Stop any background PowerShell jobs
+            try {
+                $jobs = Get-Job -ErrorAction SilentlyContinue
+                if ($jobs) {
+                    Write-Host "[GUI] Stopping $($jobs.Count) background jobs..." -ForegroundColor Yellow
+                    $jobs | Stop-Job -ErrorAction SilentlyContinue
+                    $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
+                }
+            } catch {
+                Write-Warning "Error stopping jobs: $_"
+            }
+            
+            # Reset flags immediately BEFORE killing processes
+            $script:GUIIsRunning = $false
+            
+            # Release mutex BEFORE killing processes
+            if ($script:GUIMutex) {
+                try {
+                    $script:GUIMutex.ReleaseMutex()
+                    $script:GUIMutex.Dispose()
+                } catch {
+                    # Ignore errors when releasing mutex
+                }
+                $script:GUIMutex = $null
+            }
+            
+            # Clear status bar timer reference
+            $script:StatusBarStartTime = $null
+            $script:StatusBarElapsedTimer = $null
+            
+            # CRITICAL: Kill all PowerShell processes that might be launching the GUI
+            try {
+                Write-Host "[GUI] Terminating related PowerShell processes..." -ForegroundColor Yellow
+                
+                # Get current process ID to avoid killing ourselves
+                $currentPID = $PID
+                
+                # Find all PowerShell processes
+                $psProcesses = Get-Process -Name powershell,powershell_ise -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Id -ne $currentPID -and (
+                        # Check command line for GUI-related scripts
+                        $_.CommandLine -like "*WinRepairGUI*" -or
+                        $_.CommandLine -like "*MiracleBoot*" -or
+                        $_.CommandLine -like "*Start-GUI*" -or
+                        # Check if process has our script loaded
+                        $_.Path -like "*MiracleBoot*"
+                    )
+                }
+                
+                # Also check by process command line (if available)
+                try {
+                    $allPSProcesses = Get-Process -Name powershell,powershell_ise -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $currentPID }
+                    foreach ($proc in $allPSProcesses) {
+                        try {
+                            $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.Id)" -ErrorAction SilentlyContinue).CommandLine
+                            if ($cmdLine -and (
+                                $cmdLine -like "*WinRepairGUI*" -or
+                                $cmdLine -like "*MiracleBoot.ps1*" -or
+                                $cmdLine -like "*Start-GUI*" -or
+                                $cmdLine -like "*WinRepairGUI.ps1*"
+                            )) {
+                                $psProcesses += $proc
+                            }
+                        } catch {
+                            # Ignore errors checking command line
+                        }
+                    }
+                } catch {
+                    # Ignore errors
+                }
+                
+                # Kill identified processes
+                if ($psProcesses) {
+                    $uniqueProcesses = $psProcesses | Select-Object -Unique -Property Id
+                    Write-Host "[GUI] Found $($uniqueProcesses.Count) related PowerShell processes to terminate" -ForegroundColor Yellow
+                    foreach ($proc in $uniqueProcesses) {
+                        try {
+                            Write-Host "[GUI] Terminating PowerShell process PID: $($proc.Id)" -ForegroundColor Yellow
+                            # Kill the process and all its children
+                            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                            # Also try to kill any child processes
+                            try {
+                                $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $($proc.Id)" -ErrorAction SilentlyContinue
+                                foreach ($child in $children) {
+                                    Stop-Process -Id $child.ProcessId -Force -ErrorAction SilentlyContinue
+                                }
+                            } catch {
+                                # Ignore errors killing children
+                            }
+                        } catch {
+                            Write-Warning "Could not terminate process $($proc.Id): $_"
+                        }
+                    }
+                }
+                
+                # Also check for any PowerShell processes in the same directory that might be related
+                try {
+                    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.ScriptName }
+                    $allPS = Get-Process -Name powershell,powershell_ise -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $currentPID }
+                    foreach ($psProc in $allPS) {
+                        try {
+                            $psCmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($psProc.Id)" -ErrorAction SilentlyContinue).CommandLine
+                            if ($psCmdLine -and $scriptDir -and $psCmdLine -like "*$scriptDir*") {
+                                Write-Host "[GUI] Terminating related PowerShell process in script directory PID: $($psProc.Id)" -ForegroundColor Yellow
+                                Stop-Process -Id $psProc.Id -Force -ErrorAction SilentlyContinue
+                            }
+                        } catch {
+                            # Ignore errors
+                        }
+                    }
+                } catch {
+                    # Ignore errors
+                }
+            } catch {
+                Write-Warning "Error terminating PowerShell processes: $_"
+            }
+            
+            # CRITICAL: Kill any .cmd processes that might be launching the GUI
+            try {
+                Write-Host "[GUI] Checking for related .cmd processes..." -ForegroundColor Yellow
+                $cmdProcesses = Get-Process -Name cmd -ErrorAction SilentlyContinue | Where-Object {
+                    $_.Id -ne $PID
+                }
+                
+                foreach ($proc in $cmdProcesses) {
+                    try {
+                        $cmdLine = (Get-CimInstance Win32_Process -Filter "ProcessId = $($proc.Id)" -ErrorAction SilentlyContinue).CommandLine
+                        if ($cmdLine -and (
+                            $cmdLine -like "*WinRepairGUI*" -or
+                            $cmdLine -like "*MiracleBoot*" -or
+                            $cmdLine -like "*EMERGENCY_BOOT_REPAIR*" -or
+                            $cmdLine -like "*COMPREHENSIVE_BOOT_REPAIR*"
+                        )) {
+                            Write-Host "[GUI] Terminating .cmd process PID: $($proc.Id) - $cmdLine" -ForegroundColor Yellow
+                            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+                        }
+                    } catch {
+                        # Ignore errors checking command line
+                    }
+                }
+            } catch {
+                Write-Warning "Error checking .cmd processes: $_"
+            }
+            
+            # Call comprehensive cleanup function to terminate all related processes
+            Stop-AllRelatedProcesses
+            
+            # Additional cleanup: Wait a moment for processes to terminate
+            Start-Sleep -Milliseconds 500
+            
+            Write-Host "[GUI] Cleanup complete - Window can close safely" -ForegroundColor Green
+            
+        } catch {
+            # Ignore errors during cleanup - window should still close
+            Write-Warning "Error during window cleanup: $_"
+        }
+        
         # Allow window to close normally
         # DO NOT set e.Cancel = $true unless we want to prevent closing
     })
@@ -3313,6 +4062,13 @@ if ($null -ne $W) {
                     $previewText += "  - Rebuild BCD completely if needed`n"
                     $previewText += "  - Verify EVERYTHING after repair`n`n"
                     $previewText += "A BCD backup will be created before any modifications.`n`n"
+                    $previewText += "⚠ AUTOMATIC FAILOVER:`n"
+                    $previewText += "  If this repair fails, the system will automatically try:`n"
+                    $previewText += "  - Emergency Fix 1 (Standard Repair)`n"
+                    $previewText += "  - Emergency Fix 2 (Alternative Implementation)`n"
+                    $previewText += "  - Emergency Fix 3 (Minimal Last Resort)`n"
+                    $previewText += "  - Emergency Fix 4 (Intelligent Minimal Repair)`n"
+                    $previewText += "  The sequence will stop as soon as boot is restored.`n`n"
                 } else {
                     $previewText += "This will execute the following operations:`n"
                     $previewText += "  1. Diagnose boot issues on drive $targetDrive`:`n"
@@ -3327,6 +4083,13 @@ if ($null -ne $W) {
                     } else {
                         $previewText += "⚠ EXECUTE MODE: Commands will be executed and changes will be made.`n"
                         $previewText += "A BCD backup will be created before any modifications.`n`n"
+                        $previewText += "⚠ AUTOMATIC FAILOVER:`n"
+                        $previewText += "  If this repair fails, the system will automatically try:`n"
+                        $previewText += "  - Emergency Fix 1 (Standard Repair)`n"
+                        $previewText += "  - Emergency Fix 2 (Alternative Implementation)`n"
+                        $previewText += "  - Emergency Fix 3 (Minimal Last Resort)`n"
+                        $previewText += "  - Emergency Fix 4 (Intelligent Minimal Repair)`n"
+                        $previewText += "  The sequence will stop as soon as boot is restored.`n`n"
                     }
                 }
                 
@@ -3487,9 +4250,18 @@ if ($null -ne $W) {
                     )
                     # Use script scope for stepIndex so it's accessible in the timer callback
                     $script:stepIndex = 0
-                    $progressTimer = New-Object System.Windows.Threading.DispatcherTimer
-                    $progressTimer.Interval = [TimeSpan]::FromSeconds(2)
-                    $progressTimer.Add_Tick({
+                    # Stop any existing progress timer first
+                    if ($script:ProgressTimer) {
+                        try {
+                            $script:ProgressTimer.Stop()
+                            $script:ProgressTimer = $null
+                        } catch {
+                            # Ignore errors
+                        }
+                    }
+                    $script:ProgressTimer = New-Object System.Windows.Threading.DispatcherTimer
+                    $script:ProgressTimer.Interval = [TimeSpan]::FromSeconds(2)
+                    $script:ProgressTimer.Add_Tick({
                         # Defensive: Ensure variables are initialized before accessing
                         if (-not (Test-Path variable:script:stepIndex)) {
                             $script:stepIndex = 0
@@ -3507,11 +4279,14 @@ if ($null -ne $W) {
                             Update-StatusBar -Message $script:progressSteps[$script:stepIndex] -ShowProgress
                         }
                     })
-                    $progressTimer.Start()
+                    $script:ProgressTimer.Start()
                     
                     # Final validation: Ensure targetDrive is not empty before calling repair functions
                     if ([string]::IsNullOrWhiteSpace($targetDrive)) {
-                        $progressTimer.Stop()
+                        if ($script:ProgressTimer) {
+                            $script:ProgressTimer.Stop()
+                            $script:ProgressTimer = $null
+                        }
                         $errorMsg = "ERROR: Target drive is empty. Cannot proceed with repair."
                         if ($W -and $W.Dispatcher) {
                             $W.Dispatcher.Invoke([action]{
@@ -3625,7 +4400,10 @@ if ($null -ne $W) {
                     }
                     
                     # Stop progress timer
-                    $progressTimer.Stop()
+                    if ($script:ProgressTimer) {
+                        $script:ProgressTimer.Stop()
+                        $script:ProgressTimer = $null
+                    }
                     
                     # Handle result with defensive checks - wrap entire block in try-catch
                     try {
@@ -3860,35 +4638,296 @@ if ($null -ne $W) {
                             $txtOneClickStatus.Text = $statusText
                         }
                         
-                        # Also show a message box for critical failures and offer emergency repairs
+                        # Automatic emergency repair integration - if first repair failed, try emergency repairs automatically
                         if (-not $bootable) {
-                            $messageBoxText = "VALIDATION FAILED`n`n"
-                            $messageBoxText += "The system will NOT boot.`n`n"
-                            if ($blocker) {
-                                $messageBoxText += "Primary Issue: $blocker`n`n"
+                            # Track issues found and what fixed them
+                            $repairHistory = @{
+                                InitialIssues = @()
+                                EmergencyRepairsAttempted = @()
+                                IssuesFixed = @()
+                                FinalStatus = "Failed"
                             }
-                            $messageBoxText += "Please check the output box for detailed information about missing files and specific problems.`n`n"
-                            $messageBoxText += "Would you like to try Emergency Boot Repair?`n`n"
-                            $messageBoxText += "This will run emergency repair tools sequentially (V1 → V2 → V3) until boot is restored."
                             
-                            $result = [System.Windows.MessageBox]::Show(
-                                $messageBoxText,
-                                "Validation Failed - Offer Emergency Repair?",
-                                "YesNo",
-                                "Question"
+                            # Capture initial issues
+                            if ($remainingIssues.Count -gt 0) {
+                                $repairHistory.InitialIssues = $remainingIssues | Select-Object -Unique
+                            } elseif ($blocker) {
+                                $repairHistory.InitialIssues = @($blocker)
+                            } else {
+                                $repairHistory.InitialIssues = @("Boot validation failed - system not bootable")
+                            }
+                            
+                            # Determine target drive
+                            $targetDriveForEmergency = $targetDrive
+                            try {
+                                if ($result.PSObject.Properties.Name -contains 'TargetDrive') {
+                                    $targetDriveForEmergency = $result.TargetDrive.TrimEnd(':')
+                                }
+                            } catch {}
+                            
+                            # Update status to show we're trying emergency repairs
+                            if ($txtOneClickStatus) {
+                                $txtOneClickStatus.Text = "❌ Primary repair failed. Automatically trying emergency repairs..."
+                            }
+                            if ($fixerOutput) {
+                                $currentOutput = $fixerOutput.Text
+                                $fixerOutput.Text = $currentOutput + "`n`n" + "="*60 + "`n"
+                                $fixerOutput.Text += "PRIMARY REPAIR FAILED - STARTING AUTOMATIC EMERGENCY REPAIRS`n"
+                                $fixerOutput.Text += "="*60 + "`n"
+                                $fixerOutput.ScrollToEnd()
+                            }
+                            
+                            Update-StatusBar -Message "Primary repair failed - Starting automatic emergency repairs..." -ShowProgress
+                            
+                            # Run emergency repairs automatically (V4 → V1 → V2 → V3)
+                            $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+                            $emergencyRepairs = @(
+                                @{ Name = "V4"; Path = "EMERGENCY_BOOT_REPAIR_V4.cmd"; Description = "Intelligent Minimal Repair" },
+                                @{ Name = "V1"; Path = "EMERGENCY_BOOT_REPAIR.cmd"; Description = "Standard Repair" },
+                                @{ Name = "V2"; Path = "EMERGENCY_BOOT_REPAIR_V2.cmd"; Description = "Alternative Implementation" },
+                                @{ Name = "V3"; Path = "EMERGENCY_BOOT_REPAIR_V3.cmd"; Description = "Minimal Last Resort" }
                             )
                             
-                            if ($result -eq "Yes") {
-                                # Determine target drive from the repair result or use system drive
-                                $targetDriveForEmergency = $env:SystemDrive.TrimEnd(':')
-                                try {
-                                    if ($result.PSObject.Properties.Name -contains 'TargetDrive') {
-                                        $targetDriveForEmergency = $result.TargetDrive.TrimEnd(':')
-                                    }
-                                } catch {}
+                            $bootRestored = $false
+                            $repairThatFixed = $null
+                            
+                            foreach ($repair in $emergencyRepairs) {
+                                $repairPath = Join-Path $scriptRoot $repair.Path
+                                if (-not (Test-Path $repairPath)) {
+                                    continue
+                                }
                                 
-                                # Offer emergency repairs
-                                Test-BootReadinessAndOfferEmergency -LastRepairAttempt "One-Click Repair" -TargetDrive $targetDriveForEmergency
+                                try {
+                                    $repairDesc = if ($repair.Description) { " ($($repair.Description))" } else { "" }
+                                    $repairInfo = "Emergency Boot Repair $($repair.Name)$repairDesc"
+                                    
+                                    Update-StatusBar -Message "Running $repairInfo..." -ShowProgress
+                                    
+                                    if ($fixerOutput) {
+                                        $fixerOutput.Text += "`n[$([DateTime]::Now.ToString('HH:mm:ss'))] Starting $repairInfo...`n"
+                                        $fixerOutput.ScrollToEnd()
+                                    }
+                                    
+                                    # Run emergency repair
+                                    $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$repairPath`"" -Wait -NoNewWindow -PassThru
+                                    $exitCode = $process.ExitCode
+                                    
+                                    $repairHistory.EmergencyRepairsAttempted += @{
+                                        Name = $repair.Name
+                                        Description = $repair.Description
+                                        ExitCode = $exitCode
+                                        Timestamp = [DateTime]::Now
+                                    }
+                                    
+                                    if ($fixerOutput) {
+                                        $fixerOutput.Text += "  Exit Code: $exitCode`n"
+                                        $fixerOutput.ScrollToEnd()
+                                    }
+                                    
+                                    # Validate boot readiness after this repair
+                                    $bootableAfter = $false
+                                    $validationIssues = @()
+                                    
+                                    try {
+                                        # Check winload.efi
+                                        $winloadPath = "$targetDriveForEmergency`:\Windows\System32\boot\winload.efi"
+                                        $winloadPathAlt = "$targetDriveForEmergency`:\Windows\System32\winload.efi"
+                                        $winloadExists = (Test-Path -LiteralPath $winloadPath) -or (Test-Path -LiteralPath $winloadPathAlt)
+                                        
+                                        # Check BCD
+                                        $bcdValid = $false
+                                        try {
+                                            $bcdOutput = & bcdedit /store "$targetDriveForEmergency`:\Boot\BCD" /enum {default} 2>&1
+                                            if ($LASTEXITCODE -eq 0 -and $bcdOutput -match "winload\.efi|winload\.exe") {
+                                                $bcdValid = $true
+                                            } else {
+                                                $validationIssues += "BCD entry missing or invalid"
+                                            }
+                                        } catch {
+                                            $validationIssues += "BCD check failed: $($_.Exception.Message)"
+                                        }
+                                        
+                                        # Check boot files
+                                        $bootFilesExist = $false
+                                        $bootFiles = @(
+                                            "$targetDriveForEmergency`:\Windows\System32\boot\bootmgr.efi",
+                                            "$targetDriveForEmergency`:\Windows\Boot\EFI\bootmgfw.efi"
+                                        )
+                                        $bootFilesFound = 0
+                                        foreach ($file in $bootFiles) {
+                                            if (Test-Path -LiteralPath $file) {
+                                                $bootFilesFound++
+                                            }
+                                        }
+                                        if ($bootFilesFound -gt 0) {
+                                            $bootFilesExist = $true
+                                        } else {
+                                            $validationIssues += "Boot manager files missing"
+                                        }
+                                        
+                                        # Overall boot readiness
+                                        if ($winloadExists -and $bcdValid -and $bootFilesExist) {
+                                            $bootableAfter = $true
+                                        } else {
+                                            if (-not $winloadExists) {
+                                                $validationIssues += "winload.efi missing"
+                                            }
+                                            if (-not $bcdValid) {
+                                                $validationIssues += "BCD entry invalid"
+                                            }
+                                            if (-not $bootFilesExist) {
+                                                $validationIssues += "Boot manager files missing"
+                                            }
+                                        }
+                                        
+                                    } catch {
+                                        $validationIssues += "Validation error: $($_.Exception.Message)"
+                                    }
+                                    
+                                    if ($bootableAfter) {
+                                        $bootRestored = $true
+                                        $repairThatFixed = $repair.Name
+                                        
+                                        # Determine what was fixed by comparing initial issues with current state
+                                        $fixedIssues = @()
+                                        foreach ($initialIssue in $repairHistory.InitialIssues) {
+                                            # Check if this issue is no longer present
+                                            $stillPresent = $false
+                                            foreach ($currentIssue in $validationIssues) {
+                                                if ($currentIssue -like "*$initialIssue*" -or $initialIssue -like "*$currentIssue*") {
+                                                    $stillPresent = $true
+                                                    break
+                                                }
+                                            }
+                                            if (-not $stillPresent) {
+                                                $fixedIssues += $initialIssue
+                                            }
+                                        }
+                                        
+                                        $repairHistory.IssuesFixed = $fixedIssues
+                                        $repairHistory.FinalStatus = "Success"
+                                        
+                                        Update-StatusBar -Message "✅ Boot restored after $repairInfo!" -HideProgress
+                                        
+                                        if ($fixerOutput) {
+                                            $fixerOutput.Text += "`n✅ BOOT READINESS RESTORED after $repairInfo!`n"
+                                            $fixerOutput.Text += "="*60 + "`n"
+                                            $fixerOutput.ScrollToEnd()
+                                        }
+                                        
+                                        # Build success report
+                                        $successReport = "✅ BOOT ISSUES FIXED!`n`n"
+                                        $successReport += "="*60 + "`n"
+                                        $successReport += "REPAIR SUMMARY`n"
+                                        $successReport += "="*60 + "`n`n"
+                                        
+                                        $successReport += "Initial Issues Found:`n"
+                                        foreach ($issue in $repairHistory.InitialIssues) {
+                                            $successReport += "  • $issue`n"
+                                        }
+                                        $successReport += "`n"
+                                        
+                                        $successReport += "Emergency Repair That Fixed It:`n"
+                                        $successReport += "  • Emergency Boot Repair $($repair.Name) ($($repair.Description))`n"
+                                        $successReport += "`n"
+                                        
+                                        if ($repairHistory.IssuesFixed.Count -gt 0) {
+                                            $successReport += "Issues Fixed:`n"
+                                            foreach ($fixed in $repairHistory.IssuesFixed) {
+                                                $successReport += "  ✓ $fixed`n"
+                                            }
+                                            $successReport += "`n"
+                                        }
+                                        
+                                        $successReport += "Commands That Fixed The Issues:`n"
+                                        $successReport += "  • Emergency Boot Repair $($repair.Name) executed successfully`n"
+                                        $successReport += "  • Exit Code: $exitCode`n"
+                                        $successReport += "`n"
+                                        
+                                        $successReport += "Current Boot Status: ✅ READY TO BOOT`n"
+                                        $successReport += "  ✓ winload.efi: Present`n"
+                                        $successReport += "  ✓ BCD Entry: Valid`n"
+                                        $successReport += "  ✓ Boot Files: Present`n"
+                                        
+                                        if ($txtOneClickStatus) {
+                                            $txtOneClickStatus.Text = $successReport
+                                        }
+                                        
+                                        if ($fixerOutput) {
+                                            $fixerOutput.Text += "`n" + $successReport
+                                            $fixerOutput.ScrollToEnd()
+                                        }
+                                        
+                                        [System.Windows.MessageBox]::Show(
+                                            $successReport,
+                                            "✅ Boot Issues Fixed!",
+                                            "OK",
+                                            "Information"
+                                        ) | Out-Null
+                                        
+                                        break  # Stop trying more repairs
+                                    } else {
+                                        if ($fixerOutput) {
+                                            $fixerOutput.Text += "  ⚠ Boot not ready yet. Issues remaining:`n"
+                                            foreach ($issue in $validationIssues) {
+                                                $fixerOutput.Text += "    • $issue`n"
+                                            }
+                                            $fixerOutput.Text += "  Continuing to next emergency repair...`n"
+                                            $fixerOutput.ScrollToEnd()
+                                        }
+                                        Update-StatusBar -Message "$repairInfo completed but boot not ready yet..." -ShowProgress
+                                    }
+                                } catch {
+                                    Write-Warning "Emergency Boot Repair $($repair.Name) failed: $_"
+                                    if ($fixerOutput) {
+                                        $fixerOutput.Text += "  ❌ Error: $($_.Exception.Message)`n"
+                                        $fixerOutput.ScrollToEnd()
+                                    }
+                                }
+                            }
+                            
+                            # Final status report if boot was not restored
+                            if (-not $bootRestored) {
+                                $repairHistory.FinalStatus = "Failed - All Emergency Repairs Attempted"
+                                
+                                $failureReport = "❌ ALL REPAIRS FAILED`n`n"
+                                $failureReport += "="*60 + "`n"
+                                $failureReport += "REPAIR SUMMARY`n"
+                                $failureReport += "="*60 + "`n`n"
+                                
+                                $failureReport += "Initial Issues Found:`n"
+                                foreach ($issue in $repairHistory.InitialIssues) {
+                                    $failureReport += "  • $issue`n"
+                                }
+                                $failureReport += "`n"
+                                
+                                $failureReport += "Emergency Repairs Attempted:`n"
+                                foreach ($attempt in $repairHistory.EmergencyRepairsAttempted) {
+                                    $failureReport += "  • Emergency Boot Repair $($attempt.Name) ($($attempt.Description)) - Exit Code: $($attempt.ExitCode)`n"
+                                }
+                                $failureReport += "`n"
+                                
+                                $failureReport += "Final Status: ❌ BOOT NOT RESTORED`n"
+                                $failureReport += "All repair attempts have been exhausted.`n"
+                                $failureReport += "Please check the detailed output above for specific issues.`n"
+                                
+                                if ($txtOneClickStatus) {
+                                    $txtOneClickStatus.Text = $failureReport
+                                }
+                                
+                                if ($fixerOutput) {
+                                    $fixerOutput.Text += "`n" + $failureReport
+                                    $fixerOutput.ScrollToEnd()
+                                }
+                                
+                                Update-StatusBar -Message "All repairs attempted - Boot not restored" -HideProgress
+                                
+                                [System.Windows.MessageBox]::Show(
+                                    $failureReport,
+                                    "❌ All Repairs Failed",
+                                    "OK",
+                                    "Error"
+                                ) | Out-Null
                             }
                         }
                     } else {
@@ -3988,6 +5027,716 @@ if ($null -ne $W) {
         Write-Host "[GUI] This means the button handler will NOT work!" -ForegroundColor Red
     }  # End of if ($btnOneClickRepair)
     
+    # Preview Only (Dry Run) button handler
+    $btnOneClickPreview = Get-Control -Name "BtnOneClickPreview" -Silent
+    if ($btnOneClickPreview) {
+        Write-Verbose "Preview Only button found and wiring handler..." -Verbose
+        Write-Host "[GUI] Wiring Preview Only button handler..." -ForegroundColor Cyan
+        $btnOneClickPreview.Add_Click({
+            try {
+                # Disable button immediately to prevent multiple clicks
+                if ($W -and $W.Dispatcher) {
+                    $W.Dispatcher.Invoke([action]{
+                        $btnOneClickPreview.IsEnabled = $false
+                    }, [System.Windows.Threading.DispatcherPriority]::Send)
+                } else {
+                    $btnOneClickPreview.IsEnabled = $false
+                }
+                
+                # Update status bar
+                Update-StatusBar -Message "Preview Only (Dry Run): Analyzing what would be done..." -ShowProgress
+                
+                # Get controls
+                $txtOneClickStatus = Get-Control -Name "txtOneClickStatus" -Silent
+                $fixerOutput = Get-Control -Name "FixerOutput" -Silent
+                $oneClickDriveCombo = Get-Control -Name "OneClickDriveCombo" -Silent
+                $simulateCombo = Get-Control -Name "SimulateIssueCombo" -Silent
+                
+                # Determine target drive
+                $targetDrive = "C"
+                if ($oneClickDriveCombo -and $oneClickDriveCombo.SelectedItem) {
+                    $selectedDrive = $oneClickDriveCombo.SelectedItem
+                    if ($selectedDrive -match '^([A-Z]):') {
+                        $targetDrive = $matches[1]
+                    }
+                }
+                
+                # Get simulation scenario if any
+                $simulationScenario = $null
+                if ($simulateCombo -and $simulateCombo.SelectedItem) {
+                    $selectedSim = $simulateCombo.SelectedItem
+                    if ($selectedSim.Content -ne "None") {
+                        $simulationScenario = $selectedSim.Content
+                    }
+                }
+                
+                # Build preview text
+                $previewText = "PREVIEW MODE (DRY RUN) - NO CHANGES WILL BE MADE`n"
+                $previewText += "===============================================================`n"
+                $previewText += "Target Drive: $targetDrive`:`n"
+                if ($simulationScenario) {
+                    $previewText += "Simulation Scenario: $simulationScenario`n"
+                }
+                $previewText += "Mode: Preview Only (Dry Run)`n"
+                $previewText += "===============================================================`n`n"
+                
+                $previewText += "The following operations would be performed:`n`n"
+                $previewText += "1. Scan for Windows installations on $targetDrive`:...`n"
+                $previewText += "2. Check for missing winload.efi`n"
+                $previewText += "3. Verify BCD configuration`n"
+                $previewText += "4. Check for missing storage drivers`n"
+                $previewText += "5. Analyze boot log for errors`n"
+                $previewText += "6. Check event logs for boot-related issues`n`n"
+                
+                $previewText += "COMMANDS THAT WOULD BE RUN:`n"
+                $previewText += "  - Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode Auto -DryRun`n"
+                if ($simulationScenario) {
+                    $previewText += "  - SimulationScenario: $simulationScenario`n"
+                }
+                $previewText += "`n"
+                
+                $previewText += "⚠ PREVIEW MODE: No changes will be made to your system.`n"
+                $previewText += "This is a safe way to see what repairs would be performed.`n`n"
+                $previewText += "To actually perform the repairs, click 'Execute Repairs' instead.`n"
+                
+                # Update UI
+                if ($fixerOutput) {
+                    if ($W -and $W.Dispatcher) {
+                        $W.Dispatcher.Invoke([action]{
+                            $fixerOutput.Text = $previewText
+                            $fixerOutput.ScrollToEnd()
+                        }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                    } else {
+                        $fixerOutput.Text = $previewText
+                        $fixerOutput.ScrollToEnd()
+                    }
+                }
+                
+                if ($txtOneClickStatus) {
+                    if ($W -and $W.Dispatcher) {
+                        $W.Dispatcher.Invoke([action]{
+                            $txtOneClickStatus.Text = "Preview complete. Review the commands above. No changes were made."
+                        }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                    } else {
+                        $txtOneClickStatus.Text = "Preview complete. Review the commands above. No changes were made."
+                    }
+                }
+                
+                Update-StatusBar -Message "Preview Only (Dry Run) complete - No changes made" -HideProgress
+                
+            } catch {
+                $errorMsg = "Error in Preview Only mode: $($_.Exception.Message)"
+                Write-Host $errorMsg -ForegroundColor Red
+                Update-StatusBar -Message $errorMsg -HideProgress
+                [System.Windows.MessageBox]::Show($errorMsg, "Preview Error", "OK", "Error") | Out-Null
+            } finally {
+                # Re-enable button
+                if ($W -and $W.Dispatcher) {
+                    $W.Dispatcher.Invoke([action]{
+                        $btnOneClickPreview.IsEnabled = $true
+                    }, [System.Windows.Threading.DispatcherPriority]::Normal)
+                } else {
+                    $btnOneClickPreview.IsEnabled = $true
+                }
+            }
+        })
+        Write-Host "[GUI] Preview Only button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnOneClickPreview button NOT FOUND in XAML!" -ForegroundColor Yellow
+    }
+    
+    # Brute Force Mode button handler - triggers Execute Repairs in Brute Force mode
+    $btnOneClickBruteForce = Get-Control -Name "BtnOneClickBruteForce" -Silent
+    if ($btnOneClickBruteForce) {
+        Write-Verbose "Brute Force button found and wiring handler..." -Verbose
+        Write-Host "[GUI] Wiring Brute Force button handler..." -ForegroundColor Cyan
+        $btnOneClickBruteForce.Add_Click({
+            # Trigger the Execute Repairs button programmatically with Brute Force mode
+            # This reuses the existing Execute Repairs handler but forces brute force mode
+            $repairModeCombo = Get-Control -Name "RepairModeCombo" -Silent
+            if ($repairModeCombo) {
+                # Set combo to Brute Force mode
+                foreach ($item in $repairModeCombo.Items) {
+                    if ($item.Tag -eq "BruteForce") {
+                        $repairModeCombo.SelectedItem = $item
+                        break
+                    }
+                }
+            }
+            # Trigger Execute Repairs button click
+            $btnOneClickRepair = Get-Control -Name "BtnOneClickRepair" -Silent
+            if ($btnOneClickRepair) {
+                $btnOneClickRepair.RaiseEvent([System.Windows.RoutedEventArgs]::new([System.Windows.Controls.Button]::ClickEvent))
+            } else {
+                [System.Windows.MessageBox]::Show(
+                    "Execute Repairs button not found. Cannot trigger Brute Force repair.",
+                    "Error",
+                    "OK",
+                    "Error"
+                ) | Out-Null
+            }
+        })
+        Write-Host "[GUI] Brute Force button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnOneClickBruteForce button NOT FOUND in XAML!" -ForegroundColor Yellow
+    }
+    
+    # Emergency Fix V1 button handler
+    $btnEmergencyFixV1 = Get-Control -Name "BtnEmergencyFixV1" -Silent
+    if ($btnEmergencyFixV1) {
+        Write-Host "[GUI] Wiring Emergency Fix V1 button handler..." -ForegroundColor Cyan
+        $btnEmergencyFixV1.Add_Click({
+            try {
+                $btnEmergencyFixV1.IsEnabled = $false
+                $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+                $emergencyPath = Join-Path $scriptRoot "EMERGENCY_BOOT_REPAIR.cmd"
+                $fixerOutput = Get-Control -Name "FixerOutput" -Silent
+                $txtOneClickStatus = Get-Control -Name "txtOneClickStatus" -Silent
+                
+                if (Test-Path $emergencyPath) {
+                    Update-StatusBar -Message "Running Emergency Boot Repair V1..." -ShowProgress
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "`n[$([DateTime]::Now.ToString('HH:mm:ss'))] Starting Emergency Boot Repair V1 (Standard Repair)...`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$emergencyPath`"" -Wait -NoNewWindow -PassThru
+                    $exitCode = $process.ExitCode
+                    
+                    Update-StatusBar -Message "Emergency Boot Repair V1 completed (Exit Code: $exitCode)" -HideProgress
+                    
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "  Exit Code: $exitCode`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    # Check boot readiness
+                    $targetDrive = $env:SystemDrive.TrimEnd(':')
+                    $bootCheck = Test-BootReadinessComprehensive -TargetDrive $targetDrive
+                    
+                    if ($bootCheck.Bootable) {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "✅ Emergency Fix V1 completed - Boot appears fixed!"
+                        }
+                        [System.Windows.MessageBox]::Show(
+                            "✅ Emergency Fix V1 Completed!`n`nBoot readiness check passed. System should now be bootable.",
+                            "Emergency Fix V1: Success",
+                            "OK",
+                            "Information"
+                        ) | Out-Null
+                    } else {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "⚠ Emergency Fix V1 completed but boot issue may persist."
+                        }
+                        $message = "⚠ Emergency Fix V1 Completed`n`nExit Code: $exitCode`n`n"
+                        if ($bootCheck.Issues.Count -gt 0) {
+                            $message += "Remaining issues:`n"
+                            foreach ($issue in $bootCheck.Issues) {
+                                $message += "  • $issue`n"
+                            }
+                            $message += "`nWould you like to try the remaining emergency fixes?"
+                            $result = [System.Windows.MessageBox]::Show($message, "Emergency Fix V1: Continue?", "YesNo", "Question")
+                            if ($result -eq "Yes") {
+                                # Offer to run remaining fixes (start from V2 since V1 was just attempted)
+                                Invoke-RepairWizard -TargetDrive $targetDrive -StartFrom "V2"
+                            }
+                        } else {
+                            [System.Windows.MessageBox]::Show($message, "Emergency Fix V1: Completed", "OK", "Information") | Out-Null
+                        }
+                    }
+                } else {
+                    [System.Windows.MessageBox]::Show("Emergency Boot Repair V1 not found at: $emergencyPath", "File Not Found", "OK", "Warning") | Out-Null
+                }
+            } catch {
+                Update-StatusBar -Message "Emergency Fix V1 failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Emergency Fix V1: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            } finally {
+                $btnEmergencyFixV1.IsEnabled = $true
+            }
+        })
+        Write-Host "[GUI] Emergency Fix V1 button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnEmergencyFixV1 button NOT FOUND in XAML!" -ForegroundColor Yellow
+    }
+    
+    # Emergency Fix V2 button handler
+    $btnEmergencyFixV2 = Get-Control -Name "BtnEmergencyFixV2" -Silent
+    if ($btnEmergencyFixV2) {
+        Write-Host "[GUI] Wiring Emergency Fix V2 button handler..." -ForegroundColor Cyan
+        $btnEmergencyFixV2.Add_Click({
+            try {
+                $btnEmergencyFixV2.IsEnabled = $false
+                $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+                $emergencyPath = Join-Path $scriptRoot "EMERGENCY_BOOT_REPAIR_V2.cmd"
+                $fixerOutput = Get-Control -Name "FixerOutput" -Silent
+                $txtOneClickStatus = Get-Control -Name "txtOneClickStatus" -Silent
+                
+                if (Test-Path $emergencyPath) {
+                    Update-StatusBar -Message "Running Emergency Boot Repair V2..." -ShowProgress
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "`n[$([DateTime]::Now.ToString('HH:mm:ss'))] Starting Emergency Boot Repair V2 (Alternative Implementation)...`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$emergencyPath`"" -Wait -NoNewWindow -PassThru
+                    $exitCode = $process.ExitCode
+                    
+                    Update-StatusBar -Message "Emergency Boot Repair V2 completed (Exit Code: $exitCode)" -HideProgress
+                    
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "  Exit Code: $exitCode`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    # Check boot readiness
+                    $targetDrive = $env:SystemDrive.TrimEnd(':')
+                    $bootCheck = Test-BootReadinessComprehensive -TargetDrive $targetDrive
+                    
+                    if ($bootCheck.Bootable) {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "✅ Emergency Fix V2 completed - Boot appears fixed!"
+                        }
+                        [System.Windows.MessageBox]::Show(
+                            "✅ Emergency Fix V2 Completed!`n`nBoot readiness check passed. System should now be bootable.",
+                            "Emergency Fix V2: Success",
+                            "OK",
+                            "Information"
+                        ) | Out-Null
+                    } else {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "⚠ Emergency Fix V2 completed but boot issue may persist."
+                        }
+                        $message = "⚠ Emergency Fix V2 Completed`n`nExit Code: $exitCode`n`n"
+                        if ($bootCheck.Issues.Count -gt 0) {
+                            $message += "Remaining issues:`n"
+                            foreach ($issue in $bootCheck.Issues) {
+                                $message += "  • $issue`n"
+                            }
+                            $message += "`nWould you like to try the remaining emergency fixes?"
+                            $result = [System.Windows.MessageBox]::Show($message, "Emergency Fix V2: Continue?", "YesNo", "Question")
+                            if ($result -eq "Yes") {
+                                # Offer to run remaining fixes (start from V3 since V2 was just attempted)
+                                Invoke-RepairWizard -TargetDrive $targetDrive -StartFrom "V3"
+                            }
+                        } else {
+                            [System.Windows.MessageBox]::Show($message, "Emergency Fix V2: Completed", "OK", "Information") | Out-Null
+                        }
+                    }
+                } else {
+                    [System.Windows.MessageBox]::Show("Emergency Boot Repair V2 not found at: $emergencyPath", "File Not Found", "OK", "Warning") | Out-Null
+                }
+            } catch {
+                Update-StatusBar -Message "Emergency Fix V2 failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Emergency Fix V2: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            } finally {
+                $btnEmergencyFixV2.IsEnabled = $true
+            }
+        })
+        Write-Host "[GUI] Emergency Fix V2 button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnEmergencyFixV2 button NOT FOUND in XAML!" -ForegroundColor Yellow
+    }
+    
+    # Emergency Fix V3 button handler
+    $btnEmergencyFixV3 = Get-Control -Name "BtnEmergencyFixV3" -Silent
+    if ($btnEmergencyFixV3) {
+        Write-Host "[GUI] Wiring Emergency Fix V3 button handler..." -ForegroundColor Cyan
+        $btnEmergencyFixV3.Add_Click({
+            try {
+                $btnEmergencyFixV3.IsEnabled = $false
+                $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+                $emergencyPath = Join-Path $scriptRoot "EMERGENCY_BOOT_REPAIR_V3.cmd"
+                $fixerOutput = Get-Control -Name "FixerOutput" -Silent
+                $txtOneClickStatus = Get-Control -Name "txtOneClickStatus" -Silent
+                
+                if (Test-Path $emergencyPath) {
+                    Update-StatusBar -Message "Running Emergency Boot Repair V3..." -ShowProgress
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "`n[$([DateTime]::Now.ToString('HH:mm:ss'))] Starting Emergency Boot Repair V3 (Minimal Last Resort)...`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$emergencyPath`"" -Wait -NoNewWindow -PassThru
+                    $exitCode = $process.ExitCode
+                    
+                    Update-StatusBar -Message "Emergency Boot Repair V3 completed (Exit Code: $exitCode)" -HideProgress
+                    
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "  Exit Code: $exitCode`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    # Check boot readiness
+                    $targetDrive = $env:SystemDrive.TrimEnd(':')
+                    $bootCheck = Test-BootReadinessComprehensive -TargetDrive $targetDrive
+                    
+                    if ($bootCheck.Bootable) {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "✅ Emergency Fix V3 completed - Boot appears fixed!"
+                        }
+                        [System.Windows.MessageBox]::Show(
+                            "✅ Emergency Fix V3 Completed!`n`nBoot readiness check passed. System should now be bootable.",
+                            "Emergency Fix V3: Success",
+                            "OK",
+                            "Information"
+                        ) | Out-Null
+                    } else {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "⚠ Emergency Fix V3 completed but boot issue may persist."
+                        }
+                        $message = "⚠ Emergency Fix V3 Completed`n`nExit Code: $exitCode`n`n"
+                        if ($bootCheck.Issues.Count -gt 0) {
+                            $message += "Remaining issues:`n"
+                            foreach ($issue in $bootCheck.Issues) {
+                                $message += "  • $issue`n"
+                            }
+                            $message += "`nThis was the last emergency fix. Consider running the Repair Wizard or Brute Force mode."
+                            [System.Windows.MessageBox]::Show($message, "Emergency Fix V3: Completed", "OK", "Warning") | Out-Null
+                        } else {
+                            [System.Windows.MessageBox]::Show($message, "Emergency Fix V3: Completed", "OK", "Information") | Out-Null
+                        }
+                    }
+                } else {
+                    [System.Windows.MessageBox]::Show("Emergency Boot Repair V3 not found at: $emergencyPath", "File Not Found", "OK", "Warning") | Out-Null
+                }
+            } catch {
+                Update-StatusBar -Message "Emergency Fix V3 failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Emergency Fix V3: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            } finally {
+                $btnEmergencyFixV3.IsEnabled = $true
+            }
+        })
+        Write-Host "[GUI] Emergency Fix V3 button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnEmergencyFixV3 button NOT FOUND in XAML!" -ForegroundColor Yellow
+    }
+    
+    # Emergency Fix V4 button handler
+    $btnEmergencyFixV4 = Get-Control -Name "BtnEmergencyFixV4" -Silent
+    if ($btnEmergencyFixV4) {
+        Write-Host "[GUI] Wiring Emergency Fix V4 button handler..." -ForegroundColor Cyan
+        $btnEmergencyFixV4.Add_Click({
+            try {
+                $btnEmergencyFixV4.IsEnabled = $false
+                $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+                $emergencyPath = Join-Path $scriptRoot "EMERGENCY_BOOT_REPAIR_V4.cmd"
+                $fixerOutput = Get-Control -Name "FixerOutput" -Silent
+                $txtOneClickStatus = Get-Control -Name "txtOneClickStatus" -Silent
+                
+                if (Test-Path $emergencyPath) {
+                    Update-StatusBar -Message "Running Emergency Boot Repair V4 (Intelligent Minimal Repair)..." -ShowProgress
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "`n[$([DateTime]::Now.ToString('HH:mm:ss'))] Starting Emergency Boot Repair V4 (Intelligent Minimal Repair - Fastest)...`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$emergencyPath`"" -Wait -NoNewWindow -PassThru
+                    $exitCode = $process.ExitCode
+                    
+                    Update-StatusBar -Message "Emergency Boot Repair V4 completed (Exit Code: $exitCode)" -HideProgress
+                    
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "  Exit Code: $exitCode`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    # Check boot readiness
+                    $targetDrive = $env:SystemDrive.TrimEnd(':')
+                    $bootCheck = Test-BootReadinessComprehensive -TargetDrive $targetDrive
+                    
+                    if ($bootCheck.Bootable) {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "✅ Emergency Fix V4 completed - Boot appears fixed!"
+                        }
+                        [System.Windows.MessageBox]::Show(
+                            "✅ Emergency Fix V4 Completed!`n`nBoot readiness check passed. System should now be bootable.",
+                            "Emergency Fix V4: Success",
+                            "OK",
+                            "Information"
+                        ) | Out-Null
+                    } else {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "⚠ Emergency Fix V4 completed but boot issue may persist."
+                        }
+                        $message = "⚠ Emergency Fix V4 Completed`n`nExit Code: $exitCode`n`n"
+                        if ($bootCheck.Issues.Count -gt 0) {
+                            $message += "Remaining issues:`n"
+                            foreach ($issue in $bootCheck.Issues) {
+                                $message += "  • $issue`n"
+                            }
+                            $message += "`nWould you like to try the remaining emergency fixes (Brute Force → V1 → V2 → V3)?"
+                            $result = [System.Windows.MessageBox]::Show($message, "Emergency Fix V4: Continue?", "YesNo", "Question")
+                            if ($result -eq "Yes") {
+                                # Offer to run remaining fixes via wizard (start from Brute Force since V4 was just attempted)
+                                Invoke-RepairWizard -TargetDrive $targetDrive -StartFrom "Brute Force"
+                            }
+                        } else {
+                            [System.Windows.MessageBox]::Show($message, "Emergency Fix V4: Completed", "OK", "Information") | Out-Null
+                        }
+                    }
+                } else {
+                    [System.Windows.MessageBox]::Show("Emergency Boot Repair V4 not found at: $emergencyPath", "File Not Found", "OK", "Warning") | Out-Null
+                }
+            } catch {
+                Update-StatusBar -Message "Emergency Fix V4 failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Emergency Fix V4: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            } finally {
+                $btnEmergencyFixV4.IsEnabled = $true
+            }
+        })
+        Write-Host "[GUI] Emergency Fix V4 button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnEmergencyFixV4 button NOT FOUND in XAML!" -ForegroundColor Yellow
+    }
+    
+    # Repair Wizard button handler
+    $btnRepairWizard = Get-Control -Name "BtnRepairWizard" -Silent
+    if ($btnRepairWizard) {
+        Write-Host "[GUI] Wiring Repair Wizard button handler..." -ForegroundColor Cyan
+        $btnRepairWizard.Add_Click({
+            try {
+                $btnRepairWizard.IsEnabled = $false
+                $targetDrive = $env:SystemDrive.TrimEnd(':')
+                
+                # Show confirmation dialog
+                $confirm = [System.Windows.MessageBox]::Show(
+                    "🔧 Repair Wizard`n`nThis will run repairs in the following sequence:`n`n1. V4 (Intelligent - Fastest, checks issues first)`n2. Brute Force (Aggressive)`n3. V1 (Standard Emergency)`n4. V2 (Alternative)`n5. V3 (Last Resort)`n`nThe wizard will check boot readiness after each repair and stop if boot is fixed.`n`nWould you like to continue?",
+                    "Repair Wizard",
+                    "YesNo",
+                    "Question"
+                )
+                
+                if ($confirm -eq "Yes") {
+                    Invoke-RepairWizard -TargetDrive $targetDrive
+                }
+            } catch {
+                Update-StatusBar -Message "Repair Wizard failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run Repair Wizard: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            } finally {
+                $btnRepairWizard.IsEnabled = $true
+            }
+        })
+        Write-Host "[GUI] Repair Wizard button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnRepairWizard button NOT FOUND in XAML!" -ForegroundColor Yellow
+    }
+    
+    # ========================================
+    # Settings menu handlers (must be after $W is created)
+    # ========================================
+    $btnDarkMode = Get-Control -Name "BtnDarkMode" -Silent
+    if ($btnDarkMode) {
+        $btnDarkMode.Add_Click({
+            Apply-DarkMode
+            Update-StatusBar -Message "Dark mode enabled" -HideProgress
+        })
+    }
+
+    $btnLightMode = Get-Control -Name "BtnLightMode" -Silent
+    if ($btnLightMode) {
+        $btnLightMode.Add_Click({
+            Apply-LightMode
+            Update-StatusBar -Message "Light mode enabled" -HideProgress
+        })
+    }
+
+    $btnCompactUI = Get-Control -Name "BtnCompactUI" -Silent
+    if ($btnCompactUI) {
+        $btnCompactUI.Add_Click({
+            Apply-CompactUI
+            Update-StatusBar -Message "Compact UI enabled" -HideProgress
+        })
+    }
+
+    $btnStandardUI = Get-Control -Name "BtnStandardUI" -Silent
+    if ($btnStandardUI) {
+        $btnStandardUI.Add_Click({
+            Apply-StandardUI
+            Update-StatusBar -Message "Standard UI enabled" -HideProgress
+        })
+    }
+
+    # Interface Scale Slider (in Settings menu)
+    $interfaceScaleSlider = Get-Control -Name "InterfaceScaleSlider" -Silent
+    $btnInterfaceScaleReset = Get-Control -Name "BtnInterfaceScaleReset" -Silent
+
+    if ($interfaceScaleSlider) {
+        # Initialize slider to current zoom level
+        $interfaceScaleSlider.Value = $script:ZoomLevel
+        
+        # Handle slider value change
+        $interfaceScaleSlider.Add_ValueChanged({
+            $newZoom = $interfaceScaleSlider.Value
+            Update-Zoom -NewZoom $newZoom
+        })
+    }
+
+    if ($btnInterfaceScaleReset) {
+        $btnInterfaceScaleReset.Add_Click({
+            if ($interfaceScaleSlider) {
+                $interfaceScaleSlider.Value = 1.0
+            }
+            Update-Zoom -NewZoom 1.0
+        })
+    }
+
+    # Boot Fixer tab info buttons (must be inside Start-GUI after $W is created)
+    $btnBootFixerInfo = Get-Control -Name "BtnBootFixerInfo" -Silent
+    if ($btnBootFixerInfo) {
+        $btnBootFixerInfo.Add_Click({
+            try {
+                $helpDoc = New-BootFixerHelpDocument
+                $helpContent = Get-Content $helpDoc -Raw
+                
+                [System.Windows.MessageBox]::Show(
+                    $helpContent,
+                    "Boot Fixer - Help Information",
+                    "OK",
+                    "Information"
+                )
+            } catch {
+                [System.Windows.MessageBox]::Show(
+                    "Error loading help document: $($_.Exception.Message)",
+                    "Error",
+                    "OK",
+                    "Error"
+                )
+            }
+        })
+    }
+
+    $btnBootFixerNotepad = Get-Control -Name "BtnBootFixerNotepad" -Silent
+    if ($btnBootFixerNotepad) {
+        $btnBootFixerNotepad.Add_Click({
+            try {
+                $helpDoc = New-BootFixerHelpDocument
+                $notepadOpened = Start-NotepadSafely -FilePath $helpDoc
+                if (-not $notepadOpened) {
+                    [System.Windows.MessageBox]::Show(
+                        "Could not open Notepad (limit reached or error). Help document saved to:`n$helpDoc",
+                        "Help Document",
+                        "OK",
+                        "Information"
+                    ) | Out-Null
+                }
+            } catch {
+                [System.Windows.MessageBox]::Show(
+                    "Error opening help document: $($_.Exception.Message)",
+                    "Error",
+                    "OK",
+                    "Error"
+                )
+            }
+        })
+    }
+    
+    # Boot Fixer Instructions button handler
+    $btnBootFixerInstructions = Get-Control -Name "BtnBootFixerInstructions" -Silent
+    if ($btnBootFixerInstructions) {
+        $btnBootFixerInstructions.Add_Click({
+            try {
+                Show-BootFixerInstructionsWindow
+            } catch {
+                [System.Windows.MessageBox]::Show(
+                    "Error showing instructions: $($_.Exception.Message)",
+                    "Error",
+                    "OK",
+                    "Error"
+                )
+            }
+        })
+        Write-Host "[GUI] Boot Fixer Instructions button handler wired successfully" -ForegroundColor Green
+    }
+    
+    # Menu Boot Fixer Instructions handler
+    $btnMenuBootFixerInstructions = Get-Control -Name "BtnMenuBootFixerInstructions" -Silent
+    if ($btnMenuBootFixerInstructions) {
+        $btnMenuBootFixerInstructions.Add_Click({
+            try {
+                Show-BootFixerInstructionsWindow
+            } catch {
+                [System.Windows.MessageBox]::Show(
+                    "Error showing instructions: $($_.Exception.Message)",
+                    "Error",
+                    "OK",
+                    "Error"
+                )
+            }
+        })
+        Write-Host "[GUI] Menu Boot Fixer Instructions handler wired successfully" -ForegroundColor Green
+    }
+
+    # Footer buttons: resize toggle and summary shortcut
+    $btnResizeWindow = Get-Control -Name "BtnResizeWindow"
+    if ($btnResizeWindow) {
+        $btnResizeWindow.Add_Click({
+            try {
+                # Use $script:W to access the window instance
+                $window = $script:W
+                if (-not $window) {
+                    # Fallback to Application.Current.MainWindow
+                    $window = [System.Windows.Application]::Current.MainWindow
+                }
+                
+                if ($window) {
+                    if ($window.WindowState -eq "Maximized") {
+                        $window.WindowState = "Normal"
+                        Update-StatusBar -Message "Window restored" -HideProgress
+                    } else {
+                        $window.WindowState = "Maximized"
+                        Update-StatusBar -Message "Window maximized" -HideProgress
+                    }
+                } else {
+                    Write-Warning "Window not found for resize operation"
+                }
+            } catch {
+                Write-Warning "Resize toggle failed: $_"
+                try {
+                    Update-StatusBar -Message "Resize failed: $_" -HideProgress
+                } catch {
+                    # Ignore if status bar update fails
+                }
+            }
+        })
+    }
+    
+    # One-Click Repair resize button handler
+    $btnOneClickResize = Get-Control -Name "BtnOneClickResize" -Silent
+    if ($btnOneClickResize) {
+        $btnOneClickResize.Add_Click({
+            try {
+                # Use $script:W to access the window instance
+                $window = $script:W
+                if (-not $window) {
+                    # Fallback to Application.Current.MainWindow
+                    $window = [System.Windows.Application]::Current.MainWindow
+                }
+                
+                if ($window) {
+                    if ($window.WindowState -eq "Maximized") {
+                        $window.WindowState = "Normal"
+                        Update-StatusBar -Message "Window restored" -HideProgress
+                    } else {
+                        $window.WindowState = "Maximized"
+                        Update-StatusBar -Message "Window maximized" -HideProgress
+                    }
+                } else {
+                    Write-Warning "Window not found for resize operation"
+                }
+            } catch {
+                Write-Warning "Resize toggle failed: $_"
+                try {
+                    Update-StatusBar -Message "Resize failed: $_" -HideProgress
+                } catch {
+                    # Ignore if status bar update fails
+                }
+            }
+        })
+        Write-Host "[GUI] One-Click Repair resize button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnOneClickResize button NOT FOUND in XAML!" -ForegroundColor Yellow
+    }
+    
     # ========================================
     # END OF BUTTON HANDLER REGISTRATION
     # All handlers must be registered BEFORE ShowDialog()!
@@ -4029,22 +5778,6 @@ if ($null -ne $W) {
     throw "Window object is null - cannot display GUI"
 }
 
-# Footer buttons: resize toggle and summary shortcut
-    $btnResizeWindow = Get-Control -Name "BtnResizeWindow"
-    if ($btnResizeWindow) {
-        $btnResizeWindow.Add_Click({
-            try {
-                $mainWin = [System.Windows.Application]::Current.MainWindow
-                if ($mainWin.WindowState -eq "Maximized") {
-                    $mainWin.WindowState = "Normal"
-                } else {
-                    $mainWin.WindowState = "Maximized"
-                }
-            } catch {
-                Write-Warning "Resize toggle failed: $_"
-            }
-        })
-    }
     $btnSummaryShortcut = Get-Control -Name "BtnSummaryShortcut"
     if ($btnSummaryShortcut) {
         $btnSummaryShortcut.Add_Click({
@@ -4284,6 +6017,9 @@ if ($null -ne $W) {
         # CRITICAL: Always reset guard flags and release resources
         # This ensures cleanup even if function throws or returns early
         $script:GUIIsRunning = $false
+        
+        # Call comprehensive cleanup to terminate all related processes
+        Stop-AllRelatedProcesses -Silent
         
         # Release mutex
         if ($script:GUIMutex) {
@@ -4628,6 +6364,309 @@ function Write-BCDLog {
         return $logPath
     } catch {
         return $null
+    }
+}
+
+function Show-BootFixerInstructionsWindow {
+    $instructions = @"
+═══════════════════════════════════════════════════════════════════════════════
+                    MIRACLE BOOT - RUNNING INSTRUCTIONS
+═══════════════════════════════════════════════════════════════════════════════
+
+🚀 QUICK WAYS TO RUN
+═══════════════════════════════════════════════════════════════════════════════
+
+QUICK WAY 1: RUN THE GUI (EASIEST METHOD)
+──────────────────────────────────────────
+From Windows (FullOS):
+  • Double-click: RunMiracleBoot.cmd
+  OR
+  • Right-click RunMiracleBoot.cmd → Run as Administrator
+  OR
+  • Open PowerShell as Admin, then:
+    cd "C:\path\to\MiracleBoot"
+    .\RunMiracleBoot.cmd
+
+From Command Prompt (CMD):
+  • Navigate to folder: cd /d "C:\path\to\MiracleBoot"
+  • Run: RunMiracleBoot.cmd
+
+From PowerShell:
+  • Navigate: cd "C:\path\to\MiracleBoot"
+  • Run: .\RunMiracleBoot.cmd
+  OR
+  • Direct: powershell -ExecutionPolicy Bypass -File .\MiracleBoot.ps1
+
+Expected Result: GUI window opens with all tabs and options
+
+
+QUICK WAY 2: RUN EMERGENCY FIX (CMD VERSION - NO GUI NEEDED)
+──────────────────────────────────────────────────────────────
+Emergency fixes can run directly from CMD without PowerShell or GUI.
+
+From Command Prompt (CMD) or SHIFT+F10:
+  • Navigate to folder: cd /d "D:\MiracleBoot" (or your drive letter)
+  
+  • Run Emergency Fix V4 (Recommended - Fastest, Intelligent):
+    EMERGENCY_BOOT_REPAIR_V4.cmd
+    
+  • Run Emergency Fix V1 (Standard):
+    EMERGENCY_BOOT_REPAIR.cmd
+    
+  • Run Emergency Fix V2 (Alternative):
+    EMERGENCY_BOOT_REPAIR_V2.cmd
+    
+  • Run Emergency Fix V3 (Last Resort):
+    EMERGENCY_BOOT_REPAIR_V3.cmd
+    
+  • Run All Emergency Fixes (Automatic Failover):
+    EMERGENCY_BOOT_REPAIR_WRAPPER.cmd
+
+What Each Emergency Fix Does:
+  • V4: Intelligent - Checks issues first, only fixes what's broken (FASTEST)
+  • V1: Standard comprehensive repair
+  • V2: Alternative implementation
+  • V3: Minimal last resort (basic commands only)
+  • Wrapper: Runs V4 → V1 → V2 → V3 automatically until one succeeds
+
+No Internet Required: Emergency fixes work offline from USB drive!
+
+
+QUICK WAY 3: RUN FROM USB IN RECOVERY ENVIRONMENT
+──────────────────────────────────────────────────
+1. Copy entire MiracleBoot folder to USB drive
+2. Boot into Windows Recovery (SHIFT+F10 or Advanced Options)
+3. In Command Prompt:
+   cd /d D:\MiracleBoot  (replace D: with your USB drive letter)
+   RunMiracleBoot.cmd
+   
+   OR for emergency fix only:
+   EMERGENCY_BOOT_REPAIR_V4.cmd
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+METHOD 1: SHIFT+F10 IN WINDOWS REPAIR ENVIRONMENT (RECOMMENDED)
+═══════════════════════════════════════════════════════════════════════════════
+
+When your computer won't boot and you see the Windows Recovery/Repair screen:
+
+STEP 1: Access Command Prompt
+─────────────────────────────
+1. On the Windows Recovery screen, click "Advanced options" or "Troubleshoot"
+2. Select "Advanced options" → "Command Prompt"
+   OR
+   Press SHIFT + F10 to open Command Prompt directly
+
+STEP 2: Enable Internet Connection
+──────────────────────────────────
+The MiracleBoot script will automatically attempt to enable internet, but you can
+also do it manually:
+
+Manual Network Setup (if needed):
+  • Type: wpeutil InitializeNetwork
+  • Wait for network initialization
+  • Type: ipconfig to verify network adapter is enabled
+  • If needed: netsh interface set interface "Ethernet" admin=enable
+  • Or for Wi-Fi: netsh wlan set hostednetwork mode=allow
+
+STEP 3: Download and Run MiracleBoot
+──────────────────────────────────────
+Option A: Download from Internet (if available)
+  • Type: powershell
+  • Then: Invoke-WebRequest -Uri "https://your-script-url" -OutFile "MiracleBoot.ps1"
+  • Then: .\MiracleBoot.ps1
+
+Option B: Run from USB Drive (if you have it)
+  • Insert USB drive with MiracleBoot
+  • Type: D:\MiracleBoot.ps1 (replace D: with your USB drive letter)
+  • Press Enter
+
+Option C: Run CMD Launcher (if available on USB)
+  • Navigate to USB: cd /d D:\
+  • Run: RunMiracleBoot.cmd or START_PWSH_USB.cmd
+
+AUTOMATIC INTERNET HANDLING
+────────────────────────────
+MiracleBoot automatically:
+  ✓ Detects if internet is available
+  ✓ Waits for network initialization if needed
+  ✓ Enables network adapters automatically
+  ✓ Tests connectivity before attempting downloads
+  ✓ Provides clear status messages about network state
+
+If internet operations are needed but network is unavailable, the script will:
+  • Show a clear message explaining the situation
+  • Wait up to 30 seconds for network to become available
+  • Offer alternative methods (USB, local files, etc.)
+
+
+METHOD 2: BOOTABLE USB WITH HIREN'S BOOTCD PE (ALTERNATIVE)
+═══════════════════════════════════════════════════════════════════════════════
+
+Hiren's BootCD PE provides a full Windows PE environment with network support.
+
+STEP 1: Create Bootable USB
+────────────────────────────
+1. Download Hiren's BootCD PE from: https://www.hirensbootcd.org/
+2. Use Rufus or similar tool to create bootable USB
+3. Copy MiracleBoot files to the USB drive
+
+STEP 2: Boot from USB
+──────────────────────
+1. Insert USB drive
+2. Boot computer and press F12/F2/DEL to access boot menu
+3. Select USB drive to boot from
+4. Wait for Hiren's BootCD PE to load
+
+STEP 3: Enable Network (Usually Automatic)
+──────────────────────────────────────────
+Hiren's BootCD PE typically enables network automatically, but if needed:
+  • Network icon should appear in system tray
+  • Click to configure if needed
+  • Or use: wpeutil InitializeNetwork
+
+STEP 4: Run MiracleBoot
+────────────────────────
+1. Open File Explorer
+2. Navigate to USB drive
+3. Double-click: RunMiracleBoot.cmd
+   OR
+4. Open PowerShell and run: .\MiracleBoot.ps1
+
+
+METHOD 3: OTHER BOOTABLE RECOVERY ENVIRONMENTS
+═══════════════════════════════════════════════════════════════════════════════
+
+Ventoy + Windows PE:
+  • Create Ventoy USB with Windows PE ISO
+  • Copy MiracleBoot to USB
+  • Boot from USB and run from USB drive
+
+Macrium Reflect Rescue Media:
+  • Create rescue media with Macrium Reflect
+  • Copy MiracleBoot to USB
+  • Boot from rescue media
+  • Access Command Prompt and run MiracleBoot
+
+Windows Installation Media:
+  • Boot from Windows installation USB/DVD
+  • Press SHIFT+F10 at installation screen
+  • Run MiracleBoot from USB or download
+
+
+IMPORTANT NOTES
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ Internet Connection:
+  • MiracleBoot will automatically detect and wait for internet
+  • Network initialization may take 10-30 seconds
+  • Script will not proceed with internet operations until connection is ready
+  • You'll see clear status messages about network state
+
+✓ USB Drive Access:
+  • Ensure USB drive is accessible in the recovery environment
+  • Drive letters may differ from normal Windows (e.g., D:, E:, F:)
+  • Use: dir D: to check if files are accessible
+
+✓ Administrator Privileges:
+  • MiracleBoot requires administrator privileges
+  • In recovery environments, you typically have admin rights automatically
+  • If prompted, click "Yes" to allow
+
+✓ BitLocker:
+  • If your drive is BitLocker encrypted, you may need the recovery key
+  • MiracleBoot will detect BitLocker and provide guidance
+  • Have your BitLocker recovery key ready (48-digit number)
+
+✓ Script Location:
+  • Keep MiracleBoot files together in the same folder
+  • Required files: MiracleBoot.ps1, DefensiveBootCore.ps1, WinRepairGUI.ps1
+  • Emergency repair CMD files should be in the same directory
+
+
+TROUBLESHOOTING
+═══════════════════════════════════════════════════════════════════════════════
+
+Problem: "Network not available"
+Solution: Wait 30 seconds, or manually run: wpeutil InitializeNetwork
+
+Problem: "Script not found"
+Solution: Check USB drive letter (may be D:, E:, or F: instead of expected)
+
+Problem: "PowerShell execution policy error"
+Solution: Run: powershell -ExecutionPolicy Bypass -File .\MiracleBoot.ps1
+
+Problem: "Access denied"
+Solution: Ensure you're running as administrator (usually automatic in recovery)
+
+Problem: "Internet operations failing"
+Solution: Check network status, wait for initialization, or use USB method
+
+
+QUICK REFERENCE COMMANDS
+═══════════════════════════════════════════════════════════════════════════════
+
+Enable Network:
+  wpeutil InitializeNetwork
+
+Check Network:
+  ipconfig
+  ping google.com
+
+Navigate to USB:
+  cd /d D:\
+  dir
+
+Run MiracleBoot:
+  .\MiracleBoot.ps1
+  OR
+  .\RunMiracleBoot.cmd
+
+Check PowerShell Execution Policy:
+  powershell Get-ExecutionPolicy
+
+Run with Bypass:
+  powershell -ExecutionPolicy Bypass -File .\MiracleBoot.ps1
+
+
+═══════════════════════════════════════════════════════════════════════════════
+For more help, visit: https://github.com/your-repo (if available)
+═══════════════════════════════════════════════════════════════════════════════
+"@
+
+    try {
+        $instructionsWindow = New-Object System.Windows.Window
+        $instructionsWindow.Title = "MiracleBoot - Running Instructions"
+        $instructionsWindow.Width = 800
+        $instructionsWindow.Height = 700
+        $instructionsWindow.WindowStartupLocation = "CenterScreen"
+        $instructionsWindow.Background = "#F5F5F5"
+        
+        $textBlock = New-Object System.Windows.Controls.TextBlock
+        $textBlock.Text = $instructions
+        $textBlock.TextWrapping = "Wrap"
+        $textBlock.Margin = "15"
+        $textBlock.FontFamily = "Consolas"
+        $textBlock.FontSize = "10"
+        $textBlock.Foreground = "#000000"
+        
+        $scrollViewer = New-Object System.Windows.Controls.ScrollViewer
+        $scrollViewer.Content = $textBlock
+        $scrollViewer.VerticalScrollBarVisibility = "Auto"
+        $scrollViewer.HorizontalScrollBarVisibility = "Auto"
+        $scrollViewer.Margin = "5"
+        
+        $instructionsWindow.Content = $scrollViewer
+        $instructionsWindow.ShowDialog() | Out-Null
+    } catch {
+        # Fallback to message box if window creation fails
+        [System.Windows.MessageBox]::Show(
+            $instructions,
+            "MiracleBoot - Running Instructions",
+            "OK",
+            "Information"
+        ) | Out-Null
     }
 }
 
@@ -8675,6 +10714,79 @@ if ($btnFullBootDiagnosis) {
             }
         }
         
+        # BOOT READINESS CHECK - Verify if boot is actually fixed
+            $output += "`n`n"
+            $output += "===============================================================`n"
+            $output += "BOOT READINESS VERIFICATION`n"
+            $output += "===============================================================`n"
+            
+            $bootReadiness = @{
+                WinloadEFI = $false
+                BCDEntry = $false
+                BootFiles = $false
+                OverallReady = $false
+            }
+            
+            # Check 1: winload.efi exists
+            $winloadPath = "$drive`:\Windows\System32\boot\winload.efi"
+            $winloadPathAlt = "$drive`:\Windows\System32\winload.efi"
+            if ((Test-Path -LiteralPath $winloadPath) -or (Test-Path -LiteralPath $winloadPathAlt)) {
+                $bootReadiness.WinloadEFI = $true
+                $output += "✓ winload.efi: FOUND`n"
+            } else {
+                $output += "✗ winload.efi: MISSING - Boot will fail!`n"
+            }
+            
+            # Check 2: BCD has valid entry
+            try {
+                $bcdOutput = & bcdedit /store "$drive`:\Boot\BCD" /enum {default} 2>&1
+                if ($LASTEXITCODE -eq 0 -and $bcdOutput -match "winload\.efi|winload\.exe") {
+                    $bootReadiness.BCDEntry = $true
+                    $output += "✓ BCD Entry: VALID (references winload)`n"
+                } else {
+                    $output += "✗ BCD Entry: INVALID or MISSING - Boot will fail!`n"
+                }
+            } catch {
+                $output += "✗ BCD Entry: ERROR checking - $($_.Exception.Message)`n"
+            }
+            
+            # Check 3: Essential boot files exist
+            $bootFiles = @(
+                "$drive`:\Windows\System32\boot\bootmgr.efi",
+                "$drive`:\Windows\Boot\EFI\bootmgfw.efi"
+            )
+            $bootFilesFound = 0
+            foreach ($file in $bootFiles) {
+                if (Test-Path -LiteralPath $file) {
+                    $bootFilesFound++
+                }
+            }
+            if ($bootFilesFound -gt 0) {
+                $bootReadiness.BootFiles = $true
+                $output += "✓ Boot Files: FOUND ($bootFilesFound of $($bootFiles.Count))`n"
+            } else {
+                $output += "✗ Boot Files: MISSING - Boot may fail!`n"
+            }
+            
+            # Overall readiness
+            if ($bootReadiness.WinloadEFI -and $bootReadiness.BCDEntry -and $bootReadiness.BootFiles) {
+                $bootReadiness.OverallReady = $true
+                $output += "`n✓ BOOT READINESS: SYSTEM IS READY TO BOOT`n"
+                $output += "All critical boot components are present and configured correctly.`n"
+            } else {
+                $output += "`n✗ BOOT READINESS: SYSTEM IS NOT READY TO BOOT`n"
+                $output += "Critical issues detected. Use Boot Fixer tab to repair.`n"
+                if (-not $bootReadiness.WinloadEFI) {
+                    $output += "  - Missing winload.efi (required for boot)`n"
+                }
+                if (-not $bootReadiness.BCDEntry) {
+                    $output += "  - Invalid BCD entry (boot configuration broken)`n"
+                }
+                if (-not $bootReadiness.BootFiles) {
+                    $output += "  - Missing boot files (boot manager missing)`n"
+                }
+            }
+            
         # Show critical issues warning if found
             if ($diagnosis -and $diagnosis.HasCriticalIssues) {
             $output += "`n`n"
@@ -8683,6 +10795,12 @@ if ($btnFullBootDiagnosis) {
             $output += "===============================================================`n"
             $output += "Review the issues above and follow the recommended actions.`n"
             $output += "Use the Boot Fixer tab to apply repairs.`n"
+        } elseif (-not $bootReadiness.OverallReady) {
+            $output += "`n`n"
+            $output += "===============================================================`n"
+            $output += "[WARN] BOOT NOT READY - REPAIRS NEEDED`n"
+            $output += "===============================================================`n"
+            $output += "System is not ready to boot. Use Boot Fixer tab to repair.`n"
         }
         
         if ($logAnalysisBox) {
@@ -10017,39 +12135,7 @@ if ($btnSetDriverLocation) {
     })
 }
 
-# Settings menu handlers (must be after $W is created)
-$btnDarkMode = Get-Control -Name "BtnDarkMode" -Silent
-if ($btnDarkMode) {
-    $btnDarkMode.Add_Click({
-        Apply-DarkMode
-        Update-StatusBar -Message "Dark mode enabled" -HideProgress
-    })
-}
-
-$btnLightMode = Get-Control -Name "BtnLightMode" -Silent
-if ($btnLightMode) {
-    $btnLightMode.Add_Click({
-        Apply-LightMode
-        Update-StatusBar -Message "Light mode enabled" -HideProgress
-    })
-}
-
-$btnCompactUI = Get-Control -Name "BtnCompactUI" -Silent
-if ($btnCompactUI) {
-    $btnCompactUI.Add_Click({
-        Apply-CompactUI
-        Update-StatusBar -Message "Compact UI enabled" -HideProgress
-    })
-}
-
-$btnStandardUI = Get-Control -Name "BtnStandardUI" -Silent
-if ($btnStandardUI) {
-    $btnStandardUI.Add_Click({
-        Apply-StandardUI
-        Update-StatusBar -Message "Standard UI enabled" -HideProgress
-    })
-}
-
+# Settings menu handlers moved inside Start-GUI function (before ShowDialog)
 # Zoom functionality handlers (must be after $W is created)
 $zoomLevelControl = Get-Control -Name "ZoomLevel" -Silent
 $btnZoomIn = Get-Control -Name "BtnZoomIn" -Silent
@@ -10086,28 +12172,6 @@ if ($btnZoomReset) {
         if ($interfaceScaleSlider) {
             $interfaceScaleSlider.Value = 1.0
         }
-    })
-}
-
-# Interface Scale Slider (in Settings menu)
-$interfaceScaleSlider = Get-Control -Name "InterfaceScaleSlider" -Silent
-$btnInterfaceScaleReset = Get-Control -Name "BtnInterfaceScaleReset" -Silent
-
-if ($interfaceScaleSlider) {
-    # Initialize slider to current zoom level
-    $interfaceScaleSlider.Value = $script:ZoomLevel
-    
-    # Handle slider value change
-    $interfaceScaleSlider.Add_ValueChanged({
-        $newZoom = $interfaceScaleSlider.Value
-        Update-Zoom -NewZoom $newZoom
-    })
-}
-
-if ($btnInterfaceScaleReset) {
-    $btnInterfaceScaleReset.Add_Click({
-        $interfaceScaleSlider.Value = 1.0
-        Update-Zoom -NewZoom 1.0
     })
 }
 
@@ -10150,6 +12214,78 @@ function New-BootFixerHelpDocument {
     $doc += "Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
     $doc += ""
     
+    $doc += "================================================================================="
+    $doc += "🚀 QUICK WAYS TO RUN"
+    $doc += "================================================================================="
+    $doc += ""
+    $doc += "QUICK WAY 1: RUN THE GUI (EASIEST METHOD)"
+    $doc += "──────────────────────────────────────────"
+    $doc += "From Windows (FullOS):"
+    $doc += "  • Double-click: RunMiracleBoot.cmd"
+    $doc += "  OR"
+    $doc += "  • Right-click RunMiracleBoot.cmd → Run as Administrator"
+    $doc += "  OR"
+    $doc += "  • Open PowerShell as Admin, then:"
+    $doc += "    cd `"C:\path\to\MiracleBoot`""
+    $doc += "    .\RunMiracleBoot.cmd"
+    $doc += ""
+    $doc += "From Command Prompt (CMD):"
+    $doc += "  • Navigate to folder: cd /d `"C:\path\to\MiracleBoot`""
+    $doc += "  • Run: RunMiracleBoot.cmd"
+    $doc += ""
+    $doc += "From PowerShell:"
+    $doc += "  • Navigate: cd `"C:\path\to\MiracleBoot`""
+    $doc += "  • Run: .\RunMiracleBoot.cmd"
+    $doc += "  OR"
+    $doc += "  • Direct: powershell -ExecutionPolicy Bypass -File .\MiracleBoot.ps1"
+    $doc += ""
+    $doc += "Expected Result: GUI window opens with all tabs and options"
+    $doc += ""
+    $doc += ""
+    $doc += "QUICK WAY 2: RUN EMERGENCY FIX (CMD VERSION - NO GUI NEEDED)"
+    $doc += "──────────────────────────────────────────────────────────────"
+    $doc += "Emergency fixes can run directly from CMD without PowerShell or GUI."
+    $doc += ""
+    $doc += "From Command Prompt (CMD) or SHIFT+F10:"
+    $doc += "  • Navigate to folder: cd /d `"D:\MiracleBoot`" (or your drive letter)"
+    $doc += ""
+    $doc += "  • Run Emergency Fix V4 (Recommended - Fastest, Intelligent):"
+    $doc += "    EMERGENCY_BOOT_REPAIR_V4.cmd"
+    $doc += ""
+    $doc += "  • Run Emergency Fix V1 (Standard):"
+    $doc += "    EMERGENCY_BOOT_REPAIR.cmd"
+    $doc += ""
+    $doc += "  • Run Emergency Fix V2 (Alternative):"
+    $doc += "    EMERGENCY_BOOT_REPAIR_V2.cmd"
+    $doc += ""
+    $doc += "  • Run Emergency Fix V3 (Last Resort):"
+    $doc += "    EMERGENCY_BOOT_REPAIR_V3.cmd"
+    $doc += ""
+    $doc += "  • Run All Emergency Fixes (Automatic Failover):"
+    $doc += "    EMERGENCY_BOOT_REPAIR_WRAPPER.cmd"
+    $doc += ""
+    $doc += "What Each Emergency Fix Does:"
+    $doc += "  • V4: Intelligent - Checks issues first, only fixes what's broken (FASTEST)"
+    $doc += "  • V1: Standard comprehensive repair"
+    $doc += "  • V2: Alternative implementation"
+    $doc += "  • V3: Minimal last resort (basic commands only)"
+    $doc += "  • Wrapper: Runs V4 → V1 → V2 → V3 automatically until one succeeds"
+    $doc += ""
+    $doc += "No Internet Required: Emergency fixes work offline from USB drive!"
+    $doc += ""
+    $doc += ""
+    $doc += "QUICK WAY 3: RUN FROM USB IN RECOVERY ENVIRONMENT"
+    $doc += "──────────────────────────────────────────────────"
+    $doc += "1. Copy entire MiracleBoot folder to USB drive"
+    $doc += "2. Boot into Windows Recovery (SHIFT+F10 or Advanced Options)"
+    $doc += "3. In Command Prompt:"
+    $doc += "   cd /d D:\MiracleBoot  (replace D: with your USB drive letter)"
+    $doc += "   RunMiracleBoot.cmd"
+    $doc += ""
+    $doc += "   OR for emergency fix only:"
+    $doc += "   EMERGENCY_BOOT_REPAIR_V4.cmd"
+    $doc += ""
+    $doc += ""
     $doc += "================================================================================="
     $doc += "ONE-CLICK REPAIR OPTIONS"
     $doc += "================================================================================="
@@ -10345,37 +12481,7 @@ function New-BootFixerHelpDocument {
 }
 
 # Boot Fixer tab info button
-$btnBootFixerInfo = Get-Control -Name "BtnBootFixerInfo"
-if ($btnBootFixerInfo) {
-    $btnBootFixerInfo.Add_Click({
-        $helpDoc = New-BootFixerHelpDocument
-        $helpContent = Get-Content $helpDoc -Raw
-        
-        [System.Windows.MessageBox]::Show(
-            $helpContent,
-            "Boot Fixer - Help Information",
-            "OK",
-            "Information"
-        )
-    })
-}
-
-# Boot Fixer tab notepad button
-$btnBootFixerNotepad = Get-Control -Name "BtnBootFixerNotepad"
-if ($btnBootFixerNotepad) {
-    $btnBootFixerNotepad.Add_Click({
-        $helpDoc = New-BootFixerHelpDocument
-        $notepadOpened = Start-NotepadSafely -FilePath $helpDoc
-        if (-not $notepadOpened) {
-            [System.Windows.MessageBox]::Show(
-                "Could not open Notepad (limit reached or error). Help document saved to:`n$helpDoc",
-                "Help Document",
-                "OK",
-                "Information"
-            ) | Out-Null
-        }
-    })
-}
+# Boot Fixer tab info buttons moved inside Start-GUI function (before ShowDialog)
 
 # One-Click Repair info button
 $btnOneClickInfo = Get-Control -Name "BtnOneClickInfo"
