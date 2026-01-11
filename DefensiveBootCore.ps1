@@ -2069,15 +2069,405 @@ function Copy-BootFileBruteForce {
     }
 }
 
+function Test-BitLockerUnlocked {
+    <#
+    .SYNOPSIS
+    Checks if BitLocker is unlocked on the target drive.
+    
+    .DESCRIPTION
+    Returns $true if drive is unlocked or BitLocker is not active.
+    Returns $false if drive is locked.
+    #>
+    param(
+        [string]$TargetDrive
+    )
+    
+    try {
+        $statusOut = manage-bde -status "$TargetDrive`:" 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            # manage-bde not available or drive not BitLocker-protected
+            return $true  # Assume unlocked if we can't check
+        }
+        
+        # Check for "Lock Status: Unlocked" or "Protection Status: Off"
+        if ($statusOut -match "Lock Status:\s*Unlocked" -or $statusOut -match "Protection Status:\s*Off") {
+            return $true
+        }
+        
+        # Check for "Lock Status: Locked"
+        if ($statusOut -match "Lock Status:\s*Locked") {
+            return $false
+        }
+        
+        # Default to unlocked if status unclear
+        return $true
+    } catch {
+        # If we can't check, assume unlocked to allow repairs to proceed
+        return $true
+    }
+}
+
+function Test-VMDDriverLoaded {
+    <#
+    .SYNOPSIS
+    Checks if Intel VMD/RST drivers are loaded in the current session.
+    #>
+    $result = @{
+        VMDDetected = $false
+        DriverLoaded = $false
+        Details = @()
+    }
+    
+    try {
+        # Check if VMD is detected
+        $vmdCheck = Test-VMDDriverIssue
+        if ($vmdCheck.Detected) {
+            $result.VMDDetected = $true
+            $result.Details += "Intel VMD controller detected"
+        }
+        
+        # Check if RST/VMD driver is loaded
+        $rstDrivers = Get-PnpDevice -Class System -ErrorAction SilentlyContinue | Where-Object {
+            $_.FriendlyName -match "Intel.*RST|VMD|Volume.*Management" -or
+            $_.InstanceId -match "iaStor|VMD"
+        }
+        
+        if ($rstDrivers) {
+            $result.DriverLoaded = $true
+            $result.Details += "Intel RST/VMD driver found: $($rstDrivers[0].FriendlyName)"
+        } else {
+            $result.Details += "Intel RST/VMD driver not found in loaded devices"
+        }
+        
+    } catch {
+        $result.Details += "VMD driver check failed: $($_.Exception.Message)"
+    }
+    
+    return $result
+}
+
+function Test-DiskSignatureCollision {
+    <#
+    .SYNOPSIS
+    Detects potential disk signature collisions from cloned drives.
+    #>
+    $result = @{
+        Detected = $false
+        Details = @()
+        DuplicateSignatures = @()
+    }
+    
+    try {
+        $disks = Get-Disk -ErrorAction SilentlyContinue
+        $signatures = @{}
+        
+        foreach ($disk in $disks) {
+            if ($disk.UniqueId) {
+                $sig = $disk.UniqueId
+                if ($signatures.ContainsKey($sig)) {
+                    $result.Detected = $true
+                    $result.DuplicateSignatures += @{
+                        Signature = $sig
+                        Disk1 = $signatures[$sig]
+                        Disk2 = $disk.Number
+                    }
+                } else {
+                    $signatures[$sig] = $disk.Number
+                }
+            }
+        }
+        
+        if ($result.Detected) {
+            $result.Details += "Duplicate disk signatures detected - drives may have been cloned"
+            $result.Details += "UEFI firmware may be confused about which drive to boot"
+        }
+        
+    } catch {
+        $result.Details += "Disk signature check failed: $($_.Exception.Message)"
+    }
+    
+    return $result
+}
+
+function Find-SystemRootByWinload {
+    <#
+    .SYNOPSIS
+    Finds the correct SystemRoot by searching for winload.efi instead of assuming C:.
+    #>
+    param(
+        [string]$PreferredDrive = "C"
+    )
+    
+    $result = @{
+        Drive = $null
+        Path = $null
+        Confidence = "LOW"
+        Details = @()
+    }
+    
+    try {
+        # Get all available drives
+        $allDrives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -match '^[A-Z]$'
+        }
+        
+        $candidates = @()
+        
+        foreach ($drive in $allDrives) {
+            $driveLetter = "$($drive.Name):"
+            $winloadPath = "$driveLetter\Windows\System32\winload.efi"
+            
+            if (Test-Path $winloadPath) {
+                $fileInfo = Get-Item $winloadPath -ErrorAction SilentlyContinue
+                if ($fileInfo -and $fileInfo.Length -gt 0) {
+                    $confidence = if ($driveLetter -eq "$PreferredDrive`:") { "HIGH" } else { "MEDIUM" }
+                    $candidates += @{
+                        Drive = $driveLetter.TrimEnd(':')
+                        Path = $winloadPath
+                        Confidence = $confidence
+                        Size = $fileInfo.Length
+                    }
+                }
+            }
+        }
+        
+        if ($candidates.Count -eq 0) {
+            $result.Details += "No drives found with winload.efi"
+            return $result
+        }
+        
+        # Prefer the preferred drive if found, otherwise use first candidate
+        $selected = $candidates | Where-Object { $_.Drive -eq $PreferredDrive } | Select-Object -First 1
+        if (-not $selected) {
+            $selected = $candidates[0]
+        }
+        
+        $result.Drive = $selected.Drive
+        $result.Path = $selected.Path
+        $result.Confidence = $selected.Confidence
+        $result.Details += "Found winload.efi on $($selected.Drive): ($($selected.Size) bytes)"
+        
+        if ($candidates.Count -gt 1) {
+            $result.Details += "WARNING: Multiple drives contain winload.efi - using $($selected.Drive):"
+        }
+        
+    } catch {
+        $result.Details += "SystemRoot search failed: $($_.Exception.Message)"
+    }
+    
+    return $result
+}
+
+function Repair-BCDDeepRepair {
+    <#
+    .SYNOPSIS
+    Performs a "nuke and pave" deep repair: formats EFI partition and rebuilds BCD from scratch.
+    
+    .DESCRIPTION
+    This is the most aggressive repair option. It:
+    1. Assigns a letter to the EFI partition
+    2. Formats the EFI partition as FAT32
+    3. Runs bcdboot with /f UEFI and /addlast flags
+    #>
+    param(
+        [string]$TargetDrive,
+        [string]$EspLetter,
+        [switch]$ConfirmFormat = $false
+    )
+    
+    $actions = @()
+    $actions += "═══════════════════════════════════════════════════════════════════════════════"
+    $actions += "DEEP REPAIR: Format EFI Partition and Rebuild BCD from Scratch"
+    $actions += "═══════════════════════════════════════════════════════════════════════════════"
+    $actions += ""
+    
+    # Pre-flight checks
+    $actions += "Pre-flight checks..."
+    
+    # Check BitLocker
+    $bitlockerUnlocked = Test-BitLockerUnlocked -TargetDrive $TargetDrive
+    if (-not $bitlockerUnlocked) {
+        $actions += "❌ BLOCKED: BitLocker is locked on $TargetDrive`:"
+        $actions += "   Unlock the drive first: manage-bde -unlock $TargetDrive`: -RecoveryPassword <KEY>"
+        return @{
+            Success = $false
+            Actions = $actions
+            Blocked = "BitLocker locked"
+        }
+    }
+    
+    # Check if ESP letter is provided
+    if (-not $EspLetter) {
+        $actions += "❌ BLOCKED: ESP letter not provided - cannot format EFI partition"
+        return @{
+            Success = $false
+            Actions = $actions
+            Blocked = "ESP letter missing"
+        }
+    }
+    
+    # Verify ESP is accessible
+    if (-not (Test-Path "$EspLetter`:\")) {
+        $actions += "❌ BLOCKED: ESP at $EspLetter`: is not accessible"
+        return @{
+            Success = $false
+            Actions = $actions
+            Blocked = "ESP not accessible"
+        }
+    }
+    
+    # Backup BCD if it exists
+    $bcdPath = "$EspLetter`:\EFI\Microsoft\Boot\BCD"
+    $backupPath = $null
+    if (Test-Path $bcdPath) {
+        $backupPath = Join-Path $env:TEMP "BCD_DEEPREPAIR_BACKUP_$(Get-Date -Format 'yyyyMMdd_HHmmss').bak"
+        try {
+            Copy-Item $bcdPath $backupPath -Force -ErrorAction Stop
+            $actions += "✓ BCD backed up to: $backupPath"
+        } catch {
+            $actions += "⚠ BCD backup failed: $($_.Exception.Message)"
+            if (-not $ConfirmFormat) {
+                $actions += "❌ BLOCKED: Cannot backup BCD - format aborted for safety"
+                return @{
+                    Success = $false
+                    Actions = $actions
+                    Blocked = "BCD backup failed"
+                }
+            }
+        }
+    }
+    
+    # Format EFI partition
+    $actions += ""
+    $actions += "Formatting EFI partition $EspLetter`: as FAT32..."
+    try {
+        $formatOut = format "$EspLetter`:" /FS:FAT32 /Q /Y 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            $actions += "✓ EFI partition formatted successfully"
+        } else {
+            $actions += "❌ Format failed: $formatOut"
+            return @{
+                Success = $false
+                Actions = $actions
+                Blocked = "Format failed"
+            }
+        }
+    } catch {
+        $actions += "❌ Format failed: $($_.Exception.Message)"
+        return @{
+            Success = $false
+            Actions = $actions
+            Blocked = "Format exception"
+        }
+    }
+    
+    # Rebuild boot files
+    $actions += ""
+    $actions += "Rebuilding boot files using bcdboot..."
+    try {
+        $bcdbootOut = bcdboot "$TargetDrive`:\Windows" /s $EspLetter /f UEFI /addlast 2>&1 | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            $actions += "✓ Boot files rebuilt successfully"
+            
+            # Verify BCD was created
+            if (Test-Path $bcdPath) {
+                $actions += "✓ BCD file created and verified"
+                
+                # Verify BCD points to correct winload.efi
+                $bcdEnum = bcdedit /store $bcdPath /enum {default} 2>&1 | Out-String
+                $bcdPathMatch = $bcdEnum -match "path\s+\\Windows\\system32\\winload\.efi"
+                if ($bcdPathMatch) {
+                    $actions += "✓ BCD correctly points to winload.efi"
+                    return @{
+                        Success = $true
+                        Actions = $actions
+                        Verified = $true
+                        BackupPath = $backupPath
+                    }
+                } else {
+                    $actions += "⚠ BCD created but path verification failed"
+                    return @{
+                        Success = $true
+                        Actions = $actions
+                        Verified = $false
+                        BackupPath = $backupPath
+                    }
+                }
+            } else {
+                $actions += "⚠ bcdboot succeeded but BCD file not found"
+                return @{
+                    Success = $false
+                    Actions = $actions
+                    Verified = $false
+                    BackupPath = $backupPath
+                }
+            }
+        } else {
+            $actions += "❌ bcdboot failed: $bcdbootOut"
+            return @{
+                Success = $false
+                Actions = $actions
+                Verified = $false
+                BackupPath = $backupPath
+            }
+        }
+    } catch {
+        $actions += "❌ bcdboot exception: $($_.Exception.Message)"
+        return @{
+            Success = $false
+            Actions = $actions
+            Verified = $false
+            BackupPath = $backupPath
+        }
+    }
+}
+
 function Repair-BCDBruteForce {
     param(
         [string]$TargetDrive,
         [string]$EspLetter,
-        [string]$WinloadPath
+        [string]$WinloadPath,
+        [switch]$DeepRepair = $false,
+        [switch]$ConfirmFormat = $false
     )
     
     $actions = @()
     $bcdStore = if ($EspLetter) { "$EspLetter\EFI\Microsoft\Boot\BCD" } else { "BCD" }
+    
+    # Pre-flight: Check BitLocker
+    $bitlockerUnlocked = Test-BitLockerUnlocked -TargetDrive $TargetDrive
+    if (-not $bitlockerUnlocked) {
+        $actions += "❌ BLOCKED: BitLocker is locked on $TargetDrive`:"
+        $actions += "   Unlock the drive first: manage-bde -unlock $TargetDrive`: -RecoveryPassword <KEY>"
+        return @{
+            Success = $false
+            Actions = $actions
+            Blocked = "BitLocker locked"
+        }
+    }
+    
+    # Pre-flight: Check VMD driver
+    $vmdCheck = Test-VMDDriverLoaded
+    if ($vmdCheck.VMDDetected -and -not $vmdCheck.DriverLoaded) {
+        $actions += "⚠ WARNING: Intel VMD detected but RST driver not loaded"
+        $actions += "   This may cause bcdboot to fail silently"
+        $actions += "   Solution: Load Intel RST driver: drvload <path>\iaStorVD.inf"
+    }
+    
+    # Pre-flight: Check disk signature collisions
+    $sigCheck = Test-DiskSignatureCollision
+    if ($sigCheck.Detected) {
+        $actions += "⚠ WARNING: Duplicate disk signatures detected"
+        $actions += "   UEFI firmware may be confused about which drive to boot"
+        foreach ($dup in $sigCheck.DuplicateSignatures) {
+            $actions += "   - Signature $($dup.Signature) found on Disk $($dup.Disk1) and Disk $($dup.Disk2)"
+        }
+    }
+    
+    # If DeepRepair is requested, use the deep repair function
+    if ($DeepRepair -and $EspLetter) {
+        return Repair-BCDDeepRepair -TargetDrive $TargetDrive -EspLetter $EspLetter -ConfirmFormat:$ConfirmFormat
+    }
     
     # Step 1: Set BCD path
     $actions += "Setting BCD path to winload.efi..."
@@ -2110,7 +2500,7 @@ function Repair-BCDBruteForce {
         
         # Step 3: Rebuild BCD completely
         if ($EspLetter) {
-            $rebuildOut = bcdboot "$TargetDrive`:\Windows" /s $EspLetter /f ALL 2>&1 | Out-String
+            $rebuildOut = bcdboot "$TargetDrive`:\Windows" /s $EspLetter /f UEFI /addlast 2>&1 | Out-String
             if ($LASTEXITCODE -eq 0) {
                 $actions += "BCD rebuild successful"
                 
@@ -2500,10 +2890,24 @@ function Invoke-BruteForceBootRepair {
         }
     }
     
-    $bcdResult = Repair-BCDBruteForce -TargetDrive $targetDrive -EspLetter $espLetter -WinloadPath $targetPath
-    $actions += $bcdResult.Actions
+    # Pre-flight: Check BitLocker before brute force repair
+    $bitlockerUnlocked = Test-BitLockerUnlocked -TargetDrive $targetDrive
+    if (-not $bitlockerUnlocked) {
+        $actions += "❌ BLOCKED: BitLocker is locked on $targetDrive`:"
+        $actions += "   Unlock the drive first: manage-bde -unlock $targetDrive`: -RecoveryPassword <KEY>"
+        $bcdResult = @{
+            Success = $false
+            Actions = @()
+            Blocked = "BitLocker locked"
+        }
+    } else {
+        $bcdResult = Repair-BCDBruteForce -TargetDrive $targetDrive -EspLetter $espLetter -WinloadPath $targetPath
+        $actions += $bcdResult.Actions
+    }
     
-    if (-not $bcdResult.Success -or -not $bcdResult.Verified) {
+    if ($bcdResult.Blocked) {
+        $actions += "⚠ BCD repair blocked: $($bcdResult.Blocked)"
+    } elseif (-not $bcdResult.Success -or -not $bcdResult.Verified) {
         $actions += "⚠ BCD repair completed but verification had issues"
     } else {
         $actions += "✓ BCD repair successful and verified"
@@ -3115,21 +3519,44 @@ function Invoke-DefensiveBootRepair {
             
             # Rebuild boot files if ESP is mounted and winload.efi exists
             if ($espMounted -and $espLetter -and $winloadExists) {
-                try {
-                    $bcdbootOut = bcdboot "$($selectedOS.Drive)\Windows" /s $espLetter /f UEFI 2>&1 | Out-String
-                    $exitCode = $LASTEXITCODE
-                    Track-Command -Command "bcdboot `"$($selectedOS.Drive)\Windows`" /s $espLetter /f UEFI" -Description "Rebuild boot files using bcdboot" -ExitCode $exitCode -ErrorOutput $bcdbootOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
-                    
-                    if ($exitCode -eq 0) {
-                        $actions += "Boot files rebuilt using bcdboot"
-                        $repairExecuted = $true
-                    } else {
-                        $actions += "bcdboot rebuild failed: $bcdbootOut"
+                # Pre-flight: Check BitLocker
+                $bitlockerUnlocked = Test-BitLockerUnlocked -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                if (-not $bitlockerUnlocked) {
+                    $actions += "❌ BLOCKED: BitLocker is locked on $($selectedOS.Drive)"
+                    $actions += "   Unlock the drive first: manage-bde -unlock $($selectedOS.Drive) -RecoveryPassword <KEY>"
+                    Track-Command -Command "manage-bde -status $($selectedOS.Drive)" -Description "Check BitLocker status" -ExitCode 0 -ErrorOutput "BitLocker locked" -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                } else {
+                    # Pre-flight: Check VMD driver
+                    $vmdCheck = Test-VMDDriverLoaded
+                    if ($vmdCheck.VMDDetected -and -not $vmdCheck.DriverLoaded) {
+                        $actions += "⚠ WARNING: Intel VMD detected but RST driver not loaded"
+                        $actions += "   This may cause bcdboot to fail silently"
+                        $actions += "   Solution: Load Intel RST driver: drvload <path>\iaStorVD.inf"
                     }
-                } catch {
-                    $errorMsg = $_.Exception.Message
-                    Track-Command -Command "bcdboot `"$($selectedOS.Drive)\Windows`" /s $espLetter /f UEFI" -Description "Rebuild boot files using bcdboot" -ExitCode -1 -ErrorOutput $errorMsg -TargetDrive $selectedOS.Drive.TrimEnd(':')
-                    $actions += "bcdboot rebuild failed: $errorMsg"
+                    
+                    # Pre-flight: Check disk signature collisions
+                    $sigCheck = Test-DiskSignatureCollision
+                    if ($sigCheck.Detected) {
+                        $actions += "⚠ WARNING: Duplicate disk signatures detected"
+                        $actions += "   UEFI firmware may be confused about which drive to boot"
+                    }
+                    
+                    try {
+                        $bcdbootOut = bcdboot "$($selectedOS.Drive)\Windows" /s $espLetter /f UEFI /addlast 2>&1 | Out-String
+                        $exitCode = $LASTEXITCODE
+                        Track-Command -Command "bcdboot `"$($selectedOS.Drive)\Windows`" /s $espLetter /f UEFI /addlast" -Description "Rebuild boot files using bcdboot" -ExitCode $exitCode -ErrorOutput $bcdbootOut -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                        
+                        if ($exitCode -eq 0) {
+                            $actions += "Boot files rebuilt using bcdboot"
+                            $repairExecuted = $true
+                        } else {
+                            $actions += "bcdboot rebuild failed: $bcdbootOut"
+                        }
+                    } catch {
+                        $errorMsg = $_.Exception.Message
+                        Track-Command -Command "bcdboot `"$($selectedOS.Drive)\Windows`" /s $espLetter /f UEFI /addlast" -Description "Rebuild boot files using bcdboot" -ExitCode -1 -ErrorOutput $errorMsg -TargetDrive $selectedOS.Drive.TrimEnd(':')
+                        $actions += "bcdboot rebuild failed: $errorMsg"
+                    }
                 }
             }
         }
