@@ -2901,13 +2901,35 @@ if ($null -ne $W) {
                             )
                             
                             foreach ($pattern in $issuePatterns) {
-                                $matches = [regex]::Matches($outputText, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-                                foreach ($match in $matches) {
-                                    if ($match.Groups.Count -gt 1 -and $match.Groups[1].Value) {
-                                        $remainingIssues += $match.Groups[0].Value
-                                    } elseif ($match.Value) {
-                                        $remainingIssues += $match.Value
+                                try {
+                                    $matches = [regex]::Matches($outputText, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                                    # Ensure $matches is always iterable
+                                    if ($matches) {
+                                        foreach ($match in $matches) {
+                                            try {
+                                                # Safely check Groups.Count - Groups is always a collection but may not have .Count property in all PowerShell versions
+                                                $groupCount = if ($match.Groups) { 
+                                                    if ($match.Groups -is [array]) { $match.Groups.Count } 
+                                                    elseif ($match.Groups.PSObject.Properties.Name -contains 'Count') { $match.Groups.Count }
+                                                    else { 0 }
+                                                } else { 0 }
+                                                
+                                                if ($groupCount -gt 1 -and $match.Groups[1].Value) {
+                                                    $remainingIssues += $match.Groups[0].Value
+                                                } elseif ($match.Value) {
+                                                    $remainingIssues += $match.Value
+                                                }
+                                            } catch {
+                                                # If accessing match properties fails, just use the match value
+                                                if ($match.Value) {
+                                                    $remainingIssues += $match.Value
+                                                }
+                                            }
+                                        }
                                     }
+                                } catch {
+                                    # Skip this pattern if regex matching fails
+                                    Write-Host "Warning: Failed to match pattern '$pattern': $_" -ForegroundColor Yellow
                                 }
                             }
                         }
