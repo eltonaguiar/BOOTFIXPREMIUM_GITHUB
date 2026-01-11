@@ -3178,6 +3178,32 @@ function Test-BootabilityComprehensive {
         $bcdExitCode = 0
         $verification.Actions += "✓ System BCD is accessible (bcdedit /enum succeeded)"
         $bcdStore = "BCD"  # System BCD - no /store parameter needed
+    } elseif ($systemBcdResult.Output -match "specified entry type is invalid|The parameter is incorrect") {
+        # BCD exists but {default} entry is invalid - try to create it
+        $verification.Actions += "⚠ System BCD exists but {default} entry is invalid. Attempting to create entry..."
+        try {
+            $createEntryResult = Create-BCDDefaultEntry -BcdStore "BCD" -TargetDrive $TargetDrive
+            $verification.Actions += $createEntryResult.Actions
+            if ($createEntryResult.Success) {
+                Start-Sleep -Milliseconds 500
+                $systemBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Re-check system BCD after creating entry"
+                if ($systemBcdResult.ExitCode -eq 0 -and -not ($systemBcdResult.Output -match "could not be opened|cannot find|specified entry type is invalid")) {
+                    $verification.BCDExists = $true
+                    $verification.BCDReadable = $true
+                    $bcdEnum = $systemBcdResult.Output
+                    $bcdExitCode = 0
+                    $verification.Actions += "✓ System BCD accessible after creating {default} entry"
+                    $bcdStore = "BCD"
+                }
+            }
+        } catch {
+            $verification.Actions += "  ⚠ Could not create {default} entry: $($_.Exception.Message)"
+        }
+        
+        # If still not working, fall through to permission fix or ESP BCD check
+        if ($bcdExitCode -ne 0) {
+            # Continue to permission fix or ESP BCD check below
+        }
     } elseif ($systemBcdResult.ExitCode -ne 0 -and -not ($systemBcdResult.Output -match "specified entry type is invalid")) {
         # System BCD failed but might be a permission issue - try fixing permissions on system BCD file
         $systemBcdPath = "$TargetDrive`:\Boot\BCD"
@@ -3372,25 +3398,30 @@ function Test-BootabilityComprehensive {
         }
     }
     
-    # 4. Check all critical boot files
+    # 4. Check all critical boot files (using comprehensive detection)
     $criticalFiles = @(
-        "$TargetDrive`:\Windows\System32\winload.efi",
-        "$TargetDrive`:\Windows\System32\ntoskrnl.exe"
+        @{ Path = "$TargetDrive`:\Windows\System32\winload.efi"; Name = "winload.efi" },
+        @{ Path = "$TargetDrive`:\Windows\System32\ntoskrnl.exe"; Name = "ntoskrnl.exe" }
     )
     if ($EspLetter) {
-        $criticalFiles += "$EspLetter\EFI\Microsoft\Boot\bootmgfw.efi"
-        $criticalFiles += "$EspLetter\EFI\Microsoft\Boot\BCD"
+        $criticalFiles += @{ Path = "$EspLetter\EFI\Microsoft\Boot\bootmgfw.efi"; Name = "bootmgfw.efi" }
+        $criticalFiles += @{ Path = "$EspLetter\EFI\Microsoft\Boot\BCD"; Name = "BCD" }
     }
     
     $allPresent = $true
-    foreach ($file in $criticalFiles) {
+    foreach ($fileInfo in $criticalFiles) {
+        $file = $fileInfo.Path
+        $fileName = $fileInfo.Name
         $resolvedFile = Resolve-WindowsPath -Path $file -SupportLongPath
         if (-not $resolvedFile) { $resolvedFile = $file }  # Fallback
         
+        # Use comprehensive detection for all critical files
         $fileCheck = Test-WinloadExistsComprehensive -Path $resolvedFile
         if (-not $fileCheck.Exists) {
             $allPresent = $false
-            $verification.Issues += "Critical boot file MISSING: $file"
+            $verification.Issues += "Critical boot file MISSING: $fileName at $file (checked via: $($fileCheck.Method))"
+        } else {
+            $verification.Actions += "✓ Critical boot file present: $fileName (detected via: $($fileCheck.Method))"
         }
     }
     $verification.AllBootFilesPresent = $allPresent
@@ -4144,10 +4175,15 @@ function Invoke-DefensiveBootRepair {
             $blastRadius += "Running in full Windows with -AllowOnlineRepair: Safe repairs enabled (file copy, BCD path fixes). Destructive operations (BCD rebuild) still blocked."
         }
 
-        # Guards
-        if ($diagOnly -or $DryRun -or $simulate) { $actions += "Destructive commands blocked by Environment Guard." }
-        if ($runningOnline -and -not $AllowOnlineRepair -and -not $diagOnly -and -not $DryRun -and -not $simulate) {
+        # Guards - Only show blocking messages when repairs are actually blocked
+        if ($diagOnly -or $DryRun -or $simulate) { 
+            $actions += "Destructive commands blocked by Environment Guard (DiagnoseOnly/DryRun/Simulate mode)." 
+        } elseif ($runningOnline -and -not $AllowOnlineRepair) {
+            # Only show this if repairs would actually be blocked (not in diag/dryrun/simulate)
             $actions += "Running in full Windows: Only safe repairs allowed (file copy, BCD path fixes). Use -AllowOnlineRepair to enable safe repairs, or run from WinRE for full repair capabilities."
+        } elseif ($runningOnline -and $AllowOnlineRepair) {
+            # Inform user that safe repairs are enabled
+            $actions += "✓ Safe repairs enabled (AllowOnlineRepair mode): File copy and BCD fixes will be attempted."
         }
         if ($bitlockerLocked -eq $true) { $actions += "Repair aborted: BitLocker locked." }
 
