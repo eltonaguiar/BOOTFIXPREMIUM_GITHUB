@@ -3127,44 +3127,77 @@ function Test-BootabilityComprehensive {
     }
     
     # 3. Verify BCD (with permission handling)
-    # CRITICAL: On UEFI systems, BCD is ALWAYS in ESP, not in C:\Boot\BCD
-    # Try to detect/mount ESP if not provided
+    # LAYER 10 EVIDENCE-BASED: If bcdedit /enum works, BCD EXISTS and is accessible
+    # Try system BCD FIRST (without /store) - this is the most reliable check
+    $bcdPermissionsModified = $false
+    $bcdEnum = $null
+    $bcdExitCode = -1
+    $bcdStore = $null
     $actualEspLetter = $EspLetter
-    if (-not $actualEspLetter) {
-        # Try to detect ESP
-        $esp = Get-EspCandidate
-        if ($esp -and $esp.DriveLetter) {
-            $actualEspLetter = "$($esp.DriveLetter):"
-            $verification.Actions += "✓ ESP detected at $actualEspLetter (auto-detected for BCD verification)"
-        } else {
-            # Try to mount ESP temporarily for verification
-            $mount = Mount-EspTemp -PreferredLetter "S"
-            if ($mount) {
-                $actualEspLetter = "$($mount.Letter):"
-                $verification.Actions += "✓ ESP mounted at $actualEspLetter (temporarily mounted for BCD verification)"
+    $bcdStorePath = $null
+    
+    # Step 1: Try system BCD first (most reliable - if this works, BCD exists)
+    $verification.Actions += "Checking system BCD accessibility..."
+    $systemBcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/enum", "{default}") -TimeoutSeconds 15 -Description "Check system BCD accessibility"
+    
+    if ($systemBcdResult.ExitCode -eq 0 -and -not ($systemBcdResult.Output -match "could not be opened|cannot find|specified entry type is invalid")) {
+        # System BCD works! This is evidence that BCD exists and is accessible
+        $verification.BCDExists = $true
+        $verification.BCDReadable = $true
+        $bcdEnum = $systemBcdResult.Output
+        $bcdExitCode = 0
+        $verification.Actions += "✓ System BCD is accessible (bcdedit /enum succeeded)"
+        $bcdStore = "BCD"  # System BCD - no /store parameter needed
+    } else {
+        # System BCD failed - try ESP BCD
+        $verification.Actions += "System BCD not accessible, checking ESP BCD..."
+        
+        # Try to detect/mount ESP if not provided
+        $actualEspLetter = $EspLetter
+        if (-not $actualEspLetter) {
+            # Try to detect ESP
+            $esp = Get-EspCandidate
+            if ($esp -and $esp.DriveLetter) {
+                $actualEspLetter = "$($esp.DriveLetter):"
+                $verification.Actions += "✓ ESP detected at $actualEspLetter (auto-detected for BCD verification)"
+            } else {
+                # Try to mount ESP temporarily for verification
+                $mount = Mount-EspTemp -PreferredLetter "S"
+                if ($mount) {
+                    $actualEspLetter = "$($mount.Letter):"
+                    $verification.Actions += "✓ ESP mounted at $actualEspLetter (temporarily mounted for BCD verification)"
+                }
             }
         }
-    }
-    
-    $bcdStore = if ($actualEspLetter) { "$actualEspLetter\EFI\Microsoft\Boot\BCD" } else { "$TargetDrive`:\Boot\BCD" }
-    if (Test-Path $bcdStore) {
-        $verification.BCDExists = $true
-        $verification.Actions += "✓ BCD exists at $bcdStore"
         
-        $bcdPermissionsModified = $false
-        try {
-            # Try to enumerate BCD with timeout to prevent hanging
-            $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Enumerate BCD entries"
-            $bcdEnum = $bcdResult.Output
-            $bcdExitCode = $bcdResult.ExitCode
+        # Check ESP BCD file path
+        if ($actualEspLetter) {
+            $espLetterClean = $actualEspLetter.TrimEnd(':')
+            $bcdStore = "$espLetterClean\EFI\Microsoft\Boot\BCD"
+            $bcdStorePath = "$actualEspLetter\EFI\Microsoft\Boot\BCD"
+        } else {
+            $bcdStore = "BCD"
+            $bcdStorePath = "$TargetDrive`:\Boot\BCD"
+        }
+        
+        # Check if BCD file exists on disk
+        if (Test-Path $bcdStorePath -ErrorAction SilentlyContinue) {
+            $verification.BCDExists = $true
+            $verification.Actions += "✓ BCD file exists at $bcdStorePath"
             
-            # Check for timeout
-            if ($bcdResult.TimedOut) {
-                $verification.Issues += "BCD enumeration timed out after 15 seconds - BCD may be locked or corrupted"
-                $verification.Actions += "⚠ bcdedit enumeration timed out (BCD may be locked)"
-            }
-            # If enumeration failed, try taking ownership of BCD file
-            elseif ($bcdExitCode -ne 0) {
+            try {
+                # Try to enumerate ESP BCD with timeout to prevent hanging
+                $bcdResult = Invoke-BCDCommandWithTimeout -Command "bcdedit.exe" -Arguments @("/store", $bcdStore, "/enum", "{default}") -TimeoutSeconds 15 -Description "Enumerate BCD entries"
+                $bcdEnum = $bcdResult.Output
+                $bcdExitCode = $bcdResult.ExitCode
+            
+                # Check for timeout
+                if ($bcdResult.TimedOut) {
+                    $verification.Issues += "BCD enumeration timed out after 15 seconds - BCD may be locked or corrupted"
+                    $verification.Actions += "⚠ bcdedit enumeration timed out (BCD may be locked)"
+                }
+                # If enumeration failed, try taking ownership of BCD file
+                elseif ($bcdExitCode -ne 0) {
                 $verification.Actions += "⚠ bcdedit enumeration failed (exit code $bcdExitCode), attempting permission fix..."
                 try {
                     $takeownResult = Start-Process -FilePath "takeown.exe" -ArgumentList "/f", "`"$bcdStore`"" -NoNewWindow -Wait -PassThru -ErrorAction SilentlyContinue
@@ -3184,45 +3217,51 @@ function Test-BootabilityComprehensive {
                         }
                     }
                 } catch {
-                    $verification.Actions += "  ⚠ Could not fix BCD permissions: $($_.Exception.Message)"
+                        $verification.Actions += "  ⚠ Could not fix BCD permissions: $($_.Exception.Message)"
+                    }
                 }
+            } catch {
+                $verification.Issues += "BCD exists but not readable: $($_.Exception.Message)"
             }
-            
-            if ($bcdExitCode -eq 0) {
-                $verification.BCDReadable = $true
-                # More flexible regex: case-insensitive, handles both single and double backslashes
-                $verification.BCDPathMatch = $bcdEnum -match "(?i)path\s+[\\/]?Windows[\\/]system32[\\/]winload\.efi"
-                # Device match: handle both "partition=C" and "partition=C:" formats, case-insensitive
-                $targetDriveClean = $TargetDrive.TrimEnd(':').ToUpper()
-                $verification.BCDDeviceMatch = $bcdEnum -match "(?i)device\s+partition=$targetDriveClean" -or $bcdEnum -match "(?i)device\s+partition=$targetDriveClean`:"
-                
-                if ($verification.BCDPathMatch) {
-                    $verification.Actions += "✓ BCD path correctly points to winload.efi"
-                } else {
-                    $verification.Issues += "BCD path does NOT point to winload.efi"
-                }
-                
-                if ($verification.BCDDeviceMatch) {
-                    $verification.Actions += "✓ BCD device correctly set to $TargetDrive"
-                } else {
-                    $verification.Issues += "BCD device does NOT match $TargetDrive"
-                }
-                
-                if ($bcdPermissionsModified) {
-                    $verification.Actions += "  (BCD permissions were modified to enable verification)"
-                }
-            } else {
-                $verification.Issues += "BCD exists but cannot be enumerated (exit code $bcdExitCode)"
-                if ($bcdEnum) {
-                    $verification.Issues += "  bcdedit output: $($bcdEnum.Substring(0, [Math]::Min(200, $bcdEnum.Length)))"
-                }
-            }
-        } catch {
-            $verification.Issues += "BCD exists but not readable: $($_.Exception.Message)"
+        } else {
+            # BCD file doesn't exist on disk
+            $verification.Actions += "❌ BCD file not found at $bcdStorePath"
+        }
+    }
+    
+    # Process BCD enumeration results (whether from system or ESP BCD)
+    if ($bcdExitCode -eq 0) {
+        $verification.BCDReadable = $true
+        # More flexible regex: case-insensitive, handles both single and double backslashes
+        $verification.BCDPathMatch = $bcdEnum -match "(?i)path\s+[\\/]?Windows[\\/]system32[\\/]winload\.efi"
+        # Device match: handle both "partition=C" and "partition=C:" formats, case-insensitive
+        $targetDriveClean = $TargetDrive.TrimEnd(':').ToUpper()
+        $verification.BCDDeviceMatch = $bcdEnum -match "(?i)device\s+partition=$targetDriveClean" -or $bcdEnum -match "(?i)device\s+partition=$targetDriveClean`:"
+        
+        if ($verification.BCDPathMatch) {
+            $verification.Actions += "✓ BCD path correctly points to winload.efi"
+        } else {
+            $verification.Issues += "BCD path does NOT point to winload.efi"
+        }
+        
+        if ($verification.BCDDeviceMatch) {
+            $verification.Actions += "✓ BCD device correctly set to $TargetDrive"
+        } else {
+            $verification.Issues += "BCD device does NOT match $TargetDrive"
+        }
+        
+        if ($bcdPermissionsModified) {
+            $verification.Actions += "  (BCD permissions were modified to enable verification)"
+        }
+    } elseif ($verification.BCDExists) {
+        # BCD file exists but enumeration failed
+        $verification.Issues += "BCD exists but cannot be enumerated (exit code $bcdExitCode)"
+        if ($bcdEnum) {
+            $verification.Issues += "  bcdedit output: $($bcdEnum.Substring(0, [Math]::Min(200, $bcdEnum.Length)))"
         }
     } else {
         # BCD is missing - provide actionable solution
-        $verification.Issues += "BCD MISSING at $bcdStore"
+        $verification.Issues += "BCD MISSING or not accessible"
         if ($actualEspLetter) {
             $verification.Actions += "❌ BCD MISSING - Solution: Run this command to create it:"
             $verification.Actions += "   bcdboot $TargetDrive`:\Windows /s $actualEspLetter /f UEFI"
