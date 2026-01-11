@@ -6,6 +6,21 @@
         Write-ToLog "═════════════════════════════════════════════════════════════" "INFO"
     }
     
+    # Load DefensiveBootCore.ps1 (required for One-Click Repair)
+    try {
+        $corePath = Join-Path $PSScriptRoot "DefensiveBootCore.ps1"
+        if (Test-Path $corePath) {
+            . $corePath
+            if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
+                Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-DefensiveBootRepair function not found"
+            }
+        } else {
+            Write-Warning "DefensiveBootCore.ps1 not found at $corePath - One-Click Repair may not work"
+        }
+    } catch {
+        Write-Warning "Failed to load DefensiveBootCore.ps1: $_ - One-Click Repair may not work"
+    }
+    
     # Load global settings for read-only mode if available
     try {
         $gsmPath = Join-Path $PSScriptRoot "HELPER SCRIPTS\GlobalSettingsManager.ps1"

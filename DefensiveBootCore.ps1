@@ -1,5 +1,233 @@
 ﻿Set-StrictMode -Version Latest
 
+# ============================================================================
+# ADVANCED PLAN B TROUBLESHOOTING FUNCTIONS (For High-End Builds)
+# ============================================================================
+
+function Test-VMDDriverIssue {
+    <#
+    .SYNOPSIS
+    Detects Intel VMD (Volume Management Device) driver issues on Z790 boards.
+    #>
+    $result = @{
+        Detected = $false
+        Details = @()
+    }
+    
+    try {
+        # Method 1: Check for VMD devices via WMI
+        $vmdDevices = Get-WmiObject Win32_PnPEntity -Filter "Name LIKE '%VMD%'" -ErrorAction SilentlyContinue
+        if ($vmdDevices) {
+            $result.Detected = $true
+            $result.Details += "Intel VMD controller detected via WMI"
+        }
+        
+        # Method 2: Check BIOS version for VMD/RAID indicators
+        try {
+            $bios = Get-WmiObject Win32_BIOS -ErrorAction SilentlyContinue
+            if ($bios -and $bios.SMBIOSBIOSVersion -match "RAID|VMD|AHCI") {
+                $result.Detected = $true
+                $result.Details += "BIOS version suggests VMD/RAID support: $($bios.SMBIOSBIOSVersion)"
+            }
+        } catch { }
+        
+        # Method 3: Check for NVMe drives (indication of potential VMD)
+        try {
+            $nvmeDrives = Get-WmiObject Win32_DiskDrive -Filter "InterfaceType LIKE '%NVMe%'" -ErrorAction SilentlyContinue
+            if ($nvmeDrives) {
+                $nvmeCount = @($nvmeDrives).Count
+                if ($nvmeCount -gt 0) {
+                    $result.Details += "Found $nvmeCount NVMe drive(s) - VMD may be required"
+                }
+            }
+        } catch { }
+        
+        # Method 4: Check for missing storage drivers (common with VMD)
+        try {
+            $missingStorage = Get-MissingStorageDevices -ErrorAction SilentlyContinue
+            if ($missingStorage -and $missingStorage -match "VMD|RAID|NVMe") {
+                $result.Detected = $true
+                $result.Details += "Missing storage drivers detected (may indicate VMD issue)"
+            }
+        } catch { }
+        
+    } catch {
+        $result.Details += "VMD check failed: $($_.Exception.Message)"
+    }
+    
+    return $result
+}
+
+function Test-GhostBCEEntries {
+    <#
+    .SYNOPSIS
+    Detects "ghost" BCD entries from multiple drives causing UEFI confusion.
+    #>
+    $result = @{
+        Detected = $false
+        Details = @()
+        DriveCount = 0
+        BCDEntryCount = 0
+    }
+    
+    try {
+        # Count Windows installations
+        $windowsInstalls = Get-WindowsInstallsSafe
+        if ($null -eq $windowsInstalls) { $windowsInstalls = @() }
+        if ($windowsInstalls -isnot [array]) { $windowsInstalls = @($windowsInstalls) }
+        $result.DriveCount = $windowsInstalls.Count
+        
+        # Count BCD entries
+        try {
+            $bcdEntries = bcdedit /enum all 2>&1 | Out-String
+            $entryMatches = [regex]::Matches($bcdEntries, "identifier\s+\{[^}]+\}")
+            $result.BCDEntryCount = $entryMatches.Count
+            
+            if ($result.DriveCount -gt 1 -or $result.BCDEntryCount -gt 3) {
+                $result.Detected = $true
+                $result.Details += "Multiple drives detected ($($result.DriveCount)) with $($result.BCDEntryCount) BCD entries"
+                $result.Details += "UEFI firmware may be confused about which drive is boot manager"
+            }
+        } catch {
+            $result.Details += "Could not enumerate BCD entries: $($_.Exception.Message)"
+        }
+        
+    } catch {
+        $result.Details += "Ghost BCD check failed: $($_.Exception.Message)"
+    }
+    
+    return $result
+}
+
+function Test-PendingWindowsUpdates {
+    <#
+    .SYNOPSIS
+    Detects pending Windows updates that may block boot repair.
+    #>
+    $result = @{
+        Detected = $false
+        Details = @()
+        PendingPath = $null
+    }
+    
+    try {
+        $windowsInstalls = Get-WindowsInstallsSafe
+        if ($null -eq $windowsInstalls) { $windowsInstalls = @() }
+        if ($windowsInstalls -isnot [array]) { $windowsInstalls = @($windowsInstalls) }
+        
+        foreach ($install in $windowsInstalls) {
+            $pendingPath = "$($install.Drive)\Windows\WinSxS\pending.xml"
+            if (Test-Path $pendingPath) {
+                $result.Detected = $true
+                $result.PendingPath = $pendingPath
+                $result.Details += "Pending updates found at: $pendingPath"
+                break
+            }
+        }
+        
+    } catch {
+        $result.Details += "Pending updates check failed: $($_.Exception.Message)"
+    }
+    
+    return $result
+}
+
+function Test-ReadOnlyDrive {
+    <#
+    .SYNOPSIS
+    Detects if a drive is marked as read-only.
+    #>
+    param([string]$TargetDrive)
+    
+    $result = @{
+        Detected = $false
+        Details = @()
+    }
+    
+    try {
+        $diskNumber = $null
+        $volumes = Get-Volume -ErrorAction SilentlyContinue
+        foreach ($vol in $volumes) {
+            if ($vol.DriveLetter -eq $TargetDrive.TrimEnd(':')) {
+                $diskNumber = $vol.OperationalStatus
+                break
+            }
+        }
+        
+        # Check disk attributes via diskpart
+        try {
+            $diskpartOutput = diskpart /s (New-TemporaryFile) 2>&1 | Out-String
+            # This is a simplified check - full implementation would parse diskpart output
+            # For now, we'll check if we can write to the drive
+            $testFile = "$TargetDrive`:\test_write_$(Get-Random).tmp"
+            try {
+                [System.IO.File]::WriteAllText($testFile, "test")
+                Remove-Item $testFile -Force -ErrorAction SilentlyContinue
+            } catch {
+                $result.Detected = $true
+                $result.Details += "Drive appears to be read-only (write test failed)"
+            }
+        } catch {
+            $result.Details += "Read-only check failed: $($_.Exception.Message)"
+        }
+        
+    } catch {
+        $result.Details += "Read-only drive check failed: $($_.Exception.Message)"
+    }
+    
+    return $result
+}
+
+function Test-BIOSFirmwareState {
+    <#
+    .SYNOPSIS
+    Checks BIOS/firmware state for common boot-blocking issues.
+    #>
+    $result = @{
+        IssuesDetected = $false
+        Issues = @()
+        Details = @()
+    }
+    
+    try {
+        # Check firmware type
+        $firmware = "Unknown"
+        try {
+            $fw = bcdedit /enum firmware 2>&1 | Out-String
+            if ($fw) { $firmware = "UEFI" } else { $firmware = "Legacy" }
+        } catch { }
+        
+        # Check for Secure Boot (simplified - would need WMI/registry access)
+        try {
+            $bios = Get-WmiObject Win32_BIOS -ErrorAction SilentlyContinue
+            if ($bios) {
+                $result.Details += "BIOS Version: $($bios.SMBIOSBIOSVersion)"
+                $result.Details += "BIOS Manufacturer: $($bios.Manufacturer)"
+                
+                # Check for common issues
+                if ($firmware -eq "Legacy" -and $bios.SMBIOSBIOSVersion -match "UEFI") {
+                    $result.IssuesDetected = $true
+                    $result.Issues += "Firmware mismatch: BIOS supports UEFI but system is in Legacy mode"
+                }
+            }
+        } catch {
+            $result.Details += "BIOS info not available (may be in WinPE)"
+        }
+        
+        # Check for CSM-related issues (would need registry access in full Windows)
+        # In WinPE, we can't easily check this, so we provide guidance
+        
+        if (-not $result.IssuesDetected) {
+            $result.Details += "No obvious BIOS/firmware issues detected"
+        }
+        
+    } catch {
+        $result.Details += "BIOS/firmware check failed: $($_.Exception.Message)"
+    }
+    
+    return $result
+}
+
 function Get-EnvState {
     $isWinPE = $false
     $systemDrive = $env:SystemDrive
@@ -20,31 +248,133 @@ function Get-EnvState {
 }
 
 function Get-VolumesSafe {
-    try { return Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } }
+    try { 
+        $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter }
+        # Ensure we always return an array, even if empty or single object
+        if ($null -eq $volumes) { return @() }
+        if ($volumes -isnot [array]) { return @($volumes) }
+        return $volumes
+    }
     catch { return @() }
 }
 
 function Get-WindowsInstallsSafe {
     $installs = @()
-    foreach ($v in Get-VolumesSafe) {
+    $volumes = Get-VolumesSafe
+    # Ensure $volumes is always an array (defensive check)
+    if ($null -eq $volumes) { $volumes = @() }
+    if ($volumes -isnot [array]) { $volumes = @($volumes) }
+    
+    # Method 1: Check volumes from Get-VolumesSafe
+    foreach ($v in $volumes) {
+        if ($null -eq $v -or -not $v.DriveLetter) { continue }
         $dl = "$($v.DriveLetter):"
         try {
+            # Check for Windows installation using multiple methods for WinPE compatibility
+            # Method 1a: Check for SYSTEM registry hive (most reliable)
             if (Test-Path "$dl\Windows\System32\config\SYSTEM") {
                 $installs += [pscustomobject]@{
                     Drive  = $dl
-                    Label  = $v.FileSystemLabel
+                    Label  = if ($v.FileSystemLabel) { $v.FileSystemLabel } else { "(no label)" }
+                    Volume = $v
+                }
+                continue  # Found via registry, skip other checks for this drive
+            }
+            # Method 1b: Fallback - check for winload.efi (for WinPE environments where registry might not be accessible)
+            if (Test-Path "$dl\Windows\System32\winload.efi") {
+                $installs += [pscustomobject]@{
+                    Drive  = $dl
+                    Label  = if ($v.FileSystemLabel) { $v.FileSystemLabel } else { "(no label)" }
                     Volume = $v
                 }
             }
-        } catch { }
+        } catch { 
+            # Silently continue if we can't check this drive
+        }
     }
+    
+    # Method 2: Brute-force search using Get-PSDrive (for WinPE with drive letter shuffling)
+    # This handles cases where Get-Volume might miss drives (e.g., complex multi-drive configs)
+    if ($installs.Count -eq 0) {
+        try {
+            $psDrives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^[A-Z]$' }
+            if ($psDrives) {
+                foreach ($psd in $psDrives) {
+                    $driveLetter = "$($psd.Name):"
+                    # Skip if already found
+                    $alreadyFound = $installs | Where-Object { $_.Drive -eq $driveLetter }
+                    if ($alreadyFound) { continue }
+                    
+                    try {
+                        # Check for Windows using winload.efi (most reliable in WinPE)
+                        if (Test-Path "$driveLetter\Windows\System32\winload.efi") {
+                            $label = try { (Get-Volume -DriveLetter $psd.Name -ErrorAction SilentlyContinue).FileSystemLabel } catch { $null }
+                            $installs += [pscustomobject]@{
+                                Drive  = $driveLetter
+                                Label  = if ($label) { $label } else { "(no label)" }
+                                Volume = $null  # Volume object not available via PSDrive
+                            }
+                        }
+                        # Fallback: Check for SYSTEM registry hive
+                        elseif (Test-Path "$driveLetter\Windows\System32\config\SYSTEM") {
+                            $label = try { (Get-Volume -DriveLetter $psd.Name -ErrorAction SilentlyContinue).FileSystemLabel } catch { $null }
+                            $installs += [pscustomobject]@{
+                                Drive  = $driveLetter
+                                Label  = if ($label) { $label } else { "(no label)" }
+                                Volume = $null
+                            }
+                        }
+                    } catch {
+                        # Silently continue if we can't check this drive
+                    }
+                }
+            }
+        } catch {
+            # Brute-force search failed, continue with what we found
+        }
+    }
+    
     return $installs
 }
 
 function Get-EspCandidate {
-    foreach ($v in Get-VolumesSafe) {
-        if ($v.FileSystem -eq "FAT32" -and $v.Size -lt 600MB) { return $v }
+    # Method 1: Standard detection via Get-VolumesSafe
+    $volumes = Get-VolumesSafe
+    if ($null -eq $volumes) { $volumes = @() }
+    if ($volumes -isnot [array]) { $volumes = @($volumes) }
+    
+    foreach ($v in $volumes) {
+        if ($null -eq $v) { continue }
+        # Check for EFI partition: FAT32 and small size (< 600MB)
+        if ($v.FileSystem -eq "FAT32" -and $v.Size -lt 600MB) { 
+            return $v 
+        }
     }
+    
+    # Method 2: Brute-force using Get-Partition (for WinPE with complex drive configs)
+    try {
+        $efiGuid = "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}"  # Standard EFI GUID
+        $efiPart = Get-Partition -ErrorAction SilentlyContinue | Where-Object { $_.GptType -eq $efiGuid }
+        if ($efiPart) {
+            # Get volume for the partition
+            $efiVol = $efiPart | Get-Volume -ErrorAction SilentlyContinue
+            if ($efiVol -and $efiVol.DriveLetter) {
+                return $efiVol
+            }
+        }
+    } catch {
+        # Get-Partition failed, continue with fallback
+    }
+    
+    # Method 3: Fallback - search for FAT32 volumes with EFI/SYSTEM label
+    foreach ($v in $volumes) {
+        if ($null -eq $v) { continue }
+        $label = if ($v.FileSystemLabel) { $v.FileSystemLabel.ToUpper() } else { "" }
+        if (($v.FileSystem -eq "FAT32") -and ($label -match "SYSTEM|EFI|ESP")) {
+            return $v
+        }
+    }
+    
     return $null
 }
 
@@ -536,8 +866,51 @@ function Find-WinloadSourceUltimate {
     $targetInfo = Get-WindowsVersionInfo -Drive $TargetDrive
     $actions += "Target Windows: Architecture=$($targetInfo.Architecture), Build=$($targetInfo.BuildNumber)"
     
-    $sources = @()
-    $actions = @()
+    # Check if we're running from WinRE/WinPE (prioritize WinRE sources)
+    $envState = Get-EnvState
+    $runningFromWinRE = $envState.IsWinPE
+    if ($runningFromWinRE) {
+        $actions += "Running from WinRE/WinPE - will prioritize WinRE sources (immediately available)"
+    }
+    
+    # When running from WinRE, search WinRE FIRST (before Windows installations)
+    # WinRE sources are immediately available and reliable when in WinRE environment
+    if ($runningFromWinRE) {
+        # 0. Search WinRE/current environment FIRST (when in WinRE)
+        # Note: winload.efi can be in System32 or System32\Boot subdirectory
+        $winrePaths = @(
+            "$env:SystemRoot\System32\winload.efi",           # Current environment (highest priority)
+            "$env:SystemRoot\System32\Boot\winload.efi",      # Current environment Boot subdirectory
+            "X:\Windows\System32\winload.efi",                # Standard WinRE location
+            "X:\Windows\System32\Boot\winload.efi",           # WinRE Boot subdirectory (matches user's file location)
+            "X:\sources\boot.wim\Windows\System32\winload.efi",  # Boot WIM location
+            "X:\sources\boot.wim\Windows\System32\Boot\winload.efi"  # Boot WIM Boot subdirectory
+        )
+        
+        foreach ($winrePath in $winrePaths) {
+            $resolvedPath = Resolve-WindowsPath -Path $winrePath -SupportLongPath
+            if ($resolvedPath) {
+                $existsCheck = Test-WinloadExistsComprehensive -Path $resolvedPath
+                if ($existsCheck.Exists) {
+                    $integrity = Test-FileIntegrity -FilePath $resolvedPath
+                    if ($integrity.Valid) {
+                        $compatibility = Test-VersionCompatibility -SourcePath $resolvedPath -TargetDrive $TargetDrive -TargetInfo $targetInfo
+                        $sources += [pscustomobject]@{
+                            Path = $resolvedPath
+                            Source = "WinRE"
+                            Drive = (Split-Path $resolvedPath -Qualifier)
+                            Size = $integrity.FileInfo.Length
+                            Confidence = "HIGH"  # HIGH confidence when running from WinRE
+                            Integrity = $integrity
+                            Compatibility = $compatibility
+                            CompatibilityScore = $compatibility.Score
+                        }
+                        $actions += "✓ Found winload.efi in WinRE (PRIORITIZED): $resolvedPath ($($integrity.FileInfo.Length) bytes)"
+                    }
+                }
+            }
+        }
+    }
     
     # 1. Search all Windows installations
     $windowsInstalls = Get-WindowsInstallsSafe
@@ -578,16 +951,25 @@ function Find-WinloadSourceUltimate {
         }
     }
     
-    # 2. Search WinRE/current environment (expanded paths)
+    # 2. Search WinRE/current environment (PRIORITIZE when running from WinRE)
+    # When running from WinRE, these sources are immediately available and reliable
+    # Note: winload.efi can be in System32 or System32\Boot subdirectory
     $winrePaths = @(
-        "$env:SystemRoot\System32\winload.efi",
-        "X:\Windows\System32\winload.efi",
-        "X:\sources\boot.wim\Windows\System32\winload.efi",
-        "C:\Windows\System32\winload.efi",  # Current system
-        "D:\Windows\System32\winload.efi",  # Common secondary
-        "E:\Windows\System32\winload.efi"   # Common tertiary
+        "$env:SystemRoot\System32\winload.efi",           # Current environment (highest priority when in WinRE)
+        "$env:SystemRoot\System32\Boot\winload.efi",      # Current environment Boot subdirectory
+        "X:\Windows\System32\winload.efi",                # Standard WinRE location
+        "X:\Windows\System32\Boot\winload.efi",           # WinRE Boot subdirectory (common location)
+        "X:\sources\boot.wim\Windows\System32\winload.efi",  # Boot WIM location
+        "X:\sources\boot.wim\Windows\System32\Boot\winload.efi",  # Boot WIM Boot subdirectory
+        "C:\Windows\System32\winload.efi",               # Current system (if not WinRE)
+        "C:\Windows\System32\Boot\winload.efi",          # Current system Boot subdirectory
+        "D:\Windows\System32\winload.efi",                # Common secondary
+        "D:\Windows\System32\Boot\winload.efi",           # Common secondary Boot subdirectory
+        "E:\Windows\System32\winload.efi"                 # Common tertiary
     )
     
+    # If running from WinRE, search WinRE paths FIRST (before Windows installations)
+    # This ensures we find the immediately available WinRE source
     foreach ($winrePath in $winrePaths) {
         $resolvedPath = Resolve-WindowsPath -Path $winrePath -SupportLongPath
         if ($resolvedPath) {
@@ -595,16 +977,31 @@ function Find-WinloadSourceUltimate {
             if ($existsCheck.Exists) {
                 $integrity = Test-FileIntegrity -FilePath $resolvedPath
                 if ($integrity.Valid) {
+                    # Check compatibility for WinRE source
+                    $compatibility = Test-VersionCompatibility -SourcePath $resolvedPath -TargetDrive $TargetDrive -TargetInfo $targetInfo
+                    
+                    # When running from WinRE, WinRE sources get HIGH confidence (they're immediately available)
+                    # When running from full Windows, WinRE sources get MEDIUM confidence (may need to boot to WinRE)
+                    $confidence = if ($runningFromWinRE -and $resolvedPath -like "$env:SystemRoot*") { 
+                        "HIGH" 
+                    } elseif ($runningFromWinRE) { 
+                        "HIGH" 
+                    } else { 
+                        "MEDIUM" 
+                    }
+                    
                     $sources += [pscustomobject]@{
                         Path = $resolvedPath
                         Source = "WinRE"
                         Drive = (Split-Path $resolvedPath -Qualifier)
                         Size = $integrity.FileInfo.Length
-                        Confidence = "MEDIUM"
+                        Confidence = $confidence
                         Integrity = $integrity
+                        Compatibility = $compatibility
+                        CompatibilityScore = $compatibility.Score
                     }
-                    $actions += "Found winload.efi in WinRE: $resolvedPath ($($integrity.FileInfo.Length) bytes)"
-                    break
+                    $actions += "Found winload.efi in WinRE: $resolvedPath ($($integrity.FileInfo.Length) bytes, Confidence: $confidence)"
+                    # Don't break - continue to find all sources, then pick best one
                 }
             }
         }
@@ -624,6 +1021,8 @@ function Find-WinloadSourceUltimate {
                         # Check if already in sources
                         $alreadyFound = $sources | Where-Object { $_.Path -eq $candidatePath }
                         if (-not $alreadyFound) {
+                            # Check compatibility for mounted drive source
+                            $compatibility = Test-VersionCompatibility -SourcePath $candidatePath -TargetDrive $TargetDrive -TargetInfo $targetInfo
                             $sources += [pscustomobject]@{
                                 Path = $candidatePath
                                 Source = "MountedDrive"
@@ -631,6 +1030,8 @@ function Find-WinloadSourceUltimate {
                                 Size = $integrity.FileInfo.Length
                                 Confidence = "MEDIUM"
                                 Integrity = $integrity
+                                Compatibility = $compatibility
+                                CompatibilityScore = $compatibility.Score
                             }
                             $actions += "Found winload.efi on mounted drive ${driveLetter}: $($integrity.FileInfo.Length) bytes"
                         }
@@ -698,8 +1099,9 @@ function Find-WinloadSourceUltimate {
         $bestSource = $sources | Sort-Object -Property @{
             Expression = {
                 $score = 0
-                # Compatibility score (0-100)
-                if ($_.CompatibilityScore) { $score += $_.CompatibilityScore * 10 }
+                # Compatibility score (0-100) - default to 50 if not set (assume medium compatibility)
+                $compatScore = if ($_.CompatibilityScore) { $_.CompatibilityScore } else { 50 }
+                $score += $compatScore * 10
                 # Confidence (HIGH=3, MEDIUM=2, LOW=1)
                 $score += switch ($_.Confidence) { "HIGH" { 3 } "MEDIUM" { 2 } "LOW" { 1 } default { 0 } }
                 # Prefer larger files (more likely to be complete)
@@ -1373,6 +1775,9 @@ function Find-WinloadSourceAggressive {
     $sources = @()
     $actions = @()
     
+    # Get target info for compatibility checking
+    $targetInfo = Get-WindowsVersionInfo -Drive $TargetDrive
+    
     # 1. Search all mounted Windows installations
     $windowsInstalls = Get-WindowsInstallsSafe
     foreach ($winInstall in $windowsInstalls) {
@@ -1381,12 +1786,16 @@ function Find-WinloadSourceAggressive {
             if (Test-Path $candidatePath) {
                 $fileInfo = Get-Item $candidatePath -ErrorAction SilentlyContinue
                 if ($fileInfo) {
+                    # Check compatibility
+                    $compatibility = Test-VersionCompatibility -SourcePath $candidatePath -TargetDrive $TargetDrive -TargetInfo $targetInfo
                     $sources += [pscustomobject]@{
                         Path = $candidatePath
                         Source = "WindowsInstall"
                         Drive = $winInstall.Drive
                         Size = $fileInfo.Length
                         Confidence = "HIGH"
+                        Compatibility = $compatibility
+                        CompatibilityScore = $compatibility.Score
                     }
                     $actions += "Found winload.efi in $($winInstall.Drive): $($fileInfo.Length) bytes"
                 }
@@ -1395,21 +1804,29 @@ function Find-WinloadSourceAggressive {
     }
     
     # 2. Search WinRE/current environment
+    # Note: winload.efi can be in System32 or System32\Boot subdirectory
     $winrePaths = @(
         "$env:SystemRoot\System32\winload.efi",
+        "$env:SystemRoot\System32\Boot\winload.efi",      # Boot subdirectory (common location)
         "X:\Windows\System32\winload.efi",
-        "X:\sources\boot.wim\Windows\System32\winload.efi"
+        "X:\Windows\System32\Boot\winload.efi",           # WinRE Boot subdirectory (matches user's file location)
+        "X:\sources\boot.wim\Windows\System32\winload.efi",
+        "X:\sources\boot.wim\Windows\System32\Boot\winload.efi"  # Boot WIM Boot subdirectory
     )
     foreach ($winrePath in $winrePaths) {
         if (Test-Path $winrePath) {
             $fileInfo = Get-Item $winrePath -ErrorAction SilentlyContinue
             if ($fileInfo) {
+                # Check compatibility
+                $compatibility = Test-VersionCompatibility -SourcePath $winrePath -TargetDrive $TargetDrive -TargetInfo $targetInfo
                 $sources += [pscustomobject]@{
                     Path = $winrePath
                     Source = "WinRE"
                     Drive = "WinRE"
                     Size = $fileInfo.Length
                     Confidence = "MEDIUM"
+                    Compatibility = $compatibility
+                    CompatibilityScore = $compatibility.Score
                 }
                 $actions += "Found winload.efi in WinRE: $($fileInfo.Length) bytes"
             }
@@ -1428,12 +1845,15 @@ function Find-WinloadSourceAggressive {
             )
             foreach ($wimPath in $wimPaths) {
                 if (Test-Path $wimPath -ErrorAction SilentlyContinue) {
+                    # WIM files don't have direct compatibility - will be checked when extracted
                     $sources += [pscustomobject]@{
                         Path = $wimPath
                         Source = "InstallWim"
                         Drive = $dl
                         Size = $null
                         Confidence = "MEDIUM"
+                        Compatibility = @{ Compatible = $true; Score = 50 }
+                        CompatibilityScore = 50
                     }
                     $actions += "Found install.wim/esd at $wimPath"
                 }
@@ -1444,12 +1864,16 @@ function Find-WinloadSourceAggressive {
             if (Test-Path $directPath -ErrorAction SilentlyContinue) {
                 $fileInfo = Get-Item $directPath -ErrorAction SilentlyContinue
                 if ($fileInfo) {
+                    # Check compatibility
+                    $compatibility = Test-VersionCompatibility -SourcePath $directPath -TargetDrive $TargetDrive -TargetInfo $targetInfo
                     $sources += [pscustomobject]@{
                         Path = $directPath
                         Source = "Direct"
                         Drive = $dl
                         Size = $fileInfo.Length
                         Confidence = "HIGH"
+                        Compatibility = $compatibility
+                        CompatibilityScore = $compatibility.Score
                     }
                     $actions += "Found winload.efi directly at ${directPath}: $($fileInfo.Length) bytes"
                 }
@@ -1848,13 +2272,18 @@ function Invoke-BruteForceBootRepair {
         [string]$TargetDrive,
         [switch]$ExtractFromWim = $true,
         [int]$MaxRetries = 3,
-        [switch]$DryRun
+        [switch]$DryRun,
+        [switch]$AllowOnlineRepair
     )
     
     $actions = @()
     $verificationResults = @()
     $logDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
     if (-not (Test-Path $logDir)) { try { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } catch { } }
+    
+    # Check environment
+    $envState = Get-EnvState
+    $runningOnline = (-not $envState.IsWinPE)
     
     $targetDrive = $TargetDrive.TrimEnd(':')
     $actions += "═══════════════════════════════════════════════════════════════════════════════"
@@ -1863,6 +2292,13 @@ function Invoke-BruteForceBootRepair {
     $actions += "Target Drive: $targetDrive`:"
     $actions += "Max Retries: $MaxRetries"
     $actions += "Extract from WIM: $ExtractFromWim"
+    $actions += "Environment: $(if ($runningOnline) { 'Full Windows' } else { 'WinRE/WinPE' })"
+    if ($runningOnline -and $AllowOnlineRepair) {
+        $actions += "AllowOnlineRepair: ENABLED - Safe repairs will be attempted"
+    } elseif ($runningOnline) {
+        $actions += "AllowOnlineRepair: DISABLED - Only diagnosis will be performed"
+        $actions += "⚠ Running in full Windows without -AllowOnlineRepair: Repairs will be blocked"
+    }
     $actions += ""
     
     if ($DryRun) {
@@ -1895,6 +2331,8 @@ function Invoke-BruteForceBootRepair {
                 Size = $sourceResult.Source.Size
                 Confidence = $sourceResult.Source.Confidence
                 Integrity = $null
+                Compatibility = if ($sourceResult.Source.Compatibility) { $sourceResult.Source.Compatibility } else { @{ Compatible = $true; Score = 50 } }
+                CompatibilityScore = if ($sourceResult.Source.CompatibilityScore) { $sourceResult.Source.CompatibilityScore } else { 50 }
             }
         }
     }
@@ -1906,6 +2344,18 @@ function Invoke-BruteForceBootRepair {
     
     if (-not $sourceResult.Source) {
         $actions += "❌ No winload.efi source found. Cannot proceed with brute force repair."
+        return @{
+            Output = ($actions -join "`n")
+            Bootable = $false
+            Verified = $false
+            Actions = $actions
+        }
+    }
+    
+    # Check if we should proceed with repairs when running online
+    if ($runningOnline -and -not $AllowOnlineRepair -and -not $DryRun) {
+        $actions += "⚠ Running in full Windows without -AllowOnlineRepair: Repairs blocked by Environment Guard"
+        $actions += "⚠ To enable safe repairs (file copy, BCD fixes), use -AllowOnlineRepair or run from WinRE"
         return @{
             Output = ($actions -join "`n")
             Bootable = $false
@@ -2371,7 +2821,9 @@ function Invoke-DefensiveBootRepair {
         
         # Pre-flight backup (Layer 8)
         $backupPath = Join-Path $logDir "BCD_PRODUCTION_BACKUP.bak"
-        $shouldWrite = (-not $diagOnly -and -not $DryRun -and -not $simulate -and -not $runningOnline)
+        # Allow writes when: not in diagnose/dryrun/simulate mode, AND either in WinRE OR AllowOnlineRepair is set
+        # This allows safe repairs (like copying winload.efi) even when running in full Windows
+        $shouldWrite = (-not $diagOnly -and -not $DryRun -and -not $simulate -and (-not $runningOnline -or $AllowOnlineRepair))
         if ($shouldWrite -and -not $blocker) {
             try {
                 $exportOut = bcdedit /export "$backupPath" 2>&1 | Out-String
@@ -2407,10 +2859,18 @@ function Invoke-DefensiveBootRepair {
 
         # Blast radius
         if ($bitlockerLocked) { $blastRadius += "BitLocker locked: will not attempt writes; risk of triggering recovery prompts avoided." }
-        if ($runningOnline -and $resolvedMode -ne "DiagnoseOnly") { $blastRadius += "Running in full Windows; destructive commands blocked by Environment Guard." }
+        if ($runningOnline -and $resolvedMode -ne "DiagnoseOnly" -and -not $AllowOnlineRepair) { 
+            $blastRadius += "Running in full Windows; destructive commands blocked by Environment Guard. Safe repairs (file copy, BCD path fixes) are allowed when -AllowOnlineRepair is set." 
+        }
+        if ($runningOnline -and $AllowOnlineRepair) {
+            $blastRadius += "Running in full Windows with -AllowOnlineRepair: Safe repairs enabled (file copy, BCD path fixes). Destructive operations (BCD rebuild) still blocked."
+        }
 
         # Guards
         if ($diagOnly -or $DryRun -or $simulate) { $actions += "Destructive commands blocked by Environment Guard." }
+        if ($runningOnline -and -not $AllowOnlineRepair -and -not $diagOnly -and -not $DryRun -and -not $simulate) {
+            $actions += "Running in full Windows: Only safe repairs allowed (file copy, BCD path fixes). Use -AllowOnlineRepair to enable safe repairs, or run from WinRE for full repair capabilities."
+        }
         if ($bitlockerLocked -eq $true) { $actions += "Repair aborted: BitLocker locked." }
 
         # AUTOMATIC REPAIR EXECUTION (when not in DiagnoseOnly mode)
@@ -2465,12 +2925,22 @@ function Invoke-DefensiveBootRepair {
                     }
                     
                     # Search in WinRE/current environment if no other source found
+                    # PRIORITIZE WinRE sources - they're immediately available when running from WinRE
                     if (-not $winloadSource) {
+                        $envState = Get-EnvState
+                        $runningFromWinRE = $envState.IsWinPE
+                        
+                        # Check current environment first (most reliable when in WinRE)
+                        # Note: winload.efi can be in System32 or System32\Boot subdirectory
                         $winrePaths = @(
-                            "$env:SystemRoot\System32\winload.efi",
-                            "X:\Windows\System32\winload.efi",
-                            "X:\sources\boot.wim\Windows\System32\winload.efi"
+                            "$env:SystemRoot\System32\winload.efi",           # Current environment (highest priority)
+                            "$env:SystemRoot\System32\Boot\winload.efi",      # Current environment Boot subdirectory
+                            "X:\Windows\System32\winload.efi",                # Standard WinRE location
+                            "X:\Windows\System32\Boot\winload.efi",           # WinRE Boot subdirectory (common location)
+                            "X:\sources\boot.wim\Windows\System32\winload.efi",  # Boot WIM location
+                            "X:\sources\boot.wim\Windows\System32\Boot\winload.efi"  # Boot WIM Boot subdirectory
                         )
+                        
                         foreach ($winrePath in $winrePaths) {
                             $resolvedPath = Resolve-WindowsPath -Path $winrePath -SupportLongPath
                             if ($resolvedPath) {
@@ -2478,7 +2948,11 @@ function Invoke-DefensiveBootRepair {
                                 if ($existsCheck.Exists) {
                                     $winloadSource = "WinRE"
                                     $winloadSourcePath = $resolvedPath
-                                    $actions += "Found winload.efi source (fallback): $resolvedPath"
+                                    if ($runningFromWinRE) {
+                                        $actions += "✓ Found winload.efi in WinRE (current environment): $resolvedPath - PRIORITIZED"
+                                    } else {
+                                        $actions += "Found winload.efi source (fallback from WinRE): $resolvedPath"
+                                    }
                                     break
                                 }
                             }
@@ -2752,7 +3226,9 @@ function Invoke-DefensiveBootRepair {
         $bundle += "Environment: " + ($(if ($envState.IsWinPE) { "WinRE/WinPE" } else { "FullWindows" }))
         $bundle += "Firmware: $($envState.Firmware)"
         $bundle += "DiskLayout: Unknown"
-        $bundle += "EnvironmentGuard: " + ($(if ($diagOnly -or $DryRun -or $simulate -or $runningOnline) { "Destructive commands blocked by Environment Guard." } else { "Repair actions permitted." }))
+        # Environment Guard: Block destructive commands unless AllowOnlineRepair is set (which allows safe repairs)
+        $envGuardBlocked = ($diagOnly -or $DryRun -or $simulate -or ($runningOnline -and -not $AllowOnlineRepair))
+        $bundle += "EnvironmentGuard: " + ($(if ($envGuardBlocked) { "Destructive commands blocked by Environment Guard." } else { "Repair actions permitted." }))
         $bundle += "DetectedWindows:"
         foreach ($w in $windowsInstalls) { $bundle += "  - $($w.Drive) $($w.Label)" }
         $bundle += "SelectedWindows: " + $(if ($selectedOS) { $selectedOS.Drive } else { "(none)" })
@@ -3019,6 +3495,128 @@ function Invoke-DefensiveBootRepair {
         }
         
         $output += $bundle
+        
+        # ADVANCED PLAN B TROUBLESHOOTING (when standard repair fails)
+        # Add advanced troubleshooting section if repair failed or confidence is low
+        if (-not $bootable -or $bootabilityConfidence -lt 50) {
+            $output += ""
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += "ADVANCED PLAN B TROUBLESHOOTING (For High-End Builds: i9-14900K/Z790)"
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+            $output += ""
+            $output += "Standard repair failed. Try these advanced steps:"
+            $output += ""
+            
+            # Check for VMD driver issue
+            $vmdCheck = Test-VMDDriverIssue
+            if ($vmdCheck.Detected) {
+                $output += "1. VMD DRIVER ISSUE DETECTED"
+                $output += "   Symptom: Intel Volume Management Device (VMD) may be blocking drive access"
+                $output += "   Fix:"
+                $output += "     a) Go to BIOS -> Storage Configuration"
+                $output += "     b) If VMD is Enabled, try disabling it (may require reinstall)"
+                $output += "     c) OR load Intel RST VMD driver in WinPE:"
+                $output += "        drvload C:\path\to\driver.inf"
+                if ($vmdCheck.Details.Count -gt 0) {
+                    foreach ($detail in $vmdCheck.Details) {
+                        $output += "   Details: $detail"
+                    }
+                }
+                $output += ""
+            }
+            
+            # Check for ghost BCD entries
+            $ghostCheck = Test-GhostBCEEntries
+            if ($ghostCheck.Detected) {
+                $output += "2. GHOST BCD ENTRIES DETECTED"
+                $output += "   Symptom: Multiple drives causing UEFI firmware confusion"
+                $output += "   Fix:"
+                $output += "     a) Unplug all drives except primary NVME boot drive"
+                $output += "     b) Attempt repair again"
+                $output += "     c) Plug other drives back and use msconfig/EasyBCD to clean up"
+                if ($ghostCheck.Details.Count -gt 0) {
+                    foreach ($detail in $ghostCheck.Details) {
+                        $output += "   Details: $detail"
+                    }
+                }
+                $output += ""
+            }
+            
+            # Check for pending updates
+            $pendingCheck = Test-PendingWindowsUpdates
+            if ($pendingCheck.Detected) {
+                $output += "3. PENDING WINDOWS UPDATES DETECTED"
+                $output += "   Symptom: Pending updates may be blocking boot repair"
+                $output += "   Fix:"
+                $output += "     a) Check for: $($pendingCheck.PendingPath)"
+                $output += "     b) Rename or delete pending.xml if found"
+                $output += "     c) Reboot and try repair again"
+                $output += ""
+            }
+            
+            # Check for read-only drive
+            $readOnlyCheck = Test-ReadOnlyDrive -TargetDrive $TargetDrive
+            if ($readOnlyCheck.Detected) {
+                $output += "4. READ-ONLY DRIVE DETECTED"
+                $output += "   Symptom: Drive marked as read-only, preventing writes"
+                $output += "   Fix:"
+                $output += "     diskpart"
+                $output += "     > select disk X (your NVME)"
+                $output += "     > attributes disk clear readonly"
+                $output += "     > exit"
+                $output += ""
+            }
+            
+            # Check BIOS/firmware state
+            $biosCheck = Test-BIOSFirmwareState
+            if ($biosCheck.IssuesDetected) {
+                $output += "5. BIOS/FIRMWARE STATE CHECK"
+                $output += "   Issues detected:"
+                foreach ($issue in $biosCheck.Issues) {
+                    $output += "     • $issue"
+                }
+                $output += "   Fix:"
+                $output += "     a) CSM (Compatibility Support Module): Should be DISABLED for NVME/UEFI"
+                $output += "     b) Secure Boot: Try setting to 'Other OS' or 'Disabled' temporarily"
+                $output += "     c) Check BIOS version and update if needed"
+                $output += ""
+            }
+            
+            # Manual partition recreation
+            $output += "6. MANUAL PARTITION RECREATION (Nuke and Pave EFI)"
+            $output += "   Warning: Destructive to EFI partition only, not your data"
+            $output += "   Steps:"
+            $output += "     diskpart"
+            $output += "     > list disk"
+            $output += "     > sel disk X (your NVME)"
+            $output += "     > list part"
+            $output += "     > sel part Y (~100MB-500MB System partition)"
+            $output += "     > delete partition override"
+            $output += "     > create partition efi size=100"
+            $output += "     > format quick fs=fat32 label=`"System`""
+            $output += "     > assign letter=S"
+            $output += "     > exit"
+            $winDrive = if ($TargetDrive) { "$TargetDrive`:" } else { "C:" }
+            $output += "     bcdboot $winDrive\Windows /s S: /f UEFI"
+            $output += ""
+            
+            # SFC/DISM from WinPE
+            $output += "7. SFC AND DISM FROM WINPE"
+            $output += "   If winload.efi is missing or 0KB, pull fresh copy from WIM:"
+            $output += "     # Replace C: with your actual Windows drive"
+            $output += "     # Replace D: with your USB Installation Media"
+            $output += "     dism /Image:C:\ /Cleanup-Image /RestoreHealth /Source:D:\sources\install.wim"
+            $output += "     sfc /scannow /offbootdir=C:\ /offwindir=C:\Windows"
+            $output += ""
+            
+            # MBR/GPT corruption check
+            $output += "8. MBR/GPT CORRUPTION CHECK"
+            $output += "   If partition table is corrupted:"
+            $output += "     bootsect /nt60 ALL /force /mbr"
+            $output += ""
+            
+            $output += "═══════════════════════════════════════════════════════════════════════════════"
+        }
         
         # If repair failed, create and show comprehensive guidance document
         if (-not $bootable -and -not $diagOnly -and -not $DryRun -and -not $simulate) {

@@ -1740,7 +1740,8 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
             }
             Write-ToLog "XAML file verified: $xamlCheck" "DEBUG"
             
-            # Launch GUI with proper error handling
+            # Launch GUI immediately - no blocking operations
+            # GUI will display as soon as ShowDialog() is called
             try {
                 Start-GUI
                 

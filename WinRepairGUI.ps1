@@ -1972,8 +1972,8 @@ try {
             
             # Try Get-NetAdapter (Windows 8+)
             if (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue) {
-                $adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' }
-                if ($adapters) {
+                $adapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' })
+                if ($adapters -and $adapters.Count -gt 0) {
                     $hasAdapter = $true
                     $adapterConnected = $true
                 }
@@ -2039,13 +2039,49 @@ try {
     Write-Warning "Error initializing network status: $_"
 }
 
-# Populate drive combo (with null checks)
+# Populate drive combo (with null checks and WinPE compatibility)
 try {
+    # Enhanced volume detection for WinPE environments with drive letter shuffling
     $volumes = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.DriveLetter } | Sort-Object DriveLetter
-    # Ensure $volumes is always an array
+    # Ensure $volumes is always an array (critical for .Count property access)
     if ($null -eq $volumes) { $volumes = @() }
     if ($volumes -isnot [array]) { $volumes = @($volumes) }
-    $currentSystemDrive = $env:SystemDrive.TrimEnd(':')
+    
+    # Fallback: If no volumes found, try alternative detection methods for WinPE
+    if ($volumes.Count -eq 0) {
+        try {
+            # Try using Get-PSDrive as fallback (works in WinPE)
+            $psDrives = Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^[A-Z]$' }
+            if ($psDrives) {
+                $volumes = @()
+                foreach ($psd in $psDrives) {
+                    $driveLetter = "$($psd.Name):"
+                    if (Test-Path "$driveLetter\") {
+                        try {
+                            $vol = Get-Volume -DriveLetter $psd.Name -ErrorAction SilentlyContinue
+                            if ($vol) { $volumes += $vol }
+                        } catch {
+                            # If Get-Volume fails, create a minimal volume object
+                            $volumes += [pscustomobject]@{
+                                DriveLetter = $psd.Name
+                                FileSystemLabel = "Drive $($psd.Name)"
+                                FileSystem = "Unknown"
+                                Size = 0
+                            }
+                        }
+                    }
+                }
+                # Ensure still an array
+                if ($null -eq $volumes) { $volumes = @() }
+                if ($volumes -isnot [array]) { $volumes = @($volumes) }
+            }
+        } catch {
+            # Fallback failed, continue with empty array
+            $volumes = @()
+        }
+    }
+    
+    $currentSystemDrive = if ($env:SystemDrive) { $env:SystemDrive.TrimEnd(':') } else { "C" }
     $driveCombo = Get-Control "DriveCombo"
     if ($driveCombo) {
         $driveCombo.Items.Clear()
@@ -2112,6 +2148,28 @@ try {
         }
         $summaryDriveCombo.SelectedIndex = 0
     }
+} catch {
+    # Enhanced error handling for drive detection failures (common in WinPE)
+    $errorMsg = "Error scanning for Windows installations: $($_.Exception.Message)"
+    Write-Warning $errorMsg
+    try {
+        Add-MiracleBootLog -Level "WARNING" -Message $errorMsg -Location "WinRepairGUI.ps1:DriveComboPopulation" -Data @{Error=$_.Exception.Message; StackTrace=$_.ScriptStackTrace} -NoConsole -ErrorAction SilentlyContinue
+    } catch { }
+    
+    # Fallback: Add default drive to combos if they exist
+    $currentSystemDrive = if ($env:SystemDrive) { $env:SystemDrive.TrimEnd(':') } else { "C" }
+    $oneClickDriveCombo = Get-Control "OneClickDriveCombo"
+    if ($oneClickDriveCombo -and $oneClickDriveCombo.Items.Count -eq 0) {
+        $oneClickDriveCombo.Items.Add("$currentSystemDrive`: - (fallback)")
+        $oneClickDriveCombo.SelectedIndex = 0
+    }
+    $driveCombo = Get-Control "DriveCombo"
+    if ($driveCombo -and $driveCombo.Items.Count -eq 0) {
+        $driveCombo.Items.Add("Auto-detect")
+        $driveCombo.Items.Add("$currentSystemDrive`: - (fallback)")
+        $driveCombo.SelectedIndex = 0
+    }
+}
 
     # Footer buttons: resize toggle and summary shortcut
     $btnResizeWindow = Get-Control -Name "BtnResizeWindow"
@@ -4764,9 +4822,13 @@ if ($btnOneClickRepair) {
         
         try {
             if ($bruteForceMode) {
-                $result = Invoke-BruteForceBootRepair -TargetDrive $targetDrive -ExtractFromWim:$true -MaxRetries 3
+                # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
+                # This allows safe repairs (like copying winload.efi) even when running in full Windows
+                $result = Invoke-BruteForceBootRepair -TargetDrive $targetDrive -ExtractFromWim:$true -MaxRetries 3 -AllowOnlineRepair:(!$dryRunFlag)
             } else {
-                $result = Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag
+                # Pass -AllowOnlineRepair when user selects Execute Repairs (not DryRun)
+                # This allows safe repairs (like copying winload.efi) even when running in full Windows
+                $result = Invoke-DefensiveBootRepair -TargetDrive $targetDrive -Mode "Auto" -SimulationScenario $simulationScenario -DryRun:$dryRunFlag -AllowOnlineRepair:(!$dryRunFlag)
             }
             if ($fixerOutput) {
                 $fixerOutput.Text = $result.Output + "`n`n" + $result.Bundle
@@ -8554,6 +8616,4 @@ try {
     
     # Re-throw to allow MiracleBoot.ps1 to handle fallback to TUI
     throw "Failed to show GUI window: $_"
-}
-
 } # End of Start-GUI function

@@ -883,6 +883,13 @@ function Invoke-NetworkDiagnostics {
     $adapters = Get-NetworkAdapterStatus -IncludeDisabled
     $report.Adapters = $adapters
     
+    # Ensure $adapters is always an array before accessing .Count
+    if ($null -eq $adapters) {
+        $adapters = @()
+    } elseif ($adapters -isnot [array]) {
+        $adapters = @($adapters)
+    }
+    
     if ($adapters.Count -eq 0) {
         Write-Host "[✗] NO NETWORK ADAPTERS DETECTED" -ForegroundColor Red
         $report.FailurePoints += "No network adapters found in system"
