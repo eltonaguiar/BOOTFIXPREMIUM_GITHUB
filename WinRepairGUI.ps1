@@ -8516,9 +8516,7 @@ if ($btnBootOpsNotepad) {
 
 # NOTE: All code below this point is at script level and executes when module loads
 # Button handlers use Get-Control which safely returns null if $W doesn't exist yet
-# Window event wiring and ShowDialog are handled INSIDE Start-GUI function
-    
-    # #region agent log
+# Window event wiring and ShowDialog are handled INSIDE Start-GUI function (before line 2438)
     try {
         $logEntry = @{
             sessionId = "debug-session"
