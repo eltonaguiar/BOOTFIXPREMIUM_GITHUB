@@ -168,6 +168,12 @@ if (-not (Test-Path variable:script:progressSteps)) {
     $script:progressSteps = @()
 }
 
+# Initialize guard flag to prevent infinite loops in Start-GUI
+# CRITICAL: Must be initialized before Start-GUI is called (Set-StrictMode requirement)
+if (-not (Test-Path variable:script:GUIIsRunning)) {
+    $script:GUIIsRunning = $false
+}
+
 # Load centralized logging system
 # CRITICAL: Use defensive loading to prevent call depth overflow from recursive Write-Warning wrappers
 $script:LoggingAvailable = $false
