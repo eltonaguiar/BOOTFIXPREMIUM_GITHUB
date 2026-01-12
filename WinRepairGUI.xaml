@@ -34,6 +34,8 @@
                 <MenuItem Header="Driver Export Location..." Name="BtnSetDriverLocation" ToolTip="Set default location for driver exports"/>
             </MenuItem>
             <MenuItem Header="Emergency Repair" FontWeight="Bold">
+                <MenuItem Header="🔧 CMD Only Repair (Recommended)" Name="BtnMenuCMDOnlyRepair" ToolTip="Run Comprehensive Boot Repair using ONLY CMD commands - No PowerShell required. Runs all emergency fixes sequentially until boot is restored." FontWeight="Bold"/>
+                <Separator/>
                 <MenuItem Header="Emergency Boot Repair V1" Name="BtnEmergencyBoot1" ToolTip="Run standalone emergency boot repair (V1) - No dependencies required"/>
                 <MenuItem Header="Emergency Boot Repair V2" Name="BtnEmergencyBoot2" ToolTip="Run emergency boot repair V2 - Alternative implementation"/>
                 <MenuItem Header="Emergency Boot Repair V3" Name="BtnEmergencyBoot3" ToolTip="Run emergency boot repair V3 - Minimal last resort"/>
@@ -56,6 +58,9 @@
             </MenuItem>
             <MenuItem Header="Help" FontWeight="Bold">
                 <MenuItem Header="Boot Fixer Instructions" Name="BtnMenuBootFixerInstructions" ToolTip="View detailed instructions for running MiracleBoot in Windows Repair environment"/>
+                <Separator/>
+                <MenuItem Header="Clear All Logs" Name="BtnClearAllLogs" ToolTip="Delete all log files from all log directories"/>
+                <MenuItem Header="Clear Logs Over 48 Hours" Name="BtnClearOldLogs" ToolTip="Delete log files older than 48 hours from all log directories"/>
                 <Separator/>
                 <MenuItem Header="Support" Name="BtnSupport" ToolTip="Contact support for issues or feedback"/>
             </MenuItem>
@@ -159,7 +164,8 @@
                     <Button Content="Emergency Fix V1" Name="BtnEmergencyFixV1" Width="150" Height="35" Background="#dc3545" Foreground="White" FontWeight="Bold" Margin="0,0,10,0" ToolTip="Run Emergency Boot Repair V1 (Standard Repair) - Standalone emergency fix"/>
                     <Button Content="Emergency Fix V2" Name="BtnEmergencyFixV2" Width="150" Height="35" Background="#dc3545" Foreground="White" FontWeight="Bold" Margin="0,0,10,0" ToolTip="Run Emergency Boot Repair V2 (Alternative Implementation) - Standalone emergency fix"/>
                     <Button Content="Emergency Fix V3" Name="BtnEmergencyFixV3" Width="150" Height="35" Background="#dc3545" Foreground="White" FontWeight="Bold" Margin="0,0,10,0" ToolTip="Run Emergency Boot Repair V3 (Minimal Last Resort) - Standalone emergency fix"/>
-                    <Button Content="Emergency Fix V4" Name="BtnEmergencyFixV4" Width="150" Height="35" Background="#28a745" Foreground="White" FontWeight="Bold" Margin="10,0,0,0" ToolTip="Run Emergency Boot Repair V4 (Intelligent Minimal Repair) - Fastest, checks issues first and only fixes what's broken"/>
+                    <Button Content="Emergency Fix V4" Name="BtnEmergencyFixV4" Width="150" Height="35" Background="#28a745" Foreground="White" FontWeight="Bold" Margin="0,0,10,0" ToolTip="Run Emergency Boot Repair V4 (Intelligent Minimal Repair) - Fastest, checks issues first and only fixes what's broken"/>
+                    <Button Content="🔧 CMD Only Repair" Name="BtnCMDOnlyRepair" Width="180" Height="35" Background="#17a2b8" Foreground="White" FontWeight="Bold" Margin="10,0,0,0" ToolTip="Run Comprehensive Boot Repair using ONLY CMD commands - No PowerShell required. Runs all emergency fixes sequentially until boot is restored."/>
                 </StackPanel>
                 
                 <TextBlock Grid.Row="3" Name="txtOneClickStatus" Text="Ready. Click 'Execute Repairs' to start automated boot repair." Margin="0,0,0,10" TextWrapping="Wrap" FontSize="12"/>

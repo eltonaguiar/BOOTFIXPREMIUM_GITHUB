@@ -628,10 +628,19 @@ function Test-BootReadinessAndOfferEmergency {
             $issues += "winload.efi missing"
         }
         
-        # Check BCD
+        # Check BCD (must be actual Windows installation, NOT WinRE)
         try {
             $bcdOutput = bcdedit /enum {default} 2>&1
-            if ($LASTEXITCODE -ne 0) {
+            if ($LASTEXITCODE -eq 0 -and $bcdOutput) {
+                # Check if this is a WinRE entry (should be excluded)
+                $isWinRE = $bcdOutput -match "Windows Recovery Environment|description.*Recovery|winpe.*Yes|ramdisk.*Winre\.wim|ramdisk.*Recovery"
+                if ($isWinRE) {
+                    $issues += "BCD default entry points to Windows Recovery Environment (WinRE) instead of actual Windows installation"
+                } elseif ($bcdOutput -notmatch "winload\.efi|winload\.exe") {
+                    $issues += "BCD entry missing winload.efi/winload.exe reference"
+                }
+                # If we get here and no issues added, BCD is valid
+            } else {
                 $issues += "BCD entry missing or invalid"
             }
         } catch {
@@ -763,6 +772,117 @@ function Test-BootReadinessAndOfferEmergency {
     return $false
 }
 
+# Helper function to fix default BCD entry if it points to WinRE
+function Fix-BCDDefaultIfWinRE {
+    <#
+    .SYNOPSIS
+    Checks if the default BCD entry points to WinRE, and if so, sets it to the actual Windows installation.
+    
+    .PARAMETER TargetDrive
+    Optional target drive. If not provided, uses system drive.
+    
+    .OUTPUTS
+    PSCustomObject with Fixed (bool) and Message (string) properties
+    #>
+    param(
+        [string]$TargetDrive = $null
+    )
+    
+    if (-not $TargetDrive) {
+        $TargetDrive = $env:SystemDrive.TrimEnd(':')
+    }
+    
+    $result = @{
+        Fixed = $false
+        Message = ""
+    }
+    
+    try {
+        # Check current default entry
+        $defaultOutput = & bcdedit /enum {default} 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $result.Message = "Could not enumerate default entry"
+            return $result
+        }
+        
+        # Check if default is WinRE
+        $isWinRE = $defaultOutput -match "Windows Recovery Environment|description.*Recovery|winpe.*Yes|ramdisk.*Winre\.wim|ramdisk.*Recovery"
+        
+        if (-not $isWinRE) {
+            $result.Message = "Default entry is already pointing to Windows installation (not WinRE)"
+            return $result
+        }
+        
+        # Default is WinRE - need to find and set actual Windows installation
+        Write-Host "[FIX] Default BCD entry points to WinRE. Searching for Windows installation entry..." -ForegroundColor Yellow
+        
+        # Enumerate all entries
+        $allEntries = & bcdedit /enum all 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $result.Message = "Could not enumerate all BCD entries"
+            return $result
+        }
+        
+        # Parse entries to find Windows installation (not WinRE)
+        $windowsEntryGuid = $null
+        $currentEntry = ""
+        $currentGuid = $null
+        
+        foreach ($line in $allEntries) {
+            if ($line -match '^(\{[a-f0-9\-]{36}\})') {
+                # New entry - check previous one
+                if ($currentGuid -and $currentEntry) {
+                    $isWindows = ($currentEntry -match "Windows") -and 
+                                ($currentEntry -notmatch "Windows Recovery Environment|description.*Recovery|winpe.*Yes|ramdisk.*Winre|ramdisk.*Recovery") -and
+                                ($currentEntry -match "winload\.efi|winload\.exe")
+                    if ($isWindows) {
+                        $windowsEntryGuid = $currentGuid
+                        break
+                    }
+                }
+                $currentGuid = $matches[1]
+                $currentEntry = $line
+            } else {
+                $currentEntry += "`n" + $line
+            }
+        }
+        
+        # Check last entry
+        if ($currentGuid -and $currentEntry -and -not $windowsEntryGuid) {
+            $isWindows = ($currentEntry -match "Windows") -and 
+                        ($currentEntry -notmatch "Windows Recovery Environment|description.*Recovery|winpe.*Yes|ramdisk.*Winre|ramdisk.*Recovery") -and
+                        ($currentEntry -match "winload\.efi|winload\.exe")
+            if ($isWindows) {
+                $windowsEntryGuid = $currentGuid
+            }
+        }
+        
+        if (-not $windowsEntryGuid) {
+            $result.Message = "Could not find Windows installation entry in BCD (only WinRE found)"
+            return $result
+        }
+        
+        # Set the Windows installation entry as default
+        Write-Host "[FIX] Setting Windows installation entry as default: $windowsEntryGuid" -ForegroundColor Green
+        $setDefault = & bcdedit /default $windowsEntryGuid 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            $result.Fixed = $true
+            $result.Message = "Successfully set Windows installation entry as default: $windowsEntryGuid"
+            Write-Host "[FIX] $($result.Message)" -ForegroundColor Green
+        } else {
+            $result.Message = "Failed to set default entry: $setDefault"
+            Write-Warning "[FIX] $($result.Message)"
+        }
+        
+    } catch {
+        $result.Message = "Error fixing default entry: $($_.Exception.Message)"
+        Write-Warning "[FIX] $($result.Message)"
+    }
+    
+    return $result
+}
+
 # Helper function to check boot readiness (comprehensive check)
 function Test-BootReadinessComprehensive {
     <#
@@ -805,23 +925,56 @@ function Test-BootReadinessComprehensive {
             $result.Issues += "winload.efi missing"
         }
         
-        # Check 2: BCD entry
+        # Check 2: BCD entry (must be actual Windows installation, NOT WinRE)
         $totalChecks++
         $bcdValid = $false
+        $bcdIsWinRE = $false
         try {
             $bcdOutput = & bcdedit /store "$TargetDrive`:\Boot\BCD" /enum {default} 2>&1
-            if ($LASTEXITCODE -eq 0 -and $bcdOutput -match "winload\.efi|winload\.exe") {
-                $bcdValid = $true
-                $checksPassed++
-            } else {
+            if ($LASTEXITCODE -ne 0) {
                 # Try without store path for online systems
                 $bcdOutput = & bcdedit /enum {default} 2>&1
-                if ($LASTEXITCODE -eq 0 -and $bcdOutput -match "winload\.efi|winload\.exe") {
-                    $bcdValid = $true
-                    $checksPassed++
+            }
+            
+            if ($LASTEXITCODE -eq 0 -and $bcdOutput) {
+                # Check if this is a WinRE entry (should be excluded)
+                $isWinRE = $bcdOutput -match "Windows Recovery Environment|description.*Recovery|winpe.*Yes|ramdisk.*Winre\.wim|ramdisk.*Recovery"
+                
+                if ($isWinRE) {
+                    $bcdIsWinRE = $true
+                    $result.Issues += "BCD default entry points to Windows Recovery Environment (WinRE) instead of actual Windows installation"
+                } elseif ($bcdOutput -match "winload\.efi|winload\.exe") {
+                    # Valid Windows installation entry (not WinRE)
+                    # Additional check: ensure it's not pointing to ramdisk (WinRE indicator)
+                    if ($bcdOutput -notmatch "ramdisk.*Winre|ramdisk.*Recovery") {
+                        # Check that device/osdevice points to actual Windows drive, not ramdisk
+                        $deviceLine = $bcdOutput | Select-String -Pattern "device\s+:" | Select-Object -First 1
+                        $osdeviceLine = $bcdOutput | Select-String -Pattern "osdevice\s+:" | Select-Object -First 1
+                        
+                        if ($deviceLine -and $osdeviceLine) {
+                            # If both device and osdevice point to ramdisk, it's WinRE
+                            if ($deviceLine -match "ramdisk" -and $osdeviceLine -match "ramdisk") {
+                                $bcdIsWinRE = $true
+                                $result.Issues += "BCD default entry points to ramdisk (WinRE) instead of actual Windows installation"
+                            } else {
+                                # Valid Windows installation entry
+                                $bcdValid = $true
+                                $checksPassed++
+                            }
+                        } else {
+                            # Can't determine, but has winload - assume valid for now
+                            $bcdValid = $true
+                            $checksPassed++
+                        }
+                    } else {
+                        $bcdIsWinRE = $true
+                        $result.Issues += "BCD default entry points to WinRE ramdisk instead of actual Windows installation"
+                    }
                 } else {
-                    $result.Issues += "BCD entry missing or invalid"
+                    $result.Issues += "BCD entry missing winload.efi/winload.exe reference"
                 }
+            } else {
+                $result.Issues += "BCD entry missing or invalid"
             }
         } catch {
             $result.Issues += "BCD check failed: $($_.Exception.Message)"
@@ -847,11 +1000,58 @@ function Test-BootReadinessComprehensive {
             $result.Issues += "Boot manager files missing"
         }
         
+        # Additional check: Verify default entry is NOT WinRE
+        if ($bcdValid -and -not $bcdIsWinRE) {
+            # Double-check by enumerating all entries and finding the actual Windows installation
+            try {
+                $allEntries = & bcdedit /enum all 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                    # Look for Windows installation entries (not WinRE)
+                    $windowsEntries = @()
+                    $currentEntry = $null
+                    $entryGuid = $null
+                    
+                    foreach ($line in $allEntries) {
+                        if ($line -match '^(\{[a-f0-9\-]{36}\})') {
+                            if ($currentEntry -and $entryGuid) {
+                                # Check if previous entry is Windows (not WinRE)
+                                $isWindows = ($currentEntry -match "Windows") -and 
+                                            ($currentEntry -notmatch "Windows Recovery Environment|Recovery|winpe.*Yes|ramdisk.*Winre|ramdisk.*Recovery")
+                                if ($isWindows) {
+                                    $windowsEntries += $entryGuid
+                                }
+                            }
+                            $entryGuid = $matches[1]
+                            $currentEntry = ""
+                        } else {
+                            $currentEntry += $line + "`n"
+                        }
+                    }
+                    
+                    # Check last entry
+                    if ($currentEntry -and $entryGuid) {
+                        $isWindows = ($currentEntry -match "Windows") -and 
+                                    ($currentEntry -notmatch "Windows Recovery Environment|Recovery|winpe.*Yes|ramdisk.*Winre|ramdisk.*Recovery")
+                        if ($isWindows) {
+                            $windowsEntries += $entryGuid
+                        }
+                    }
+                    
+                    # If we found Windows entries but default is WinRE, add issue
+                    if ($windowsEntries.Count -gt 0 -and $bcdIsWinRE) {
+                        $result.Issues += "Found $($windowsEntries.Count) Windows installation entry/entries, but default is set to WinRE. Default should be: $($windowsEntries[0])"
+                    }
+                }
+            } catch {
+                # Ignore errors in this additional check
+            }
+        }
+        
         # Determine bootability
-        if ($checksPassed -eq $totalChecks) {
+        if ($checksPassed -eq $totalChecks -and -not $bcdIsWinRE) {
             $result.Bootable = $true
             $result.Confidence = "High"
-        } elseif ($checksPassed -ge ($totalChecks - 1)) {
+        } elseif ($checksPassed -ge ($totalChecks - 1) -and -not $bcdIsWinRE) {
             $result.Bootable = $true
             $result.Confidence = "Medium"
         } else {
@@ -1056,6 +1256,20 @@ function Invoke-RepairWizard {
         # Check boot readiness after this repair
         Start-Sleep -Seconds 2  # Brief pause to allow file system to update
         $postCheck = Test-BootReadinessComprehensive -TargetDrive $TargetDrive
+        
+        # If default entry is WinRE, try to fix it
+        if (-not $postCheck.Bootable -and ($postCheck.Issues -match "WinRE|Recovery Environment")) {
+            Write-Host "[WIZARD] Default entry points to WinRE - attempting to fix..." -ForegroundColor Yellow
+            $fixResult = Fix-BCDDefaultIfWinRE -TargetDrive $TargetDrive
+            if ($fixResult.Fixed) {
+                # Re-check boot readiness after fixing
+                $postCheck = Test-BootReadinessComprehensive -TargetDrive $TargetDrive
+                if ($fixerOutput) {
+                    $fixerOutput.Text += "`n[FIX] $($fixResult.Message)`n"
+                    $fixerOutput.ScrollToEnd()
+                }
+            }
+        }
         
         if ($postCheck.Bootable) {
             $repairsAttempted += $repairInfo
@@ -3237,6 +3451,85 @@ compared to Microsoft's full incident cost.
         $window.Content = $scrollViewer
         $window.ShowDialog() | Out-Null
     })
+}
+
+$btnClearAllLogs = Get-Control -Name "BtnClearAllLogs" -Silent
+if ($btnClearAllLogs) {
+    $btnClearAllLogs.Add_Click({
+        try {
+            $confirm = [System.Windows.MessageBox]::Show(
+                "⚠ WARNING: This will delete ALL log files from all log directories.`n`nDirectories that will be cleared:`n  • LOGS_MIRACLEBOOT`n  • LOGS`n  • TEST_LOGS`n  • LOG_ANALYSIS`n`nThis action cannot be undone.`n`nAre you sure you want to continue?",
+                "Clear All Logs",
+                "YesNo",
+                "Warning"
+            )
+            
+            if ($confirm -eq "Yes") {
+                Update-StatusBar -Message "Clearing all logs..." -ShowProgress
+                $result = Clear-Logs
+                
+                $sizeMB = [math]::Round($result.TotalSize / 1MB, 2)
+                $message = "✅ All logs cleared successfully!`n`n"
+                $message += "Files deleted: $($result.Count)`n"
+                $message += "Space freed: $sizeMB MB`n`n"
+                $message += "Log directories cleared:`n"
+                $message += "  • LOGS_MIRACLEBOOT`n"
+                $message += "  • LOGS`n"
+                $message += "  • TEST_LOGS`n"
+                $message += "  • LOG_ANALYSIS"
+                
+                Update-StatusBar -Message "All logs cleared ($($result.Count) files, $sizeMB MB freed)" -HideProgress
+                [System.Windows.MessageBox]::Show($message, "Logs Cleared", "OK", "Information") | Out-Null
+            }
+        } catch {
+            Update-StatusBar -Message "Error clearing logs: $_" -HideProgress
+            [System.Windows.MessageBox]::Show("Error clearing logs: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+        }
+    })
+    Write-Host "[GUI] Clear All Logs menu handler wired successfully" -ForegroundColor Green
+}
+
+$btnClearOldLogs = Get-Control -Name "BtnClearOldLogs" -Silent
+if ($btnClearOldLogs) {
+    $btnClearOldLogs.Add_Click({
+        try {
+            $confirm = [System.Windows.MessageBox]::Show(
+                "This will delete log files older than 48 hours from all log directories.`n`nDirectories that will be checked:`n  • LOGS_MIRACLEBOOT`n  • LOGS`n  • TEST_LOGS`n  • LOG_ANALYSIS`n`nLogs from the last 48 hours will be kept.`n`nContinue?",
+                "Clear Old Logs (48+ Hours)",
+                "YesNo",
+                "Question"
+            )
+            
+            if ($confirm -eq "Yes") {
+                Update-StatusBar -Message "Clearing logs older than 48 hours..." -ShowProgress
+                $result = Clear-Logs -OlderThanHours 48
+                
+                if ($result.Count -gt 0) {
+                    $sizeMB = [math]::Round($result.TotalSize / 1MB, 2)
+                    $message = "✅ Old logs cleared successfully!`n`n"
+                    $message += "Files deleted: $($result.Count)`n"
+                    $message += "Space freed: $sizeMB MB`n`n"
+                    $message += "Logs older than 48 hours have been removed.`n"
+                    $message += "Recent logs (last 48 hours) have been kept."
+                    
+                    Update-StatusBar -Message "Old logs cleared ($($result.Count) files, $sizeMB MB freed)" -HideProgress
+                    [System.Windows.MessageBox]::Show($message, "Old Logs Cleared", "OK", "Information") | Out-Null
+                } else {
+                    Update-StatusBar -Message "No old logs found to clear" -HideProgress
+                    [System.Windows.MessageBox]::Show(
+                        "No log files older than 48 hours were found.`n`nAll logs are recent and have been kept.",
+                        "No Old Logs",
+                        "OK",
+                        "Information"
+                    ) | Out-Null
+                }
+            }
+        } catch {
+            Update-StatusBar -Message "Error clearing old logs: $_" -HideProgress
+            [System.Windows.MessageBox]::Show("Error clearing old logs: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+        }
+    })
+    Write-Host "[GUI] Clear Old Logs menu handler wired successfully" -ForegroundColor Green
 }
 
 $btnSupport = Get-Control -Name "BtnSupport"
@@ -5489,6 +5782,134 @@ if ($null -ne $W) {
         Write-Host "[GUI] WARNING: BtnEmergencyFixV4 button NOT FOUND in XAML!" -ForegroundColor Yellow
     }
     
+    # CMD Only Repair button handler (Boot Fixer tab)
+    $btnCMDOnlyRepair = Get-Control -Name "BtnCMDOnlyRepair" -Silent
+    if ($btnCMDOnlyRepair) {
+        Write-Host "[GUI] Wiring CMD Only Repair button handler..." -ForegroundColor Cyan
+        $btnCMDOnlyRepair.Add_Click({
+            try {
+                $btnCMDOnlyRepair.IsEnabled = $false
+                $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+                $comprehensivePath = Join-Path $scriptRoot "COMPREHENSIVE_BOOT_REPAIR.cmd"
+                $fixerOutput = Get-Control -Name "FixerOutput" -Silent
+                $txtOneClickStatus = Get-Control -Name "txtOneClickStatus" -Silent
+                
+                if (Test-Path $comprehensivePath) {
+                    Update-StatusBar -Message "Running CMD Only Repair (Comprehensive Boot Repair)..." -ShowProgress
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "`n[$([DateTime]::Now.ToString('HH:mm:ss'))] Starting CMD Only Repair (Comprehensive Boot Repair)...`n"
+                        $fixerOutput.Text += "  This uses ONLY CMD commands - No PowerShell required.`n"
+                        $fixerOutput.Text += "  Will run all emergency fixes sequentially until boot is restored.`n`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    if ($txtOneClickStatus) {
+                        $txtOneClickStatus.Text = "Running CMD Only Repair... This uses only CMD commands (no PowerShell)."
+                    }
+                    
+                    $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$comprehensivePath`"" -Wait -NoNewWindow -PassThru
+                    $exitCode = $process.ExitCode
+                    
+                    Update-StatusBar -Message "CMD Only Repair completed (Exit Code: $exitCode)" -HideProgress
+                    
+                    if ($fixerOutput) {
+                        $fixerOutput.Text += "`n[$([DateTime]::Now.ToString('HH:mm:ss'))] CMD Only Repair completed.`n"
+                        $fixerOutput.Text += "  Exit Code: $exitCode`n"
+                        $fixerOutput.ScrollToEnd()
+                    }
+                    
+                    # Check boot readiness
+                    $targetDrive = $env:SystemDrive.TrimEnd(':')
+                    $bootCheck = Test-BootReadinessComprehensive -TargetDrive $targetDrive
+                    
+                    if ($bootCheck.Bootable) {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "✅ CMD Only Repair completed - Boot appears fixed!"
+                        }
+                        [System.Windows.MessageBox]::Show(
+                            "✅ CMD Only Repair Completed!`n`nBoot readiness check passed. System should now be bootable.`n`nThis repair used only CMD commands (no PowerShell required).",
+                            "CMD Only Repair: Success",
+                            "OK",
+                            "Information"
+                        ) | Out-Null
+                    } else {
+                        if ($txtOneClickStatus) {
+                            $txtOneClickStatus.Text = "⚠ CMD Only Repair completed but boot issue may persist."
+                        }
+                        $message = "⚠ CMD Only Repair Completed`n`nExit Code: $exitCode`n`n"
+                        if ($bootCheck.Issues.Count -gt 0) {
+                            $message += "Remaining issues:`n"
+                            foreach ($issue in $bootCheck.Issues) {
+                                $message += "  • $issue`n"
+                            }
+                            $message += "`nConsider trying the Repair Wizard or Brute Force mode."
+                            [System.Windows.MessageBox]::Show($message, "CMD Only Repair: Completed", "OK", "Warning") | Out-Null
+                        } else {
+                            [System.Windows.MessageBox]::Show($message, "CMD Only Repair: Completed", "OK", "Information") | Out-Null
+                        }
+                    }
+                } else {
+                    [System.Windows.MessageBox]::Show("Comprehensive Boot Repair not found at: $comprehensivePath`n`nThis file contains the CMD-only repair sequence.", "File Not Found", "OK", "Warning") | Out-Null
+                }
+            } catch {
+                Update-StatusBar -Message "CMD Only Repair failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run CMD Only Repair: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            } finally {
+                $btnCMDOnlyRepair.IsEnabled = $true
+            }
+        })
+        Write-Host "[GUI] CMD Only Repair button handler wired successfully" -ForegroundColor Green
+    } else {
+        Write-Host "[GUI] WARNING: BtnCMDOnlyRepair button NOT FOUND in XAML!" -ForegroundColor Yellow
+    }
+    
+    # CMD Only Repair menu item handler
+    $btnMenuCMDOnlyRepair = Get-Control -Name "BtnMenuCMDOnlyRepair" -Silent
+    if ($btnMenuCMDOnlyRepair) {
+        Write-Host "[GUI] Wiring CMD Only Repair menu handler..." -ForegroundColor Cyan
+        $btnMenuCMDOnlyRepair.Add_Click({
+            try {
+                $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+                $comprehensivePath = Join-Path $scriptRoot "COMPREHENSIVE_BOOT_REPAIR.cmd"
+                
+                if (Test-Path $comprehensivePath) {
+                    Update-StatusBar -Message "Running CMD Only Repair..." -ShowProgress
+                    $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$comprehensivePath`"" -Wait -NoNewWindow -PassThru
+                    $exitCode = $process.ExitCode
+                    
+                    Update-StatusBar -Message "CMD Only Repair completed (Exit Code: $exitCode)" -HideProgress
+                    
+                    # Check boot readiness
+                    $targetDrive = $env:SystemDrive.TrimEnd(':')
+                    $bootCheck = Test-BootReadinessComprehensive -TargetDrive $targetDrive
+                    
+                    if ($bootCheck.Bootable) {
+                        [System.Windows.MessageBox]::Show(
+                            "✅ CMD Only Repair Completed!`n`nBoot readiness check passed. System should now be bootable.`n`nThis repair used only CMD commands (no PowerShell required).",
+                            "CMD Only Repair: Success",
+                            "OK",
+                            "Information"
+                        ) | Out-Null
+                    } else {
+                        $message = "⚠ CMD Only Repair Completed`n`nExit Code: $exitCode`n`n"
+                        if ($bootCheck.Issues.Count -gt 0) {
+                            $message += "Remaining issues:`n"
+                            foreach ($issue in $bootCheck.Issues) {
+                                $message += "  • $issue`n"
+                            }
+                        }
+                        [System.Windows.MessageBox]::Show($message, "CMD Only Repair: Completed", "OK", "Warning") | Out-Null
+                    }
+                } else {
+                    [System.Windows.MessageBox]::Show("Comprehensive Boot Repair not found at: $comprehensivePath", "File Not Found", "OK", "Warning") | Out-Null
+                }
+            } catch {
+                Update-StatusBar -Message "CMD Only Repair failed: $($_.Exception.Message)" -HideProgress
+                [System.Windows.MessageBox]::Show("Failed to run CMD Only Repair: $($_.Exception.Message)", "Error", "OK", "Error") | Out-Null
+            }
+        })
+        Write-Host "[GUI] CMD Only Repair menu handler wired successfully" -ForegroundColor Green
+    }
+    
     # Repair Wizard button handler
     $btnRepairWizard = Get-Control -Name "BtnRepairWizard" -Silent
     if ($btnRepairWizard) {
@@ -6376,6 +6797,32 @@ function Show-BootFixerInstructionsWindow {
 🚀 QUICK WAYS TO RUN
 ═══════════════════════════════════════════════════════════════════════════════
 
+QUICK WAY 0: DOWNLOAD FROM GITHUB (IF YOU DON'T HAVE IT YET)
+─────────────────────────────────────────────────────────────
+If you need to download MiracleBoot from GitHub:
+
+Option 1: Clone Repository (Recommended - Gets All Files)
+  • Open PowerShell as Administrator:
+    git clone https://github.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB.git
+    cd BOOTFIXPREMIUM_GITHUB
+    .\RunMiracleBoot.cmd
+
+Option 2: Download ZIP from GitHub
+  • Visit: https://github.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB
+  • Click 'Code' → 'Download ZIP'
+  • Extract ZIP to a folder (e.g., C:\MiracleBoot)
+  • Navigate to folder and run: RunMiracleBoot.cmd
+
+Option 3: Quick Download Script (PowerShell - Requires Internet)
+  • Open PowerShell as Administrator, then run:
+    `$url = 'https://github.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/archive/refs/heads/main.zip'`
+    `$output = '`$env:TEMP\MiracleBoot.zip'`
+    `Invoke-WebRequest -Uri `$url -OutFile `$output`
+    `Expand-Archive -Path `$output -DestinationPath '`$env:TEMP\MiracleBoot' -Force`
+    `cd '`$env:TEMP\MiracleBoot\BOOTFIXPREMIUM_GITHUB-main'`
+    `.\RunMiracleBoot.cmd`
+
+
 QUICK WAY 1: RUN THE GUI (EASIEST METHOD)
 ──────────────────────────────────────────
 From Windows (FullOS):
@@ -6403,6 +6850,58 @@ Expected Result: GUI window opens with all tabs and options
 QUICK WAY 2: RUN EMERGENCY FIX (CMD VERSION - NO GUI NEEDED)
 ──────────────────────────────────────────────────────────────
 Emergency fixes can run directly from CMD without PowerShell or GUI.
+
+OPTION A: DOWNLOAD AND RUN FROM GITHUB (SHIFT+F10 / WinRE)
+───────────────────────────────────────────────────────────
+If you have internet access in Windows RE (Shift+F10), you can download
+and run the emergency fix directly from GitHub:
+
+COMPLETE COMMAND SEQUENCE (Copy All Commands Below):
+───────────────────────────────────────────────────────
+Copy and paste these commands one by one in Shift+F10 CMD window:
+
+Step 1: Enable Internet
+  wpeinit
+  netsh interface set interface "Ethernet" admin=enable
+  netsh interface set interface "Local Area Connection" admin=enable
+  netsh interface ip set address name="Ethernet" source=dhcp
+  netsh interface ip set dns name="Ethernet" static 8.8.8.8
+  ipconfig /renew
+  ping -n 2 github.com
+
+Step 2: Download and Run Emergency Fix V4 (One Command)
+  curl -L -o "%TEMP%\EMERGENCY_BOOT_REPAIR_V4.cmd" "https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR_V4.cmd" && "%TEMP%\EMERGENCY_BOOT_REPAIR_V4.cmd"
+
+  OR if curl not available:
+  powershell -Command "Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR_V4.cmd' -OutFile '%TEMP%\EMERGENCY_BOOT_REPAIR_V4.cmd'" && "%TEMP%\EMERGENCY_BOOT_REPAIR_V4.cmd"
+
+
+ALTERNATIVE: Use QUICK_INTERNET_AND_FIX.cmd (All-in-One)
+─────────────────────────────────────────────────────────
+If you have QUICK_INTERNET_AND_FIX.cmd on USB, just run:
+  D:\QUICK_INTERNET_AND_FIX.cmd
+
+This single command does everything automatically:
+  ✓ Enables internet
+  ✓ Downloads Emergency Fix from GitHub
+  ✓ Runs the fix automatically
+
+Step 3: Other Emergency Fixes (Download and Run)
+  • Emergency Fix V1 (Standard):
+    curl -L -o "%TEMP%\EMERGENCY_BOOT_REPAIR.cmd" "https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR.cmd" && "%TEMP%\EMERGENCY_BOOT_REPAIR.cmd"
+
+  • Emergency Fix V2 (Alternative):
+    curl -L -o "%TEMP%\EMERGENCY_BOOT_REPAIR_V2.cmd" "https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR_V2.cmd" && "%TEMP%\EMERGENCY_BOOT_REPAIR_V2.cmd"
+
+  • Emergency Fix V3 (Last Resort):
+    curl -L -o "%TEMP%\EMERGENCY_BOOT_REPAIR_V3.cmd" "https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR_V3.cmd" && "%TEMP%\EMERGENCY_BOOT_REPAIR_V3.cmd"
+
+  • Comprehensive Fix (All-in-One):
+    curl -L -o "%TEMP%\COMPREHENSIVE_BOOT_REPAIR.cmd" "https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/COMPREHENSIVE_BOOT_REPAIR.cmd" && "%TEMP%\COMPREHENSIVE_BOOT_REPAIR.cmd"
+
+OPTION B: RUN FROM USB/EXISTING FOLDER
+───────────────────────────────────────
+If you already have MiracleBoot on USB or local drive:
 
 From Command Prompt (CMD) or SHIFT+F10:
   • Navigate to folder: cd /d "D:\MiracleBoot" (or your drive letter)
@@ -6667,6 +7166,73 @@ For more help, visit: https://github.com/your-repo (if available)
             "OK",
             "Information"
         ) | Out-Null
+    }
+}
+
+function Clear-Logs {
+    <#
+    .SYNOPSIS
+    Clears log files from all MiracleBoot log directories.
+    
+    .PARAMETER OlderThanHours
+    If specified, only clears logs older than this many hours. If not specified, clears all logs.
+    
+    .OUTPUTS
+    PSCustomObject with Count (number of files deleted) and TotalSize (total size freed)
+    #>
+    param(
+        [int]$OlderThanHours = -1
+    )
+    
+    $scriptRoot = if ($script:ScriptRootSafe) { $script:ScriptRootSafe } else { $PSScriptRoot }
+    if (-not $scriptRoot) {
+        $scriptRoot = (Get-Location).ProviderPath
+    }
+    
+    $logDirectories = @(
+        Join-Path $scriptRoot "LOGS_MIRACLEBOOT",
+        Join-Path $scriptRoot "LOGS",
+        Join-Path $scriptRoot "TEST_LOGS",
+        Join-Path $scriptRoot "LOG_ANALYSIS"
+    )
+    
+    $totalDeleted = 0
+    $totalSizeFreed = 0
+    $deletedFiles = @()
+    
+    foreach ($logDir in $logDirectories) {
+        if (-not (Test-Path -LiteralPath $logDir)) {
+            continue
+        }
+        
+        try {
+            $files = Get-ChildItem -LiteralPath $logDir -File -Recurse -ErrorAction SilentlyContinue
+            
+            if ($OlderThanHours -ge 0) {
+                $cutoffDate = (Get-Date).AddHours(-$OlderThanHours)
+                $files = $files | Where-Object { $_.LastWriteTime -lt $cutoffDate }
+            }
+            
+            foreach ($file in $files) {
+                try {
+                    $fileSize = $file.Length
+                    Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+                    $totalDeleted++
+                    $totalSizeFreed += $fileSize
+                    $deletedFiles += $file.FullName
+                } catch {
+                    Write-Warning "Failed to delete $($file.FullName): $_"
+                }
+            }
+        } catch {
+            Write-Warning "Error processing log directory $logDir : $_"
+        }
+    }
+    
+    return @{
+        Count = $totalDeleted
+        TotalSize = $totalSizeFreed
+        DeletedFiles = $deletedFiles
     }
 }
 
@@ -12218,6 +12784,32 @@ function New-BootFixerHelpDocument {
     $doc += "🚀 QUICK WAYS TO RUN"
     $doc += "================================================================================="
     $doc += ""
+    $doc += "QUICK WAY 0: DOWNLOAD FROM GITHUB (IF YOU DON'T HAVE IT YET)"
+    $doc += "─────────────────────────────────────────────────────────────"
+    $doc += "If you need to download MiracleBoot from GitHub:"
+    $doc += ""
+    $doc += "Option 1: Clone Repository (Recommended - Gets All Files)"
+    $doc += "  • Open PowerShell as Administrator:"
+    $doc += "    git clone https://github.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB.git"
+    $doc += "    cd BOOTFIXPREMIUM_GITHUB"
+    $doc += "    .\RunMiracleBoot.cmd"
+    $doc += ""
+    $doc += "Option 2: Download ZIP from GitHub"
+    $doc += "  • Visit: https://github.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB"
+    $doc += "  • Click 'Code' → 'Download ZIP'"
+    $doc += "  • Extract ZIP to a folder (e.g., C:\MiracleBoot)"
+    $doc += "  • Navigate to folder and run: RunMiracleBoot.cmd"
+    $doc += ""
+    $doc += "Option 3: Quick Download Script (PowerShell - Requires Internet)"
+    $doc += "  • Open PowerShell as Administrator, then run:"
+    $doc += "    $url = 'https://github.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/archive/refs/heads/main.zip'"
+    $doc += "    $output = '$env:TEMP\MiracleBoot.zip'"
+    $doc += "    Invoke-WebRequest -Uri $url -OutFile $output"
+    $doc += "    Expand-Archive -Path $output -DestinationPath '$env:TEMP\MiracleBoot' -Force"
+    $doc += "    cd '$env:TEMP\MiracleBoot\BOOTFIXPREMIUM_GITHUB-main'"
+    $doc += "    .\RunMiracleBoot.cmd"
+    $doc += ""
+    $doc += ""
     $doc += "QUICK WAY 1: RUN THE GUI (EASIEST METHOD)"
     $doc += "──────────────────────────────────────────"
     $doc += "From Windows (FullOS):"
@@ -12246,6 +12838,58 @@ function New-BootFixerHelpDocument {
     $doc += "──────────────────────────────────────────────────────────────"
     $doc += "Emergency fixes can run directly from CMD without PowerShell or GUI."
     $doc += ""
+    $doc += "OPTION A: DOWNLOAD AND RUN FROM GITHUB (SHIFT+F10 / WinRE)"
+    $doc += "───────────────────────────────────────────────────────────"
+    $doc += "If you have internet access in Windows RE (Shift+F10), you can download"
+    $doc += "and run the emergency fix directly from GitHub:"
+    $doc += ""
+    $doc += "COMPLETE COMMAND SEQUENCE (Copy All Commands Below):"
+    $doc += "───────────────────────────────────────────────────────"
+    $doc += "Copy and paste these commands one by one in Shift+F10 CMD window:"
+    $doc += ""
+    $doc += "Step 1: Enable Internet"
+    $doc += "  wpeinit"
+    $doc += "  netsh interface set interface `"Ethernet`" admin=enable"
+    $doc += "  netsh interface set interface `"Local Area Connection`" admin=enable"
+    $doc += "  netsh interface ip set address name=`"Ethernet`" source=dhcp"
+    $doc += "  netsh interface ip set dns name=`"Ethernet`" static 8.8.8.8"
+    $doc += "  ipconfig /renew"
+    $doc += "  ping -n 2 github.com"
+    $doc += ""
+    $doc += "Step 2: Download and Run Emergency Fix V4 (One Command)"
+    $doc += "  curl -L -o `"%TEMP%\EMERGENCY_BOOT_REPAIR_V4.cmd`" `"https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR_V4.cmd`" && `"%TEMP%\EMERGENCY_BOOT_REPAIR_V4.cmd`""
+    $doc += ""
+    $doc += "  OR if curl not available:"
+    $doc += "  powershell -Command `"Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR_V4.cmd' -OutFile '%TEMP%\EMERGENCY_BOOT_REPAIR_V4.cmd'`" && `"%TEMP%\EMERGENCY_BOOT_REPAIR_V4.cmd`""
+    $doc += ""
+    $doc += ""
+    $doc += "ALTERNATIVE: Use QUICK_INTERNET_AND_FIX.cmd (All-in-One)"
+    $doc += "─────────────────────────────────────────────────────────"
+    $doc += "If you have QUICK_INTERNET_AND_FIX.cmd on USB, just run:"
+    $doc += "  D:\QUICK_INTERNET_AND_FIX.cmd"
+    $doc += ""
+    $doc += "This single command does everything automatically:"
+    $doc += "  ✓ Enables internet"
+    $doc += "  ✓ Downloads Emergency Fix from GitHub"
+    $doc += "  ✓ Runs the fix automatically"
+    $doc += ""
+    $doc += "Step 3: Other Emergency Fixes (Download and Run)"
+    $doc += "  • Emergency Fix V1 (Standard):"
+    $doc += "    curl -L -o `"%TEMP%\EMERGENCY_BOOT_REPAIR.cmd`" `"https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR.cmd`" && `"%TEMP%\EMERGENCY_BOOT_REPAIR.cmd`""
+    $doc += ""
+    $doc += "  • Emergency Fix V2 (Alternative):"
+    $doc += "    curl -L -o `"%TEMP%\EMERGENCY_BOOT_REPAIR_V2.cmd`" `"https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR_V2.cmd`" && `"%TEMP%\EMERGENCY_BOOT_REPAIR_V2.cmd`""
+    $doc += ""
+    $doc += "  • Emergency Fix V3 (Last Resort):"
+    $doc += "    curl -L -o `"%TEMP%\EMERGENCY_BOOT_REPAIR_V3.cmd`" `"https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/EMERGENCY_BOOT_REPAIR_V3.cmd`" && `"%TEMP%\EMERGENCY_BOOT_REPAIR_V3.cmd`""
+    $doc += ""
+    $doc += "  • Comprehensive Fix (All-in-One):"
+    $doc += "    curl -L -o `"%TEMP%\COMPREHENSIVE_BOOT_REPAIR.cmd`" `"https://raw.githubusercontent.com/eltonaguiar/BOOTFIXPREMIUM_GITHUB/main/COMPREHENSIVE_BOOT_REPAIR.cmd`" && `"%TEMP%\COMPREHENSIVE_BOOT_REPAIR.cmd`""
+    $doc += ""
+    $doc += "OPTION B: RUN FROM USB/EXISTING FOLDER"
+    $doc += "───────────────────────────────────────"
+    $doc += "If you already have MiracleBoot on USB or local drive:"
+    $doc += ""
     $doc += "From Command Prompt (CMD) or SHIFT+F10:"
     $doc += "  • Navigate to folder: cd /d `"D:\MiracleBoot`" (or your drive letter)"
     $doc += ""
@@ -12270,8 +12914,6 @@ function New-BootFixerHelpDocument {
     $doc += "  • V2: Alternative implementation"
     $doc += "  • V3: Minimal last resort (basic commands only)"
     $doc += "  • Wrapper: Runs V4 → V1 → V2 → V3 automatically until one succeeds"
-    $doc += ""
-    $doc += "No Internet Required: Emergency fixes work offline from USB drive!"
     $doc += ""
     $doc += ""
     $doc += "QUICK WAY 3: RUN FROM USB IN RECOVERY ENVIRONMENT"
