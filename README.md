@@ -304,14 +304,15 @@ MiracleBoot adapts to your environment with **two interfaces**:
 
 ## 📦 What's Included
 
-### Core Files:
+### Core Files (Root Directory):
 
 - **`MiracleBoot.ps1`** - Main launcher (auto-detects environment)
 - **`WinRepairCore.ps1`** - Function library (2000+ lines of diagnostic/repair logic)
 - **`WinRepairGUI.ps1`** - Graphical interface (for Full OS)
+- **`WinRepairGUI.xaml`** - WPF UI definition file
 - **`WinRepairTUI.ps1`** - Text interface (for WinRE/WinPE)
+- **`DefensiveBootCore.ps1`** - Advanced boot repair engine (Brute Force, One-Click Repair)
 - **`RunMiracleBoot.cmd`** - Batch launcher for recovery environments
-- **`FixWinRepairCore.ps1`** - Maintenance script (auto-fixes syntax errors)
 
 ### Emergency Repair Scripts (Standalone CMD - No PowerShell Required):
 
@@ -327,13 +328,43 @@ MiracleBoot adapts to your environment with **two interfaces**:
 - **`WINRE_NETWORK_INIT.cmd`** - Enable internet in Windows RE
 - **`QUICK_INTERNET_AND_FIX.cmd`** - Enable internet + download/run emergency fix from GitHub
 
+### Folder Structure:
+
+```
+MiracleBoot/
+├── MiracleBoot.ps1              # Main entry point
+├── RunMiracleBoot.cmd            # Batch launcher
+├── WinRepairCore.ps1            # Core function library
+├── WinRepairGUI.ps1             # GUI interface
+├── WinRepairGUI.xaml            # WPF UI definition
+├── WinRepairTUI.ps1             # Text interface
+├── DefensiveBootCore.ps1        # Advanced boot repair
+├── EMERGENCY_BOOT_REPAIR*.cmd   # Emergency fix scripts
+├── COMPREHENSIVE_BOOT_REPAIR.cmd
+├── QUICK_INTERNET_AND_FIX.cmd
+├── WINRE_NETWORK_INIT.cmd
+├── SHIFT_F10.cmd
+├── README.md                    # Main documentation
+├── README_SHAREABLE_GITHUB_VERSION.md  # Commercial version
+├── HELPER SCRIPTS/              # Helper modules and utilities
+├── DOCUMENTATION/               # All documentation files
+├── DOCS/                        # Additional documentation
+├── TEST/                        # Test scripts
+├── DEBUG/                       # Debug and diagnostic scripts
+├── VALIDATION/                  # Validation and QA scripts
+├── ARCHIVE/                     # Archived files
+├── LOGS_MIRACLEBOOT/           # Main log directory
+├── LOGS/                        # Analysis logs
+├── TEST_LOGS/                  # Test logs
+└── LOG_ANALYSIS/               # Log analysis results
+```
+
 ### Documentation:
 
-- **`README.md`** - This file
-- **`DOCUMENTATION/README.md`** - Detailed documentation
-- **`FUTURE_ENHANCEMENTS.md`** - Roadmap for v8.0+
-- **`TOOLS_USER_GUIDE.md`** - Comprehensive recovery tools guide
-- **`RECOMMENDED_TOOLS_FEATURE.md`** - Feature implementation details
+- **`README.md`** - This file (main user guide)
+- **`README_SHAREABLE_GITHUB_VERSION.md`** - Commercial distribution version (no GitHub links)
+- **`DOCUMENTATION/`** - Comprehensive documentation, guides, and reports
+- **`DOCS/`** - Additional documentation and implementation summaries
 
 ---
 

@@ -1754,7 +1754,10 @@ try {
 Write-ToLog "Loading optional EnsureRepairInstallReady module..." "INFO"
 Write-Host "[LOADER] Loading optional EnsureRepairInstallReady module..." -ForegroundColor Cyan
 try {
-    $repairReadyModule = Join-Path $script:MiracleBootRoot "EnsureRepairInstallReady.ps1"
+    $repairReadyModule = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\EnsureRepairInstallReady.ps1"
+    if (-not (Test-Path -LiteralPath $repairReadyModule)) {
+        $repairReadyModule = Join-Path $script:MiracleBootRoot "EnsureRepairInstallReady.ps1"
+    }
     if (Test-Path -LiteralPath $repairReadyModule) {
         . $repairReadyModule
         Write-ToLog "EnsureRepairInstallReady loaded successfully" "SUCCESS"
