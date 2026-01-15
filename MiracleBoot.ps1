@@ -454,22 +454,29 @@ function Invoke-SelfTest {
     }
     foreach ($file in $requiredFiles) {
         $fileCheck = Test-ScriptFileExists $file
-        Add-Check -Name "File exists: $file" -Passed ($fileCheck.Exists -and $fileCheck.Readable) -Message $fileCheck.Error -Details $fileCheck
+        Add-Check -Name "File exists: $file" -Passed ($fileCheck.Exists -and $fileCheck.Readable) -Message $(if ($fileCheck.Exists) { "Found at $($fileCheck.FullPath)" } else { $fileCheck.Error }) -Details $fileCheck
 
-        $syntaxCheck = Test-ScriptSyntax $file
-        Add-Check -Name "Syntax: $file" -Passed $syntaxCheck.Valid -Message $syntaxCheck.Error -Details $syntaxCheck
+        if ($fileCheck.Exists -and $fileCheck.Readable) {
+            $syntaxCheck = Test-ScriptSyntax $fileCheck.FullPath
+            Add-Check -Name "Syntax: $file" -Passed $syntaxCheck.Valid -Message $syntaxCheck.Error -Details $syntaxCheck
+        } else {
+            Add-Check -Name "Syntax: $file" -Passed $false -Message "Cannot check syntax - file not found" -Details $null
+        }
     }
 
     # GUI module sanity check (loadable + Start-GUI defined)
     if ($EnvironmentType -eq 'FullOS') {
         try {
-            $guiModule = Join-Path $script:MiracleBootRoot "WinRepairGUI.ps1"
+            $guiModule = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\WinRepairGUI.ps1"
+            if (-not (Test-Path -LiteralPath $guiModule)) {
+                $guiModule = Join-Path $script:MiracleBootRoot "WinRepairGUI.ps1"
+            }
             if (Test-Path -LiteralPath $guiModule) {
                 . $guiModule
                 $hasStartGui = [bool](Get-Command Start-GUI -ErrorAction SilentlyContinue)
                 Add-Check -Name "GUI module load" -Passed $hasStartGui -Message $(if ($hasStartGui) { "Start-GUI found" } else { "Start-GUI not found after load" })
             } else {
-                Add-Check -Name "GUI module load" -Passed $false -Message "WinRepairGUI.ps1 not found"
+                Add-Check -Name "GUI module load" -Passed $false -Message "WinRepairGUI.ps1 not found in root or HELPER SCRIPTS directory"
             }
         } catch {
             Add-Check -Name "GUI module load" -Passed $false -Message $_.Exception.Message
@@ -1056,16 +1063,22 @@ function Test-ScriptFileExists {
     <#
     .SYNOPSIS
     Validates that required script files exist and are readable.
+    Checks HELPER SCRIPTS first, then root directory for backwards compatibility.
     
     .PARAMETER FilePath
-    Path relative to $PSScriptRoot
+    Path relative to $PSScriptRoot (or HELPER SCRIPTS)
     
     .OUTPUTS
     Hashtable with Path, Exists, Readable, Size properties
     #>
     param([string]$FilePath)
     
-    $fullPath = Join-Path $script:MiracleBootRoot $FilePath
+    # Try HELPER SCRIPTS first (new location)
+    $fullPath = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\$FilePath"
+    if (-not (Test-Path -LiteralPath $fullPath -ErrorAction SilentlyContinue)) {
+        # Fallback to root directory (backwards compatibility)
+        $fullPath = Join-Path $script:MiracleBootRoot $FilePath
+    }
     
     $result = @{
         FileName = $FilePath
@@ -1086,6 +1099,8 @@ function Test-ScriptFileExists {
         } catch {
             $result.Error = $_.Exception.Message
         }
+    } else {
+        $result.Error = "File not found in HELPER SCRIPTS or root directory"
     }
     
     return $result
@@ -1095,16 +1110,27 @@ function Test-ScriptSyntax {
     <#
     .SYNOPSIS
     Validates that a script file parses without syntax errors.
+    Accepts either a relative path (checks HELPER SCRIPTS first) or absolute path.
     
     .PARAMETER FilePath
-    Path relative to $PSScriptRoot
+    Path relative to $PSScriptRoot (or HELPER SCRIPTS) or absolute path
     
     .OUTPUTS
     Hashtable with Valid, Error properties
     #>
     param([string]$FilePath)
     
-    $fullPath = Join-Path $script:MiracleBootRoot $FilePath
+    # If it's already an absolute path, use it directly
+    if ([System.IO.Path]::IsPathRooted($FilePath)) {
+        $fullPath = $FilePath
+    } else {
+        # Try HELPER SCRIPTS first (new location)
+        $fullPath = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\$FilePath"
+        if (-not (Test-Path -LiteralPath $fullPath -ErrorAction SilentlyContinue)) {
+            # Fallback to root directory (backwards compatibility)
+            $fullPath = Join-Path $script:MiracleBootRoot $FilePath
+        }
+    }
     
     $result = @{
         FileName = $FilePath
@@ -1734,9 +1760,12 @@ if (-not $preflightResults.AllChecksPassed) {
 Write-ToLog "Loading WinRepairCore module..." "INFO"
 Write-Host "`n[LOADER] Loading WinRepairCore module..." -ForegroundColor Cyan
 try {
-    $coreModule = Join-Path $script:MiracleBootRoot "WinRepairCore.ps1"
+    $coreModule = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\WinRepairCore.ps1"
     if (-not (Test-Path -LiteralPath $coreModule)) {
-        throw "WinRepairCore.ps1 not found at $coreModule"
+        $coreModule = Join-Path $script:MiracleBootRoot "WinRepairCore.ps1"
+        if (-not (Test-Path -LiteralPath $coreModule)) {
+            throw "WinRepairCore.ps1 not found in root or HELPER SCRIPTS directory"
+        }
     }
     . $coreModule
     Write-ToLog "WinRepairCore loaded successfully" "SUCCESS"
@@ -1926,9 +1955,12 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
             Write-Host "  [LOAD] GUI module: $guiModule" -ForegroundColor Gray
             
             # Check for XAML file (resolve explicitly from root to avoid cwd issues)
-            $xamlFile = Join-Path $script:MiracleBootRoot "WinRepairGUI.xaml"
+            $xamlFile = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\WinRepairGUI.xaml"
             if (-not (Test-Path -LiteralPath $xamlFile)) {
-                throw "WinRepairGUI.xaml not found at $xamlFile"
+                $xamlFile = Join-Path $script:MiracleBootRoot "WinRepairGUI.xaml"
+                if (-not (Test-Path -LiteralPath $xamlFile)) {
+                    throw "WinRepairGUI.xaml not found in root or HELPER SCRIPTS directory"
+                }
             }
             Write-ToLog "XAML file found at: $xamlFile" "INFO"
             Write-Host "  [LOAD] XAML file: $xamlFile" -ForegroundColor Gray
@@ -1955,9 +1987,12 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
             }
             
             # Verify XAML file exists before calling Start-GUI
-            $xamlCheck = Join-Path $script:MiracleBootRoot "WinRepairGUI.xaml"
+            $xamlCheck = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\WinRepairGUI.xaml"
             if (-not (Test-Path -LiteralPath $xamlCheck)) {
-                throw "WinRepairGUI.xaml not found at $xamlCheck"
+                $xamlCheck = Join-Path $script:MiracleBootRoot "WinRepairGUI.xaml"
+                if (-not (Test-Path -LiteralPath $xamlCheck)) {
+                    throw "WinRepairGUI.xaml not found in root or HELPER SCRIPTS directory"
+                }
             }
             Write-ToLog "XAML file verified: $xamlCheck" "DEBUG"
             
@@ -2103,9 +2138,12 @@ if ($envType -eq 'FullOS' -or $envType -eq 'WinPE') {
 Write-ToLog "Loading TUI module..." "INFO"
 Write-Host "[LAUNCH] Loading TUI module..." -ForegroundColor Gray
 try {
-    $tuiModule = Join-Path $script:MiracleBootRoot "WinRepairTUI.ps1"
+    $tuiModule = Join-Path $script:MiracleBootRoot "HELPER SCRIPTS\WinRepairTUI.ps1"
     if (-not (Test-Path -LiteralPath $tuiModule)) {
-        throw "WinRepairTUI.ps1 not found"
+        $tuiModule = Join-Path $script:MiracleBootRoot "WinRepairTUI.ps1"
+        if (-not (Test-Path -LiteralPath $tuiModule)) {
+            throw "WinRepairTUI.ps1 not found in root or HELPER SCRIPTS directory"
+        }
     }
     . $tuiModule
     

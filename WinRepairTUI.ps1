@@ -83,7 +83,10 @@ function Start-TUI {
     
     # Load DefensiveBootCore.ps1 (required for One-Click Repair)
     try {
-        $corePath = Join-Path $PSScriptRoot "DefensiveBootCore.ps1"
+        $corePath = Join-Path $PSScriptRoot "HELPER SCRIPTS\DefensiveBootCore.ps1"
+        if (-not (Test-Path $corePath)) {
+            $corePath = Join-Path $PSScriptRoot "DefensiveBootCore.ps1"
+        }
         if (Test-Path $corePath) {
             # Load with explicit UTF-8 encoding to prevent character corruption
             $coreContent = Get-Content $corePath -Raw -Encoding UTF8

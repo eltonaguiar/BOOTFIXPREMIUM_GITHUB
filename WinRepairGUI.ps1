@@ -102,7 +102,10 @@ try { Add-Type -AssemblyName Microsoft.VisualBasic -ErrorAction Stop } catch {}
 
 # Load Defensive Boot Core
 try {
-    $corePath = Join-Path $PSScriptRoot "DefensiveBootCore.ps1"
+    $corePath = Join-Path $PSScriptRoot "HELPER SCRIPTS\DefensiveBootCore.ps1"
+    if (-not (Test-Path $corePath)) {
+        $corePath = Join-Path $PSScriptRoot "DefensiveBootCore.ps1"
+    }
     if (Test-Path $corePath) { 
         # Load with explicit UTF-8 encoding to prevent character corruption
         $coreContent = Get-Content $corePath -Raw -Encoding UTF8
@@ -1526,44 +1529,62 @@ function Start-GUI {
     }
     
     # XAML definition for the main window
-    # Resolve XAML path - check multiple possible locations
+    # Resolve XAML path - check multiple possible locations (HELPER SCRIPTS first, then root)
     $xamlPath = $null
     
-    # Try PSScriptRoot first (if set)
+    # Try HELPER SCRIPTS in PSScriptRoot first (new location)
     if ($PSScriptRoot) {
+        $xamlPath = Join-Path $PSScriptRoot "HELPER SCRIPTS\WinRepairGUI.xaml"
+        if (-not (Test-Path -LiteralPath $xamlPath)) {
+            $xamlPath = $null
+        }
+    }
+    
+    # Try PSScriptRoot (root directory - backwards compatibility)
+    if (-not $xamlPath -and $PSScriptRoot) {
         $xamlPath = Join-Path $PSScriptRoot "WinRepairGUI.xaml"
         if (-not (Test-Path -LiteralPath $xamlPath)) {
             $xamlPath = $null
         }
     }
     
-    # Try script root from calling script
+    # Try HELPER SCRIPTS from script root
     if (-not $xamlPath) {
         $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
         if ($scriptRoot) {
-            $xamlPath = Join-Path $scriptRoot "WinRepairGUI.xaml"
+            $xamlPath = Join-Path $scriptRoot "HELPER SCRIPTS\WinRepairGUI.xaml"
+            if (-not (Test-Path -LiteralPath $xamlPath)) {
+                $xamlPath = Join-Path $scriptRoot "WinRepairGUI.xaml"
+                if (-not (Test-Path -LiteralPath $xamlPath)) {
+                    $xamlPath = $null
+                }
+            }
+        }
+    }
+    
+    # Try HELPER SCRIPTS in current directory
+    if (-not $xamlPath) {
+        $currentDir = (Get-Location).Path
+        $xamlPath = Join-Path $currentDir "HELPER SCRIPTS\WinRepairGUI.xaml"
+        if (-not (Test-Path -LiteralPath $xamlPath)) {
+            $xamlPath = Join-Path $currentDir "WinRepairGUI.xaml"
             if (-not (Test-Path -LiteralPath $xamlPath)) {
                 $xamlPath = $null
             }
         }
     }
     
-    # Try current directory
-    if (-not $xamlPath) {
-        $xamlPath = Join-Path (Get-Location).Path "WinRepairGUI.xaml"
-        if (-not (Test-Path -LiteralPath $xamlPath)) {
-            $xamlPath = $null
-        }
-    }
-    
-    # Try relative to this script's location
+    # Try HELPER SCRIPTS relative to this script's location
     if (-not $xamlPath) {
         $thisScriptPath = $MyInvocation.MyCommand.Path
         if ($thisScriptPath) {
             $thisScriptDir = Split-Path -Parent $thisScriptPath
-            $xamlPath = Join-Path $thisScriptDir "WinRepairGUI.xaml"
+            $xamlPath = Join-Path $thisScriptDir "HELPER SCRIPTS\WinRepairGUI.xaml"
             if (-not (Test-Path -LiteralPath $xamlPath)) {
-                $xamlPath = $null
+                $xamlPath = Join-Path $thisScriptDir "WinRepairGUI.xaml"
+                if (-not (Test-Path -LiteralPath $xamlPath)) {
+                    $xamlPath = $null
+                }
             }
         }
     }
@@ -1982,13 +2003,30 @@ try {
     # Resolve WinRepairCore path with multiple fallbacks (handles dot-sourcing scenarios)
     $coreModulePath = $null
     
-    # Try 1: Current directory first (most common scenario)
-    $testPath = Join-Path (Get-Location).Path "WinRepairCore.ps1"
+    # Try 1: HELPER SCRIPTS in current directory (new location)
+    $testPath = Join-Path (Get-Location).Path "HELPER SCRIPTS\WinRepairCore.ps1"
     if (Test-Path -LiteralPath $testPath) {
         $coreModulePath = $testPath
     }
     
-    # Try 2: MyInvocation.MyCommand.Path (fails when dot-sourced but used when script is called directly)
+    # Try 2: Current directory (backwards compatibility)
+    if (-not $coreModulePath) {
+        $testPath = Join-Path (Get-Location).Path "WinRepairCore.ps1"
+        if (Test-Path -LiteralPath $testPath) {
+            $coreModulePath = $testPath
+        }
+    }
+    
+    # Try 3: HELPER SCRIPTS from MyInvocation.MyCommand.Path
+    if (-not $coreModulePath -and $MyInvocation.MyCommand.Path) {
+        $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+        $testPath = Join-Path $scriptRoot "HELPER SCRIPTS\WinRepairCore.ps1"
+        if (Test-Path -LiteralPath $testPath) {
+            $coreModulePath = $testPath
+        }
+    }
+    
+    # Try 4: MyInvocation.MyCommand.Path (backwards compatibility)
     if (-not $coreModulePath -and $MyInvocation.MyCommand.Path) {
         $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
         $testPath = Join-Path $scriptRoot "WinRepairCore.ps1"
@@ -1997,7 +2035,15 @@ try {
         }
     }
     
-    # Try 3: PSScriptRoot (set when script is run directly)
+    # Try 5: HELPER SCRIPTS from PSScriptRoot
+    if (-not $coreModulePath -and $PSScriptRoot) {
+        $testPath = Join-Path $PSScriptRoot "HELPER SCRIPTS\WinRepairCore.ps1"
+        if (Test-Path -LiteralPath $testPath) {
+            $coreModulePath = $testPath
+        }
+    }
+    
+    # Try 6: PSScriptRoot (backwards compatibility)
     if (-not $coreModulePath -and $PSScriptRoot) {
         $testPath = Join-Path $PSScriptRoot "WinRepairCore.ps1"
         if (Test-Path -LiteralPath $testPath) {
@@ -2005,7 +2051,16 @@ try {
         }
     }
     
-    # Try 4: If called from another script, use that script's directory
+    # Try 7: HELPER SCRIPTS from PSCommandPath
+    if (-not $coreModulePath -and $MyInvocation.PSCommandPath) {
+        $scriptRoot = Split-Path -Parent $MyInvocation.PSCommandPath
+        $testPath = Join-Path $scriptRoot "HELPER SCRIPTS\WinRepairCore.ps1"
+        if (Test-Path -LiteralPath $testPath) {
+            $coreModulePath = $testPath
+        }
+    }
+    
+    # Try 8: PSCommandPath (backwards compatibility)
     if (-not $coreModulePath -and $MyInvocation.PSCommandPath) {
         $scriptRoot = Split-Path -Parent $MyInvocation.PSCommandPath
         $testPath = Join-Path $scriptRoot "WinRepairCore.ps1"

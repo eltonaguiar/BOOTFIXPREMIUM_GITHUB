@@ -304,15 +304,18 @@ MiracleBoot adapts to your environment with **two interfaces**:
 
 ## 📦 What's Included
 
-### Core Files (Root Directory):
+### Core Files:
 
+**Root Directory:**
 - **`MiracleBoot.ps1`** - Main launcher (auto-detects environment)
+- **`RunMiracleBoot.cmd`** - Batch launcher for recovery environments
+
+**HELPER SCRIPTS Directory:**
 - **`WinRepairCore.ps1`** - Function library (2000+ lines of diagnostic/repair logic)
 - **`WinRepairGUI.ps1`** - Graphical interface (for Full OS)
 - **`WinRepairGUI.xaml`** - WPF UI definition file
 - **`WinRepairTUI.ps1`** - Text interface (for WinRE/WinPE)
 - **`DefensiveBootCore.ps1`** - Advanced boot repair engine (Brute Force, One-Click Repair)
-- **`RunMiracleBoot.cmd`** - Batch launcher for recovery environments
 
 ### Emergency Repair Scripts (Standalone CMD - No PowerShell Required):
 
@@ -334,11 +337,6 @@ MiracleBoot adapts to your environment with **two interfaces**:
 MiracleBoot/
 ├── MiracleBoot.ps1              # Main entry point
 ├── RunMiracleBoot.cmd            # Batch launcher
-├── WinRepairCore.ps1            # Core function library
-├── WinRepairGUI.ps1             # GUI interface
-├── WinRepairGUI.xaml            # WPF UI definition
-├── WinRepairTUI.ps1             # Text interface
-├── DefensiveBootCore.ps1        # Advanced boot repair
 ├── EMERGENCY_BOOT_REPAIR*.cmd   # Emergency fix scripts
 ├── COMPREHENSIVE_BOOT_REPAIR.cmd
 ├── QUICK_INTERNET_AND_FIX.cmd
@@ -346,7 +344,13 @@ MiracleBoot/
 ├── SHIFT_F10.cmd
 ├── README.md                    # Main documentation
 ├── README_SHAREABLE_GITHUB_VERSION.md  # Commercial version
-├── HELPER SCRIPTS/              # Helper modules and utilities
+├── HELPER SCRIPTS/              # Core modules and utilities
+│   ├── WinRepairCore.ps1        # Core function library
+│   ├── WinRepairGUI.ps1         # GUI interface
+│   ├── WinRepairGUI.xaml        # WPF UI definition
+│   ├── WinRepairTUI.ps1         # Text interface
+│   ├── DefensiveBootCore.ps1    # Advanced boot repair
+│   └── [Other helper scripts...]
 ├── DOCUMENTATION/               # All documentation files
 ├── DOCS/                        # Additional documentation
 ├── TEST/                        # Test scripts

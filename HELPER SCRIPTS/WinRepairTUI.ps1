@@ -1,4 +1,132 @@
-﻿function Start-TUI {
+﻿# Helper function to safely open Notepad with instance limit
+function Start-NotepadSafely {
+    <#
+    .SYNOPSIS
+    Safely opens Notepad with a file, limiting to maximum 5 instances to prevent spam.
+    
+    .DESCRIPTION
+    This function tracks the number of Notepad instances opened and prevents opening more than 5.
+    This prevents infinite loops or spam opening of Notepad windows.
+    
+    .PARAMETER FilePath
+    Optional path to a file to open in Notepad. If not provided, opens empty Notepad.
+    
+    .PARAMETER Force
+    If specified, bypasses the instance limit check (use with caution).
+    
+    .EXAMPLE
+    Start-NotepadSafely -FilePath "C:\report.txt"
+    #>
+    param(
+        [string]$FilePath = $null,
+        [switch]$Force
+    )
+    
+    # Initialize counter if not exists
+    if (-not $script:NotepadInstanceCount) {
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Check current Notepad processes
+    try {
+        $currentNotepadProcesses = Get-Process -Name notepad -ErrorAction SilentlyContinue
+        $script:NotepadInstanceCount = $currentNotepadProcesses.Count
+    } catch {
+        # If we can't check, assume 0
+        $script:NotepadInstanceCount = 0
+    }
+    
+    # Maximum allowed instances
+    $maxInstances = 5
+    
+    # Check if we've reached the limit
+    if ($script:NotepadInstanceCount -ge $maxInstances -and -not $Force) {
+        Write-Warning "Notepad instance limit reached ($maxInstances instances). Skipping Notepad launch to prevent spam."
+        if ($FilePath) {
+            Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+        }
+        return $false
+    }
+    
+    # Attempt to open Notepad
+    try {
+        if ($FilePath) {
+            if (Test-Path -LiteralPath $FilePath -ErrorAction SilentlyContinue) {
+                Start-NotepadSafely -FilePath $FilePath | Out-Null
+                $script:NotepadInstanceCount++
+                return $true
+            } else {
+                Write-Warning "File not found: $FilePath"
+                return $false
+            }
+        } else {
+            Start-NotepadSafely | Out-Null
+            $script:NotepadInstanceCount++
+            return $true
+        }
+    } catch {
+        Write-Warning "Could not open Notepad: $($_.Exception.Message)"
+        if ($FilePath) {
+            Write-Host "File saved to: $FilePath" -ForegroundColor Yellow
+        }
+        return $false
+    }
+}
+
+function Start-TUI {
+    # Log TUI startup
+    if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
+        Write-ToLog "═════════════════════════════════════════════════════════════" "INFO"
+        Write-ToLog "TUI Mode Starting - User Interface: MS-DOS STYLE" "INFO"
+        Write-ToLog "═════════════════════════════════════════════════════════════" "INFO"
+    }
+    
+    # Load DefensiveBootCore.ps1 (required for One-Click Repair)
+    try {
+        $corePath = Join-Path $PSScriptRoot "HELPER SCRIPTS\DefensiveBootCore.ps1"
+        if (-not (Test-Path $corePath)) {
+            $corePath = Join-Path $PSScriptRoot "DefensiveBootCore.ps1"
+        }
+        if (Test-Path $corePath) {
+            # Load with explicit UTF-8 encoding to prevent character corruption
+            $coreContent = Get-Content $corePath -Raw -Encoding UTF8
+            # Use dot-sourcing to load into current scope (allows functions to be available to nested functions)
+            . ([scriptblock]::Create($coreContent))
+            if (-not (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue)) {
+                Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-DefensiveBootRepair function not found"
+            }
+            if (-not (Get-Command Invoke-BruteForceBootRepair -ErrorAction SilentlyContinue)) {
+                Write-Warning "DefensiveBootCore.ps1 loaded but Invoke-BruteForceBootRepair function not found"
+            }
+        } else {
+            Write-Warning "DefensiveBootCore.ps1 not found at $corePath - One-Click Repair may not work"
+        }
+    } catch {
+        Write-Warning "Failed to load DefensiveBootCore.ps1: $_ - One-Click Repair may not work"
+        Write-Warning "Error details: $($_.Exception.Message)"
+        Write-Warning "Stack trace: $($_.ScriptStackTrace)"
+    }
+    
+    # Load global settings for read-only mode if available
+    try {
+        $gsmPath = Join-Path $PSScriptRoot "HELPER SCRIPTS\GlobalSettingsManager.ps1"
+        if (Test-Path -LiteralPath $gsmPath) {
+            . $gsmPath
+            if (Get-Command Load-Settings -ErrorAction SilentlyContinue) {
+                Load-Settings | Out-Null
+            }
+        }
+    } catch {
+        # Non-fatal; continue without settings
+    }
+    
+    function Get-ReadOnlyModeEnabled {
+        if (Get-Command Get-ReadOnlyMode -ErrorAction SilentlyContinue) {
+            return (Get-ReadOnlyMode -eq $true)
+        }
+        return $false
+    }
+    
     # Detect environment for display (matching main script logic)
     $envDisplay = "FullOS"
     
@@ -20,6 +148,189 @@
         $envDisplay = "FullOS"
     }
     
+    if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
+        Write-ToLog "Environment: $envDisplay" "INFO"
+    }
+
+    function Invoke-OneClickRepairTUI {
+        param(
+            [string]$TargetDrive = $env:SystemDrive.TrimEnd(':'),
+            [switch]$DryRun,
+            [string]$SimulationScenario = $null
+        )
+
+        # Run readiness check first
+        if (Get-Command Test-BootRepairReadiness -ErrorAction SilentlyContinue) {
+            Write-Host "Running readiness checks..." -ForegroundColor Cyan
+            try {
+                $readiness = Test-BootRepairReadiness -TargetDrive $TargetDrive -RequiredFunctions @("Invoke-DefensiveBootRepair") -CheckPermissions -CheckPaths
+                if (-not $readiness.Ready) {
+                    Write-Host "`nREADINESS CHECK FAILED:" -ForegroundColor Red
+                    foreach ($issue in $readiness.Issues) {
+                        Write-Host "  [X] $issue" -ForegroundColor Red
+                    }
+                    if ($readiness.Warnings.Count -gt 0) {
+                        Write-Host "`nWarnings:" -ForegroundColor Yellow
+                        foreach ($warning in $readiness.Warnings) {
+                            Write-Host "  [!] $warning" -ForegroundColor Yellow
+                        }
+                    }
+                    Write-Host "`nCannot proceed with repair. Please fix the issues above." -ForegroundColor Red
+                    Write-Host "Press any key to continue..." -ForegroundColor Gray
+                    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    return
+                } else {
+                    Write-Host "Readiness check passed: $($readiness.Summary)" -ForegroundColor Green
+                    if ($readiness.Warnings.Count -gt 0) {
+                        Write-Host "Warnings:" -ForegroundColor Yellow
+                        foreach ($warning in $readiness.Warnings) {
+                            Write-Host "  [!] $warning" -ForegroundColor Yellow
+                        }
+                    }
+                }
+            } catch {
+                Write-Host "WARNING: Readiness check failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "Proceeding with basic validation..." -ForegroundColor Yellow
+            }
+        }
+
+        # Try primary repair first, with automatic failover
+        $result = $null
+        $repairModeUsed = "Primary"
+        $useFailover = $false
+        
+        # Attempt primary repair
+        if (Get-Command Invoke-DefensiveBootRepair -ErrorAction SilentlyContinue) {
+            try {
+                $result = Invoke-DefensiveBootRepair -TargetDrive $TargetDrive -Mode "Auto" -DryRun:$DryRun -SimulationScenario $SimulationScenario
+                
+                # Check if repair was successful
+                if (-not $result -or -not $result.Bootable) {
+                    $useFailover = $true
+                    Write-Host "Primary repair completed but system not bootable. Switching to failover..." -ForegroundColor Yellow
+                }
+            } catch {
+                $useFailover = $true
+                Write-Host "Primary repair failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                Write-Host "Switching to failover mode..." -ForegroundColor Yellow
+            }
+        } else {
+            $useFailover = $true
+            Write-Host "Primary repair function not available. Using failover mode..." -ForegroundColor Yellow
+        }
+        
+        # Failover to backup/last effort if needed
+        if ($useFailover) {
+            if (Get-Command Invoke-BootRepairWithFailover -ErrorAction SilentlyContinue) {
+                try {
+                    Write-Host "Attempting failover repair (backup -> last effort)..." -ForegroundColor Cyan
+                    $result = Invoke-BootRepairWithFailover -TargetDrive $TargetDrive -Mode "Auto" -SimulationScenario $SimulationScenario -DryRun:$DryRun
+                    $repairModeUsed = if ($result.RepairMode) { $result.RepairMode } else { "Failover" }
+                    
+                    if ($result.FailoverUsed) {
+                        Write-Host "Failover mode used: $($result.RepairMode)" -ForegroundColor Yellow
+                    }
+                } catch {
+                    Write-Host "Failover repair also failed: $($_.Exception.Message)" -ForegroundColor Red
+                    $result = @{
+                        Output = "All repair attempts failed. Last error: $($_.Exception.Message)"
+                        Bundle = ""
+                        Bootable = $false
+                        Confidence = "UNKNOWN"
+                        Blocker = "All repair attempts failed"
+                        RemainingIssues = @("All repair attempts failed", $_.Exception.Message)
+                    }
+                    $repairModeUsed = "Failed"
+                }
+            } else {
+                # Fallback: try backup function directly
+                Write-Host "Failover wrapper not available. Trying backup function directly..." -ForegroundColor Yellow
+                if (Get-Command Invoke-BackupBootRepair -ErrorAction SilentlyContinue) {
+                    try {
+                        $result = Invoke-BackupBootRepair -TargetDrive $TargetDrive -DryRun:$DryRun
+                        $repairModeUsed = "Backup (Direct)"
+                    } catch {
+                        # Last resort: try last effort function
+                        Write-Host "Backup repair failed. Trying last effort..." -ForegroundColor Red
+                        if (Get-Command Invoke-LastEffortBootRepair -ErrorAction SilentlyContinue) {
+                            try {
+                                $result = Invoke-LastEffortBootRepair -TargetDrive $TargetDrive
+                                $repairModeUsed = "Last Effort"
+                            } catch {
+                                Write-Host "All repair attempts failed!" -ForegroundColor Red
+                                $result = @{
+                                    Output = "All repair attempts failed. Last error: $($_.Exception.Message)"
+                                    Bundle = ""
+                                    Bootable = $false
+                                    Confidence = "UNKNOWN"
+                                    Blocker = "All repair attempts failed"
+                                    RemainingIssues = @("All repair attempts failed", $_.Exception.Message)
+                                }
+                                $repairModeUsed = "Failed"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (-not $result) {
+            throw "All repair attempts failed. No result returned."
+        }
+        
+        # Defensive checks for result properties
+        $outputText = ""
+        $bundleText = ""
+        $reportPath = $null
+        $bootable = $false
+        
+        if ($result) {
+            if ($result.PSObject.Properties.Name -contains 'Output') {
+                $outputText = $result.Output
+            }
+            if ($result.PSObject.Properties.Name -contains 'Bundle') {
+                $bundleText = $result.Bundle
+            }
+            if ($result.PSObject.Properties.Name -contains 'ReportPath') {
+                $reportPath = $result.ReportPath
+            }
+            if ($result.PSObject.Properties.Name -contains 'Bootable') {
+                $bootable = $result.Bootable
+            }
+        } else {
+            Write-Host "Error: Repair function returned no result" -ForegroundColor Red
+            Write-Host "Press any key to continue..." -ForegroundColor Gray
+            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            return
+        }
+        
+        $summaryDir = Join-Path $PSScriptRoot "LOGS_MIRACLEBOOT"
+        if (-not (Test-Path $summaryDir)) { New-Item -ItemType Directory -Path $summaryDir -Force | Out-Null }
+        $summaryPath = Join-Path $summaryDir ("OneClick_TUI_{0:yyyyMMdd_HHmmss}.txt" -f (Get-Date))
+        Set-Content -Path $summaryPath -Value ($outputText + "`n`n" + $bundleText) -Encoding UTF8 -Force
+
+        Clear-Host
+        Write-Host $outputText -ForegroundColor Cyan
+        Write-Host "`n--- PASTE-BACK BUNDLE ---`n" -ForegroundColor Yellow
+        Write-Host $bundleText -ForegroundColor Gray
+        
+        # Open comprehensive report in Notepad (if available)
+        if ($reportPath -and (Test-Path $reportPath)) {
+            Write-Host "`nOpening comprehensive repair report in Notepad..." -ForegroundColor Green
+            $notepadOpened = Start-NotepadSafely -FilePath $reportPath
+            if (-not $notepadOpened) {
+                Write-Host "Could not open Notepad (limit reached or error). Report saved to: $reportPath" -ForegroundColor Yellow
+            }
+        }
+        
+        Write-Host "`nSummary saved to: $summaryPath" -ForegroundColor Yellow
+        if ($reportPath) {
+            Write-Host "Comprehensive report: $reportPath" -ForegroundColor Yellow
+        }
+        Write-Host "Press any key to continue..." -ForegroundColor Gray
+        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    }
+    
     do {
         Clear-Host
         Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
@@ -31,16 +342,25 @@
         Write-Host "2) Scan Storage Drivers (Detailed)" -ForegroundColor White
         Write-Host "3) Inject Drivers Offline (DISM)" -ForegroundColor White
         Write-Host "4) Quick View BCD" -ForegroundColor White
-        Write-Host "5) Edit BCD Entry" -ForegroundColor White
+        Write-Host "5) Edit BCD Entry / Quick Fixes" -ForegroundColor White
         Write-Host "6) Repair-Install Readiness Check" -ForegroundColor Yellow
         Write-Host "H) WinRE Health Check" -ForegroundColor Yellow
         Write-Host "7) Recommended Recovery Tools" -ForegroundColor Green
         Write-Host "8) Utilities & Tools" -ForegroundColor Magenta
         Write-Host "9) Network & Internet Help" -ForegroundColor Cyan
+        Write-Host "B) Boot Issue Mapping" -ForegroundColor Cyan
+        Write-Host "A) One-Click Repair (TUI - defaults to Test Mode)" -ForegroundColor Green
+        Write-Host "S) Simulation & Diagnostics" -ForegroundColor Yellow
         Write-Host "Q) Quit" -ForegroundColor Yellow
         Write-Host ""
 
         $c = Read-Host "Select"
+        
+        # Log menu selection
+        if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
+            Write-ToLog "TUI Menu selection: [$c]" "DEBUG"
+        }
+        
         switch ($c) {
             "1" { 
                 Write-Host "`nScanning volumes..." -ForegroundColor Gray
@@ -69,6 +389,13 @@
                 $win = Read-Host "Target Windows drive letter (e.g. C)"
                 $path = Read-Host "Path to driver folder"
                 if ($win -and $path) {
+                    if (Get-ReadOnlyModeEnabled) {
+                        Write-Host "`nRead-only mode enabled. Preview only:" -ForegroundColor Yellow
+                        Write-Host "  Inject-Drivers-Offline $win $path" -ForegroundColor Gray
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                        break
+                    }
                     Write-Host "Injecting drivers into ${win}: using DISM..." -ForegroundColor Gray
                     Inject-Drivers-Offline $win $path
                     Write-Host "Driver injection complete. Press any key to continue..." -ForegroundColor Green
@@ -83,16 +410,95 @@
                 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
             }
             "5" {
-                Write-Host "`nCurrent BCD Entries:" -ForegroundColor Cyan
-                bcdedit /enum | Select-String "identifier" | ForEach-Object { Write-Host $_.Line -ForegroundColor Gray }
+                Clear-Host
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+                Write-Host "  BCD EDIT + QUICK FIXES" -ForegroundColor Cyan
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
                 Write-Host ""
-                $id = Read-Host "Enter BCD Identifier (GUID)"
-                $name = Read-Host "Enter new description"
-                if ($id -and $name) {
-                    Set-BCDDescription $id $name
-                    Write-Host "BCD entry updated successfully!" -ForegroundColor Green
+                if (Get-ReadOnlyModeEnabled) {
+                    Write-Host "Read-only mode enabled. BCD modifications are disabled." -ForegroundColor Yellow
+                    Write-Host "Preview commands:" -ForegroundColor Gray
+                    Write-Host "  bcdedit /set {default} recoveryenabled no" -ForegroundColor Gray
+                    Write-Host "  bcdedit /set {default} bootmenupolicy legacy" -ForegroundColor Gray
                     Write-Host "Press any key to continue..." -ForegroundColor Gray
                     $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    break
+                }
+                Write-Host "1) Edit BCD Entry Description" -ForegroundColor White
+                Write-Host "2) Break Recovery Loop (recoveryenabled no)" -ForegroundColor Yellow
+                Write-Host "3) Enable Legacy F8 Menu (bootmenupolicy legacy)" -ForegroundColor Yellow
+                Write-Host "R) Return to Menu" -ForegroundColor Gray
+                Write-Host ""
+
+                $bcdChoice = Read-Host "Select"
+                switch ($bcdChoice.ToUpper()) {
+                    "1" {
+                        Write-Host "`nCurrent BCD Entries:" -ForegroundColor Cyan
+                        bcdedit /enum | Select-String "identifier" | ForEach-Object { Write-Host $_.Line -ForegroundColor Gray }
+                        Write-Host ""
+                        $id = Read-Host "Enter BCD Identifier (GUID)"
+                        $name = Read-Host "Enter new description"
+                        if ($id -and $name) {
+                            Set-BCDDescription $id $name
+                            Write-Host "BCD entry updated successfully!" -ForegroundColor Green
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "2" {
+                        try {
+                            if (Get-Command Disable-BCDRecoveryEnabledDefault -ErrorAction SilentlyContinue) {
+                                Disable-BCDRecoveryEnabledDefault
+                            } else {
+                                bcdedit /set {default} recoveryenabled no | Out-Null
+                            }
+                            Write-Host "Recovery loop disabled for default entry." -ForegroundColor Green
+                        } catch {
+                            Write-Host "Failed to disable recovery loop: $_" -ForegroundColor Red
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    "3" {
+                        try {
+                            if (Get-Command Set-BCDBootMenuPolicyLegacyDefault -ErrorAction SilentlyContinue) {
+                                Set-BCDBootMenuPolicyLegacyDefault
+                            } else {
+                                bcdedit /set {default} bootmenupolicy legacy | Out-Null
+                            }
+                            Write-Host "Legacy F8 boot menu enabled for default entry." -ForegroundColor Green
+                        } catch {
+                            Write-Host "Failed to enable legacy boot menu: $_" -ForegroundColor Red
+                        }
+                        Write-Host "Press any key to continue..." -ForegroundColor Gray
+                        $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                    }
+                    default { }
+                }
+            }
+            "A" {
+                $target = Read-Host "Target Windows drive letter (default: $($env:SystemDrive))"
+                if (-not $target) { $target = $env:SystemDrive.TrimEnd(':') }
+                $dr = Read-Host "Dry-run only? (Y/N, default Y)"
+                $isDry = if (-not $dr -or $dr -match '^[Yy]') { $true } else { $false }
+                Invoke-OneClickRepairTUI -TargetDrive $target -DryRun:$isDry
+            }
+            "S" {
+                Write-Host "`nSIMULATION & DIAGNOSTICS" -ForegroundColor Cyan
+                Write-Host "1) winload_missing" -ForegroundColor White
+                Write-Host "2) bcd_missing" -ForegroundColor White
+                Write-Host "3) storage_driver_missing" -ForegroundColor White
+                Write-Host "R) Return" -ForegroundColor Gray
+                $simChoice = Read-Host "Select simulation"
+                $scenario = $null
+                switch ($simChoice) {
+                    "1" { $scenario = "winload_missing" }
+                    "2" { $scenario = "bcd_missing" }
+                    "3" { $scenario = "storage_driver_missing" }
+                    default { $scenario = $null }
+                }
+                if ($scenario) {
+                    Invoke-OneClickRepairTUI -TargetDrive $env:SystemDrive.TrimEnd(':') -DryRun -SimulationScenario $scenario
                 }
             }
             "6" {
@@ -486,11 +892,11 @@
                 switch ($utilChoice.ToUpper()) {
                     "A" {
                         Write-Host "`nLaunching Notepad..." -ForegroundColor Green
-                        try {
-                            Start-Process "notepad.exe" -ErrorAction Stop
+                        $notepadOpened = Start-NotepadSafely
+                        if ($notepadOpened) {
                             Write-Host "Notepad opened successfully." -ForegroundColor Green
-                        } catch {
-                            Write-Host "Failed to open Notepad: $_" -ForegroundColor Red
+                        } else {
+                            Write-Host "Notepad instance limit reached (max 5) or failed to open." -ForegroundColor Yellow
                         }
                         Write-Host "Press any key to continue..." -ForegroundColor Gray
                         $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
@@ -573,6 +979,13 @@
                         $driveLetter = Read-Host "Enter drive letter to check (e.g., C)"
                         if ($driveLetter) {
                             $driveNormalized = $driveLetter.TrimEnd(':').ToUpper()
+                            if (Get-ReadOnlyModeEnabled) {
+                                Write-Host "`nRead-only mode enabled. Preview only:" -ForegroundColor Yellow
+                                Write-Host "  chkdsk ${driveNormalized}: /F /R" -ForegroundColor Gray
+                                Write-Host "Press any key to continue..." -ForegroundColor Gray
+                                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+                                break
+                            }
                             Write-Host "`nRunning chkdsk on ${driveNormalized}:..." -ForegroundColor Green
                             Write-Host "This may take several minutes..." -ForegroundColor Yellow
                             chkdsk "${driveNormalized}:" /F /R
@@ -720,7 +1133,7 @@
                         Write-Host ""
                         Write-Host "Test 2: DNS Resolution (google.com)..." -ForegroundColor Cyan
                         try {
-                            Resolve-DnsName "google.com" -ErrorAction Stop | Out-Null
+                            $dnsResult = Resolve-DnsName "google.com" -ErrorAction Stop
                             Write-Host "  ✓ DNS resolution: OK" -ForegroundColor Green
                         } catch {
                             Write-Host "  ✗ DNS resolution failed" -ForegroundColor Red
@@ -915,13 +1328,52 @@
                     }
                 }
             }
-            "Q" { 
+            "B" {
+                Clear-Host
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+                Write-Host "  BOOT ISSUE MAPPING" -ForegroundColor Cyan
+                Write-Host "═══════════════════════════════════════════════════════════" -ForegroundColor Cyan
+                Write-Host ""
+                Write-Host "Describe the boot symptoms (stop codes, recovery loop, missing Start menu, etc.):" -ForegroundColor Gray
+                $description = Read-Host -Prompt "Enter description (required)"
+                if ([string]::IsNullOrWhiteSpace($description)) {
+                    Write-Host "No description entered. Returning to menu." -ForegroundColor Yellow
+                } else {
+                    $suggestions = Suggest-BootIssueFromDescription $description
+                    if (-not $suggestions -or $suggestions.Count -eq 0) {
+                        Write-Host "`nNo direct mapping found. Consider reviewing the Boot Issue Mapping guide." -ForegroundColor Yellow
+                    } else {
+                        foreach ($suggestion in $suggestions) {
+                            Write-Host "`n$($suggestion.Name)" -ForegroundColor Green
+                            Write-Host "  Symptom: $($suggestion.Symptom)" -ForegroundColor Gray
+                            Write-Host "  Description: $($suggestion.Description)" -ForegroundColor Gray
+                            Write-Host "  Commands:" -ForegroundColor Gray
+                            foreach ($cmd in $suggestion.Commands) {
+                                Write-Host "    - $cmd" -ForegroundColor Gray
+                            }
+                            Write-Host "  Reference: $($suggestion.References -join ', ')" -ForegroundColor Cyan
+                        }
+                    }
+                    Write-Host "`nFull mapping guide: DOCUMENTATION/BOOT_ISSUE_MAPPING.md" -ForegroundColor Gray
+                    Write-Host "Official Microsoft troubleshooting reference (0x7B): https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/stop-error-7b-or-inaccessible-boot-device-troubleshooting" -ForegroundColor Gray
+                    Write-Host "Virtual agent reference: https://chatgpt.com/s/t_695f6243fe9481919a76f51b7510aeb9" -ForegroundColor Gray
+                }
+                Write-Host "`nPress any key to return..." -ForegroundColor Gray
+                $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+            }
+            "Q" {
                 Write-Host "`nExiting..." -ForegroundColor Yellow
-                break 
+                if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
+                    Write-ToLog "TUI Mode: User pressed Q to quit" "INFO"
+                }
+                break
             }
             "q" { 
                 Write-Host "`nExiting..." -ForegroundColor Yellow
-                break 
+                if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
+                    Write-ToLog "TUI Mode: User pressed q to quit" "INFO"
+                }
+                break
             }
             default {
                 Write-Host "`nInvalid selection. Press any key to continue..." -ForegroundColor Red
@@ -929,4 +1381,11 @@
             }
         }
     } while ($c -ne "Q" -and $c -ne "q")
+    
+    # Log TUI shutdown
+    if (Get-Command Write-ToLog -ErrorAction SilentlyContinue) {
+        Write-ToLog "TUI Mode ended - User exited application" "INFO"
+        Write-ToLog "═════════════════════════════════════════════════════════════" "INFO"
+    }
 }
+
