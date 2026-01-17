@@ -6,6 +6,7 @@
 
 **MiracleBoot** is a comprehensive Windows system recovery and boot repair solution designed for **IT professionals**, **system administrators**, and **advanced users**. It works in multiple environments—from emergency recovery consoles to fully booted Windows systems—providing powerful diagnostic, repair, and backup tools when you need them most.
 
+Sample interface of our sister project:
 ---![sample GUI](https://github.com/user-attachments/assets/60afe9a6-cff4-466d-89de-93a08ebffce0)
 
 
